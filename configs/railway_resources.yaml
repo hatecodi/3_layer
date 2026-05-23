@@ -1,0 +1,170 @@
+network:
+  sumo_net: sumo/net/two_station.net.xml
+  description: two stations with one up main and one down main
+
+defaults:
+  throat_clearance_sec: 60
+  platform_clearance_sec: 60
+  corridor_min_headway_sec: 120
+  through_track_policy: use_platform_without_dwell
+
+stations:
+  - id: A
+    platforms:
+      - id: A_p1
+        up_edge: A_p1_up
+        down_edge: A_p1_down
+        through_allowed: true
+      - id: A_p2
+        up_edge: A_p2_up
+        down_edge: A_p2_down
+        through_allowed: true
+      - id: A_p3
+        up_edge: A_p3_up
+        down_edge: A_p3_down
+        through_allowed: true
+    dwell_min_sec:
+      stop: 600
+    up:
+      approach_edge: A_up_approach
+      in_routes:
+        - id: A_up_in_p1
+          edges: [A_up_in_1]
+          platform: A_p1
+          conflict_group: A_up_in
+        - id: A_up_in_p2
+          edges: [A_up_in_2]
+          platform: A_p2
+          conflict_group: A_up_in
+        - id: A_up_in_p3
+          edges: [A_up_in_3]
+          platform: A_p3
+          conflict_group: A_up_in
+      out_routes:
+        - id: A_up_out_p1
+          edges: [A_up_out_1]
+          platform: A_p1
+          conflict_group: A_up_out
+        - id: A_up_out_p2
+          edges: [A_up_out_2]
+          platform: A_p2
+          conflict_group: A_up_out
+        - id: A_up_out_p3
+          edges: [A_up_out_3]
+          platform: A_p3
+          conflict_group: A_up_out
+    down:
+      depart_edge: A_down_depart
+      in_routes:
+        - id: A_down_in_p1
+          edges: [A_down_in_1]
+          platform: A_p1
+          conflict_group: A_down_in
+        - id: A_down_in_p2
+          edges: [A_down_in_2]
+          platform: A_p2
+          conflict_group: A_down_in
+        - id: A_down_in_p3
+          edges: [A_down_in_3]
+          platform: A_p3
+          conflict_group: A_down_in
+      out_routes:
+        - id: A_down_out_p1
+          edges: [A_down_out_1]
+          platform: A_p1
+          conflict_group: A_down_out
+        - id: A_down_out_p2
+          edges: [A_down_out_2]
+          platform: A_p2
+          conflict_group: A_down_out
+        - id: A_down_out_p3
+          edges: [A_down_out_3]
+          platform: A_p3
+          conflict_group: A_down_out
+
+  - id: B
+    platforms:
+      - id: B_p1
+        up_edge: B_p1_up
+        down_edge: B_p1_down
+        through_allowed: true
+      - id: B_p2
+        up_edge: B_p2_up
+        down_edge: B_p2_down
+        through_allowed: true
+      - id: B_p3
+        up_edge: B_p3_up
+        down_edge: B_p3_down
+        through_allowed: true
+    dwell_min_sec:
+      stop: 240
+    up:
+      depart_edge: B_up_depart
+      in_routes:
+        - id: B_up_in_p1
+          edges: [B_up_in_1]
+          platform: B_p1
+          conflict_group: B_up_in
+        - id: B_up_in_p2
+          edges: [B_up_in_2]
+          platform: B_p2
+          conflict_group: B_up_in
+        - id: B_up_in_p3
+          edges: [B_up_in_3]
+          platform: B_p3
+          conflict_group: B_up_in
+      out_routes:
+        - id: B_up_out_p1
+          edges: [B_up_out_1]
+          platform: B_p1
+          conflict_group: B_up_out
+        - id: B_up_out_p2
+          edges: [B_up_out_2]
+          platform: B_p2
+          conflict_group: B_up_out
+        - id: B_up_out_p3
+          edges: [B_up_out_3]
+          platform: B_p3
+          conflict_group: B_up_out
+    down:
+      approach_edge: B_down_approach
+      in_routes:
+        - id: B_down_in_p1
+          edges: [B_down_in_1]
+          platform: B_p1
+          conflict_group: B_down_in
+        - id: B_down_in_p2
+          edges: [B_down_in_2]
+          platform: B_p2
+          conflict_group: B_down_in
+        - id: B_down_in_p3
+          edges: [B_down_in_3]
+          platform: B_p3
+          conflict_group: B_down_in
+      out_routes:
+        - id: B_down_out_p1
+          edges: [B_down_out_1]
+          platform: B_p1
+          conflict_group: B_down_out
+        - id: B_down_out_p2
+          edges: [B_down_out_2]
+          platform: B_p2
+          conflict_group: B_down_out
+        - id: B_down_out_p3
+          edges: [B_down_out_3]
+          platform: B_p3
+          conflict_group: B_down_out
+
+corridors:
+  - id: A_B_up
+    direction: up
+    from_station: A
+    to_station: B
+    edges: [Up_line]
+    min_headway_sec: 120
+  - id: B_A_down
+    direction: down
+    from_station: B
+    to_station: A
+    edges: [Down_line]
+    min_headway_sec: 120

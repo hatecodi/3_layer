@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+
+    <!-- ==================== 列车类型定义 ==================== -->
+    <!-- G 类高速列车: rail_fast -->
+    <vType id="G" vClass="rail_fast" length="200" maxSpeed="83.33" color="red"
+           accel="1.0" decel="1.5" sigma="0.0"/>
+    <!-- D 类动车组: rail_electric -->
+    <vType id="D" vClass="rail_electric" length="200" maxSpeed="69.44" color="blue"
+           accel="0.8" decel="1.2" sigma="0.0"/>
+    <!-- Z 类直达列车: rail_urban -->
+    <vType id="Z" vClass="rail_urban" length="400" maxSpeed="44.44" color="green"
+           accel="0.6" decel="1.0" sigma="0.0"/>
+    <!-- K 类快速列车: rail_urban -->
+    <vType id="K" vClass="rail_urban" length="400" maxSpeed="33.33" color="orange"
+           accel="0.5" decel="0.8" sigma="0.0"/>
+
+    <!-- ==================== 上行路由 (A -> B) ==================== -->
+    <route id="up_p1" edges="A_up_approach A_up_in_1 A_p1_up A_up_out_1 Up_line
+                            B_up_in_1 B_p1_up B_up_out_1 B_up_depart"/>
+    <route id="up_p2" edges="A_up_approach A_up_in_2 A_p2_up A_up_out_2 Up_line
+                            B_up_in_2 B_p2_up B_up_out_2 B_up_depart"/>
+    <route id="up_p3" edges="A_up_approach A_up_in_3 A_p3_up A_up_out_3 Up_line
+                            B_up_in_3 B_p3_up B_up_out_3 B_up_depart"/>
+
+    <!-- ==================== 下行路由 (B -> A) ==================== -->
+    <route id="down_p1" edges="B_down_approach B_down_in_1 B_p1_down B_down_out_1 Down_line
+                              A_down_in_1 A_p1_down A_down_out_1 A_down_depart"/>
+    <route id="down_p2" edges="B_down_approach B_down_in_2 B_p2_down B_down_out_2 Down_line
+                              A_down_in_2 A_p2_down A_down_out_2 A_down_depart"/>
+    <route id="down_p3" edges="B_down_approach B_down_in_3 B_p3_down B_down_out_3 Down_line
+                              A_down_in_3 A_p3_down A_down_out_3 A_down_depart"/>
+
+    <!-- ==================== 上行列车 (A -> B) ==================== -->
+    <vehicle id="G5050" type="G" route="up_p2" depart="25560"/>
+    <vehicle id="D133"  type="D" route="up_p2" depart="24480"/>
+    <vehicle id="K641"  type="K" route="up_p2" depart="20280"/>
+    <vehicle id="K667"  type="K" route="up_p2" depart="27840"/>
+
+    <!-- ==================== 下行列车 (B -> A) ==================== -->
+    <vehicle id="Z386"  type="Z" route="down_p2" depart="30540"/>
+    <vehicle id="G1408" type="G" route="down_p2" depart="27600"/>
+    <vehicle id="G5060" type="G" route="down_p2" depart="28920"/>
+    <vehicle id="K1666" type="K" route="down_p2" depart="32580"/>
+
+</routes>

@@ -1,0 +1,41 @@
+<nodes>
+    <!-- ================== Station A 区域 ================== -->
+    <!-- 外围生成与驶离点 -->
+    <node id="A_West_Spawn" x="-1000" y="10" type="priority"/>  <!-- 上行生成点 -->
+    <node id="A_West_Exit"  x="-1000" y="-10" type="priority"/> <!-- 下行驶离销毁点 -->
+
+    <!-- 咽喉集线器 -->
+    <node id="A_Throat_W_In"  x="-500" y="10" type="priority"/>  <!-- A站进站咽喉 (上行 1分3) -->
+    <node id="A_Throat_W_Out" x="-500" y="-10" type="priority"/> <!-- A站出站咽喉 (下行 3合1) -->
+
+    <node id="A_Throat_E_Out" x="1000" y="10" type="priority"/>  <!-- A站出站咽喉 (上行 3合1) -->
+    <node id="A_Throat_E_In"  x="1000" y="-10" type="priority"/> <!-- A站进站咽喉 (下行 1分3) -->
+
+    <!-- A站 3个站台的两端节点 (西端 W, 东端 E) -->
+    <node id="A_p1_W" x="0" y="20" type="priority"/>
+    <node id="A_p1_E" x="500" y="20" type="priority"/>
+    <node id="A_p2_W" x="0" y="0" type="priority"/>
+    <node id="A_p2_E" x="500" y="0" type="priority"/>
+    <node id="A_p3_W" x="0" y="-20" type="priority"/>
+    <node id="A_p3_E" x="500" y="-20" type="priority"/>
+
+    <!-- ================== Station B 区域 ================== -->
+    <!-- 咽喉集线器 -->
+    <node id="B_Throat_W_In"  x="6000" y="10" type="priority"/>  <!-- B站进站咽喉 (上行 1分3) -->
+    <node id="B_Throat_W_Out" x="6000" y="-10" type="priority"/> <!-- B站出站咽喉 (下行 3合1) -->
+
+    <node id="B_Throat_E_Out" x="7500" y="10" type="priority"/>  <!-- B站出站咽喉 (上行 3合1) -->
+    <node id="B_Throat_E_In"  x="7500" y="-10" type="priority"/> <!-- B站进站咽喉 (下行 1分3) -->
+
+    <!-- B站 3个站台的两端节点 (西端 W, 东端 E) -->
+    <node id="B_p1_W" x="6500" y="20" type="priority"/>
+    <node id="B_p1_E" x="7000" y="20" type="priority"/>
+    <node id="B_p2_W" x="6500" y="0" type="priority"/>
+    <node id="B_p2_E" x="7000" y="0" type="priority"/>
+    <node id="B_p3_W" x="6500" y="-20" type="priority"/>
+    <node id="B_p3_E" x="7000" y="-20" type="priority"/>
+
+    <!-- 外围生成与驶离点 -->
+    <node id="B_East_Exit"  x="8000" y="10" type="priority"/>  <!-- 上行驶离销毁点 -->
+    <node id="B_East_Spawn" x="8000" y="-10" type="priority"/> <!-- 下行生成点 -->
+</nodes>

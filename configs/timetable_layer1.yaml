@@ -1,0 +1,254 @@
+time_base: "00:00:00"
+time_unit: seconds_after_midnight
+
+priority_map:
+  G: 1
+  D: 1
+  C: 1
+  Z: 2
+  T: 2
+  K: 3
+
+station_dwell_defaults:
+  A: 600
+  B: 240
+
+assumptions:
+  - Listed times are interpreted as planned controlled-section entry/exit times.
+  - G5050 is marked pass-through because the user specified non-stop.
+  - Other trains are treated as stopping at origin and destination control stations.
+  - For origin station stopping trains, planned arrival is derived as planned departure minus dwell_min.
+  - For destination station stopping trains, planned departure is derived as planned arrival plus dwell_min.
+
+trains:
+  - id: G5050
+    direction: up
+    train_class: G
+    priority: 1
+    pass_through: true
+    route:
+      origin_station: A
+      destination_station: B
+      corridor: A_B_up
+    planned:
+      A:
+        arr: 25560   # 07:06
+        dep: 25560
+      B:
+        arr: 30960   # 08:36
+        dep: 30960
+    bounds:
+      A:
+        arr_min: 25560
+        dep_max: 26160
+        dwell_min: 0
+      B:
+        arr_min: 30960
+        dep_max: 31560
+        dwell_min: 0
+    candidate_platforms:
+      A: [A_p1, A_p2, A_p3]
+      B: [B_p1, B_p2, B_p3]
+
+  - id: D133
+    direction: up
+    train_class: D
+    priority: 1
+    pass_through: false
+    route:
+      origin_station: A
+      destination_station: B
+      corridor: A_B_up
+    planned:
+      A:
+        arr: 23880   # 06:38, derived from 06:48 - 10 min
+        dep: 24480   # 06:48
+      B:
+        arr: 33840   # 09:24
+        dep: 34080   # 09:28, derived from 09:24 + 4 min
+    bounds:
+      A:
+        arr_min: 23880
+        dep_max: 25080
+        dwell_min: 600
+      B:
+        arr_min: 33840
+        dep_max: 34680
+        dwell_min: 240
+    candidate_platforms:
+      A: [A_p1, A_p2, A_p3]
+      B: [B_p1, B_p2, B_p3]
+
+  - id: K641
+    direction: up
+    train_class: K
+    priority: 3
+    pass_through: false
+    route:
+      origin_station: A
+      destination_station: B
+      corridor: A_B_up
+    planned:
+      A:
+        arr: 19080   # 05:18, derived from 05:38 - 20 min
+        dep: 20280   # 05:38
+      B:
+        arr: 31320   # 08:42
+        dep: 31560   # 08:46, derived from 08:42 + 4 min
+    bounds:
+      A:
+        arr_min: 19080
+        dep_max: 21480
+        dwell_min: 1200
+      B:
+        arr_min: 31320
+        dep_max: 32160
+        dwell_min: 240
+    candidate_platforms:
+      A: [A_p1, A_p2, A_p3]
+      B: [B_p1, B_p2, B_p3]
+
+  - id: K667
+    direction: up
+    train_class: K
+    priority: 3
+    pass_through: false
+    route:
+      origin_station: A
+      destination_station: B
+      corridor: A_B_up
+    planned:
+      A:
+        arr: 27240   # 07:34, derived from 07:44 - 10 min
+        dep: 27840   # 07:44
+      B:
+        arr: 37200   # 10:20
+        dep: 37440   # 10:24, derived from 10:20 + 4 min
+    bounds:
+      A:
+        arr_min: 27240
+        dep_max: 28440
+        dwell_min: 600
+      B:
+        arr_min: 37200
+        dep_max: 38040
+        dwell_min: 240
+    candidate_platforms:
+      A: [A_p1, A_p2, A_p3]
+      B: [B_p1, B_p2, B_p3]
+
+  - id: Z386
+    direction: down
+    train_class: Z
+    priority: 2
+    pass_through: false
+    route:
+      origin_station: B
+      destination_station: A
+      corridor: B_A_down
+    planned:
+      B:
+        arr: 30300   # 08:25, derived from 08:29 - 4 min
+        dep: 30540   # 08:29
+      A:
+        arr: 38400   # 10:40
+        dep: 39000   # 10:50, derived from 10:40 + 10 min
+    bounds:
+      B:
+        arr_min: 30300
+        dep_max: 31020
+        dwell_min: 240
+      A:
+        arr_min: 38400
+        dep_max: 39600
+        dwell_min: 600
+    candidate_platforms:
+      B: [B_p1, B_p2, B_p3]
+      A: [A_p1, A_p2, A_p3]
+
+  - id: G1408
+    direction: down
+    train_class: G
+    priority: 1
+    pass_through: false
+    route:
+      origin_station: B
+      destination_station: A
+      corridor: B_A_down
+    planned:
+      B:
+        arr: 27360   # 07:36, derived from 07:40 - 4 min
+        dep: 27600   # 07:40
+      A:
+        arr: 31500   # 08:45
+        dep: 32100   # 08:55, derived from 08:45 + 10 min
+    bounds:
+      B:
+        arr_min: 27360
+        dep_max: 28080
+        dwell_min: 240
+      A:
+        arr_min: 31500
+        dep_max: 32700
+        dwell_min: 600
+    candidate_platforms:
+      B: [B_p1, B_p2, B_p3]
+      A: [A_p1, A_p2, A_p3]
+
+  - id: G5060
+    direction: down
+    train_class: G
+    priority: 1
+    pass_through: false
+    route:
+      origin_station: B
+      destination_station: A
+      corridor: B_A_down
+    planned:
+      B:
+        arr: 28680   # 07:58, derived from 08:02 - 4 min
+        dep: 28920   # 08:02
+      A:
+        arr: 34260   # 09:31
+        dep: 34860   # 09:41, derived from 09:31 + 10 min
+    bounds:
+      B:
+        arr_min: 28680
+        dep_max: 29400
+        dwell_min: 240
+      A:
+        arr_min: 34260
+        dep_max: 35460
+        dwell_min: 600
+    candidate_platforms:
+      B: [B_p1, B_p2, B_p3]
+      A: [A_p1, A_p2, A_p3]
+
+  - id: K1666
+    direction: down
+    train_class: K
+    priority: 3
+    pass_through: false
+    route:
+      origin_station: B
+      destination_station: A
+      corridor: B_A_down
+    planned:
+      B:
+        arr: 32340   # 08:59, derived from 09:03 - 4 min
+        dep: 32580   # 09:03
+      A:
+        arr: 42420   # 11:47
+        dep: 43020   # 11:57, derived from 11:47 + 10 min
+    bounds:
+      B:
+        arr_min: 32340
+        dep_max: 33060
+        dwell_min: 240
+      A:
+        arr_min: 42420
+        dep_max: 43620
+        dwell_min: 600
+    candidate_platforms:
+      B: [B_p1, B_p2, B_p3]
+      A: [A_p1, A_p2, A_p3]
