@@ -10,42 +10,53 @@ priority_map:
   K: 3
 
 station_dwell_defaults:
-  A: 600
-  B: 240
+  A: 60
+  B: 30
+
+time_generation:
+  corridor_runtime_sec:
+    A_to_B: 90
+    B_to_A: 90
+  dep_max_slack_sec: 120
+  headway_sec:
+    A_to_B: 60
+    B_to_A: 60
 
 assumptions:
-  - Listed times are interpreted as planned controlled-section entry/exit times.
-  - G5050 is marked pass-through because the user specified non-stop.
-  - Other trains are treated as stopping at origin and destination control stations.
-  - For origin station stopping trains, planned arrival is derived as planned departure minus dwell_min.
-  - For destination station stopping trains, planned departure is derived as planned arrival plus dwell_min.
+  - All dimensions scaled from real to training per trains reference.
+  - Corridor 1200m at 30m/s (~40s) + throat/platform at 15-20m/s (~50s) ≈ 90s one-way.
+  - A dwell 60s, B dwell 30s, K641 special A 120s.
+  - G5050 is pass-through (dwell=0 at both stations).
+  - dep_max = dep_plan + dwell_min + slack (120s).
 
 trains:
-  - id: G5050
+  # ==================== UP: A -> B ====================
+
+  - id: K641
     direction: up
-    train_class: G
-    priority: 1
-    pass_through: true
+    train_class: K
+    priority: 3
+    pass_through: false
     route:
       origin_station: A
       destination_station: B
       corridor: A_B_up
     planned:
       A:
-        arr: 25560   # 07:06
-        dep: 25560
+        arr: -120
+        dep: 0
       B:
-        arr: 30960   # 08:36
-        dep: 30960
+        arr: 90
+        dep: 120
     bounds:
       A:
-        arr_min: 25560
-        dep_max: 26160
-        dwell_min: 0
+        arr_min: -120
+        dep_max: 240        # >= 30 + 20(throat) + 120(dwell) + 20(throat) = 190
+        dwell_min: 120      # K641 special: long dwell at A
       B:
-        arr_min: 30960
-        dep_max: 31560
-        dwell_min: 0
+        arr_min: 90
+        dep_max: 240
+        dwell_min: 30
     candidate_platforms:
       A: [A_p1, A_p2, A_p3]
       B: [B_p1, B_p2, B_p3]
@@ -61,49 +72,49 @@ trains:
       corridor: A_B_up
     planned:
       A:
-        arr: 23880   # 06:38, derived from 06:48 - 10 min
-        dep: 24480   # 06:48
+        arr: 60          # 120 - 60 dwell
+        dep: 120
       B:
-        arr: 33840   # 09:24
-        dep: 34080   # 09:28, derived from 09:24 + 4 min
+        arr: 210
+        dep: 240         # 210 + 30 dwell B
     bounds:
       A:
-        arr_min: 23880
-        dep_max: 25080
-        dwell_min: 600
+        arr_min: 60
+        dep_max: 240
+        dwell_min: 60
       B:
-        arr_min: 33840
-        dep_max: 34680
-        dwell_min: 240
+        arr_min: 210
+        dep_max: 360
+        dwell_min: 30
     candidate_platforms:
       A: [A_p1, A_p2, A_p3]
       B: [B_p1, B_p2, B_p3]
 
-  - id: K641
+  - id: G5050
     direction: up
-    train_class: K
-    priority: 3
-    pass_through: false
+    train_class: G
+    priority: 1
+    pass_through: true
     route:
       origin_station: A
       destination_station: B
       corridor: A_B_up
     planned:
       A:
-        arr: 19080   # 05:18, derived from 05:38 - 20 min
-        dep: 20280   # 05:38
+        arr: 180
+        dep: 180
       B:
-        arr: 31320   # 08:42
-        dep: 31560   # 08:46, derived from 08:42 + 4 min
+        arr: 270
+        dep: 270
     bounds:
       A:
-        arr_min: 19080
-        dep_max: 21480
-        dwell_min: 1200
+        arr_min: 180
+        dep_max: 300
+        dwell_min: 0
       B:
-        arr_min: 31320
-        dep_max: 32160
-        dwell_min: 240
+        arr_min: 270
+        dep_max: 390
+        dwell_min: 0
     candidate_platforms:
       A: [A_p1, A_p2, A_p3]
       B: [B_p1, B_p2, B_p3]
@@ -119,52 +130,25 @@ trains:
       corridor: A_B_up
     planned:
       A:
-        arr: 27240   # 07:34, derived from 07:44 - 10 min
-        dep: 27840   # 07:44
+        arr: 240
+        dep: 300
       B:
-        arr: 37200   # 10:20
-        dep: 37440   # 10:24, derived from 10:20 + 4 min
+        arr: 390
+        dep: 420
     bounds:
       A:
-        arr_min: 27240
-        dep_max: 28440
-        dwell_min: 600
+        arr_min: 240
+        dep_max: 420
+        dwell_min: 60
       B:
-        arr_min: 37200
-        dep_max: 38040
-        dwell_min: 240
+        arr_min: 390
+        dep_max: 540
+        dwell_min: 30
     candidate_platforms:
       A: [A_p1, A_p2, A_p3]
       B: [B_p1, B_p2, B_p3]
 
-  - id: Z386
-    direction: down
-    train_class: Z
-    priority: 2
-    pass_through: false
-    route:
-      origin_station: B
-      destination_station: A
-      corridor: B_A_down
-    planned:
-      B:
-        arr: 30300   # 08:25, derived from 08:29 - 4 min
-        dep: 30540   # 08:29
-      A:
-        arr: 38400   # 10:40
-        dep: 39000   # 10:50, derived from 10:40 + 10 min
-    bounds:
-      B:
-        arr_min: 30300
-        dep_max: 31020
-        dwell_min: 240
-      A:
-        arr_min: 38400
-        dep_max: 39600
-        dwell_min: 600
-    candidate_platforms:
-      B: [B_p1, B_p2, B_p3]
-      A: [A_p1, A_p2, A_p3]
+  # ==================== DOWN: B -> A ====================
 
   - id: G1408
     direction: down
@@ -177,20 +161,20 @@ trains:
       corridor: B_A_down
     planned:
       B:
-        arr: 27360   # 07:36, derived from 07:40 - 4 min
-        dep: 27600   # 07:40
+        arr: 60
+        dep: 90
       A:
-        arr: 31500   # 08:45
-        dep: 32100   # 08:55, derived from 08:45 + 10 min
+        arr: 180
+        dep: 240
     bounds:
       B:
-        arr_min: 27360
-        dep_max: 28080
-        dwell_min: 240
+        arr_min: 60
+        dep_max: 210
+        dwell_min: 30
       A:
-        arr_min: 31500
-        dep_max: 32700
-        dwell_min: 600
+        arr_min: 180
+        dep_max: 360
+        dwell_min: 60
     candidate_platforms:
       B: [B_p1, B_p2, B_p3]
       A: [A_p1, A_p2, A_p3]
@@ -206,20 +190,49 @@ trains:
       corridor: B_A_down
     planned:
       B:
-        arr: 28680   # 07:58, derived from 08:02 - 4 min
-        dep: 28920   # 08:02
+        arr: 210
+        dep: 240
       A:
-        arr: 34260   # 09:31
-        dep: 34860   # 09:41, derived from 09:31 + 10 min
+        arr: 330
+        dep: 390
     bounds:
       B:
-        arr_min: 28680
-        dep_max: 29400
-        dwell_min: 240
+        arr_min: 210
+        dep_max: 360
+        dwell_min: 30
       A:
-        arr_min: 34260
-        dep_max: 35460
-        dwell_min: 600
+        arr_min: 330
+        dep_max: 510
+        dwell_min: 60
+    candidate_platforms:
+      B: [B_p1, B_p2, B_p3]
+      A: [A_p1, A_p2, A_p3]
+
+  - id: Z386
+    direction: down
+    train_class: Z
+    priority: 2
+    pass_through: false
+    route:
+      origin_station: B
+      destination_station: A
+      corridor: B_A_down
+    planned:
+      B:
+        arr: 330
+        dep: 360
+      A:
+        arr: 450
+        dep: 510
+    bounds:
+      B:
+        arr_min: 330
+        dep_max: 480
+        dwell_min: 30
+      A:
+        arr_min: 450
+        dep_max: 630
+        dwell_min: 60
     candidate_platforms:
       B: [B_p1, B_p2, B_p3]
       A: [A_p1, A_p2, A_p3]
@@ -235,20 +248,52 @@ trains:
       corridor: B_A_down
     planned:
       B:
-        arr: 32340   # 08:59, derived from 09:03 - 4 min
-        dep: 32580   # 09:03
+        arr: 450
+        dep: 480
       A:
-        arr: 42420   # 11:47
-        dep: 43020   # 11:57, derived from 11:47 + 10 min
+        arr: 570
+        dep: 630
     bounds:
       B:
-        arr_min: 32340
-        dep_max: 33060
-        dwell_min: 240
+        arr_min: 450
+        dep_max: 600
+        dwell_min: 30
       A:
-        arr_min: 42420
-        dep_max: 43620
-        dwell_min: 600
+        arr_min: 570
+        dep_max: 750
+        dwell_min: 60
     candidate_platforms:
       B: [B_p1, B_p2, B_p3]
       A: [A_p1, A_p2, A_p3]
+
+  # ---- Step 0 conflict test train (comment to disable) ----
+  # K999: A->B p1, depart 120s (same as D133).
+  # Priority 3 vs D133 priority 1 -> K999 loses, gets fallback.
+  - id: K999
+    direction: up
+    train_class: K
+    priority: 3
+    pass_through: false
+    route:
+      origin_station: A
+      destination_station: B
+      corridor: A_B_up
+    planned:
+      A:
+        arr: 60
+        dep: 120
+      B:
+        arr: 210
+        dep: 240
+    bounds:
+      A:
+        arr_min: 60
+        dep_max: 240
+        dwell_min: 60
+      B:
+        arr_min: 210
+        dep_max: 360
+        dwell_min: 30
+    candidate_platforms:
+      A: [A_p1, A_p2, A_p3]
+      B: [B_p1, B_p2, B_p3]

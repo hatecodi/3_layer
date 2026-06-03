@@ -1,0 +1,86 @@
+# Final version — 2026-05-24
+# All times verified: every train has ≥1 legal action, bounds check passed.
+
+# ==========================================================================
+# Schedule (all times in simulation seconds)
+# ==========================================================================
+
+# A->B (up)
+# ───────────────
+# | Train | depart | arr_plan | dep_plan | Notes              |
+# | K641  | 0      | 90       | 120      | A站长停120s, K车    |
+# | D133  | 120    | 210      | 240      | 正常,D车            |
+# | G5050 | 180    | 270      | 270      | pass-through,G车    |
+# | K667  | 300    | 390      | 420      | 正常,K车            |
+# ───────────────
+
+# B->A (down)
+# ───────────────
+# | Train | depart | arr_plan | dep_plan |
+# | G1408 | 90     | 180      | 240      |
+# | G5060 | 240    | 330      | 390      |
+# | Z386  | 360    | 450      | 510      |
+# | K1666 | 480    | 570      | 630      |
+# ───────────────
+
+# Conflict test train (comment to disable)
+# K999: A->B, depart 120, p1 — conflicts with D133, gets fallback.
+
+# ==========================================================================
+# Time generation parameters (for Layer 1 auto-expansion)
+# ==========================================================================
+
+# | Item             | Real    | Training | Notes                         |
+# | corridor runtime | 360s    | 90s      | 1200m corridor @30m/s + approaches |
+# | A dwell          | 600s    | 60s      |                               |
+# | B dwell          | 240s    | 30s      |                               |
+# | K641 special     | 1200s   | 120s     | A station long dwell           |
+# | headway          | 180s    | 60s      | minimum departure interval     |
+# | dep_max_slack    | 1200s   | 120s     | dep_max = dep_plan + dwell + slack |
+# | corridor         | 5000m   | 1200m    |                               |
+# | platform         | 500m    | 250m     |                               |
+# | G length         | 200m    | 80m      |                               |
+# | D length         | 220m    | 100m     |                               |
+# | Z length         | 350m    | 140m     |                               |
+# | K length         | 400m    | 160m     |                               |
+# | episode          | 40000s  | < 900s   |                               |
+
+# ==========================================================================
+# Layer 1 bounds per train (verified 2026-05-24)
+# ==========================================================================
+
+# K641 (A->B, A站长停120s, priority 3)
+#   A: arr/dep=-120/0, arr_min=-120, dep_max=240, dwell_min=120
+#   B: arr/dep=90/120, arr_min=90, dep_max=240, dwell_min=30
+
+# D133 (A->B, priority 1)
+#   A: arr/dep=60/120, arr_min=60, dep_max=240, dwell_min=60
+#   B: arr/dep=210/240, arr_min=210, dep_max=360, dwell_min=30
+
+# G5050 (A->B, pass-through, priority 1)
+#   A: arr/dep=180/180, arr_min=180, dep_max=300, dwell_min=0
+#   B: arr/dep=270/270, arr_min=270, dep_max=390, dwell_min=0
+
+# K667 (A->B, priority 3)
+#   A: arr/dep=240/300, arr_min=240, dep_max=420, dwell_min=60
+#   B: arr/dep=390/420, arr_min=390, dep_max=540, dwell_min=30
+
+# G1408 (B->A, priority 1)
+#   B: arr/dep=60/90, arr_min=60, dep_max=210, dwell_min=30
+#   A: arr/dep=180/240, arr_min=180, dep_max=360, dwell_min=60
+
+# G5060 (B->A, priority 1)
+#   B: arr/dep=210/240, arr_min=210, dep_max=360, dwell_min=30
+#   A: arr/dep=330/390, arr_min=330, dep_max=510, dwell_min=60
+
+# Z386 (B->A, priority 2)
+#   B: arr/dep=330/360, arr_min=330, dep_max=480, dwell_min=30
+#   A: arr/dep=450/510, arr_min=450, dep_max=630, dwell_min=60
+
+# K1666 (B->A, priority 3)
+#   B: arr/dep=450/480, arr_min=450, dep_max=600, dwell_min=30
+#   A: arr/dep=570/630, arr_min=570, dep_max=750, dwell_min=60
+
+# K999 (A->B, conflict test, priority 3) — COMMENT to disable
+#   A: arr/dep=60/120, arr_min=60, dep_max=240, dwell_min=60
+#   B: arr/dep=210/240, arr_min=210, dep_max=360, dwell_min=30

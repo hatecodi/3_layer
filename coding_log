@@ -1,0 +1,98 @@
+[2026-06-03 20:30]
+Task: Set up coding workflow discipline (skill + hooks + CLAUDE.md update)
+Files:
+  .claude/skills/coding-workflow.md — project skill defining plan-then-code-then-log rules
+  .claude/hooks/check_plan.py — PreToolUse hook: reminder to write plan before Edit/Write
+  .claude/hooks/log_reminder.py — PostToolUse hook: reminder to append coding_log after Edit/Write
+  .claude/settings.json — project-level hook configuration
+  .claude/plans/plan_template.md — template for plan files
+  CLAUDE.md — added "Before you do anything else" section referencing skill + coding_log
+Rationale: User requested that every AI session must plan before coding, check alignment
+  with project design goals, and log all changes to coding_log for multi-agent traceability.
+Status: DONE
+
+---
+
+2026-05-24
+
+[Phase 0] SUMO baseline
+
+- Created sumo/two_station.sumocfg — begin=0, end=900, delay=0
+- Created scripts/validate_sumo.py — headless SUMO run + tripinfo parse + Phase 0 pass/fail report
+- Created .gitignore — exclude .idea/, __pycache__/, sumo/output/, checkpoints/
+
+[Phase 1] Scenario loader
+
+- Created src/experiment/scenario_loader.py
+  - Parses railway_resources.yaml → StationConfig, PlatformConfig, ThroatRoute, CorridorConfig
+  - Parses timetable_layer1.yaml → TrainTimetable, TrainPlan, TrainBound
+  - Parses sumo/routes/base.rou.xml → SUMORoute, SUMOVehicle, SUMOVType
+  - Validates: train ID match, platform ID match, corridor ID match, dep_max >= arr_min + dwell_min, resource edge coverage
+  - load_scenario() → ScenarioConfig or ValidationError
+
+[Phase 2] Resource manager + action mask
+
+- Created src/control/resource_manager.py
+  - ResourceCalendar — resource_id → list of OccupancyWindow, is_free(), earliest_free(), book()
+  - WindowRequest — train's time-window request with _resource_windows dict
+  - Conflict detection: requests_conflict(), build_conflict_graph()
+  - Deterministic resolver: resolve_pair() (priority → delay → train_id tiebreak)
+  - Fallback: assign_fallback() with RebuildFn callback — tries other platforms first, then delays on same platform
+  - resolve_all() — batch resolves in priority order, books granted windows to calendar
+  - GrantResult — train_id, platform, W_in, W_plat, W_out, winner, fallback_from
+
+- Created src/control/action_mask.py
+  - Action space: (platform_choice, entry_choice, dwell_extend) with ENTRY_CHOICES, DWELL_EXTEND_CHOICES
+  - derive_schedule() — action → (t_in_start, t_in_end, t_plat_start, t_plat_end, t_out_start, t_out_end)
+  - is_legal_action() — checks platform ∈ candidate, through-allowed, dwell_extend=0 for pass-through, t_arr_min, t_dep_max, dwell_min
+  - compute_joint_action_mask() — enumerates candidate actions, builds boolean mask, returns MaskedActionSet
+  - action_to_request() → WindowRequest with _resource_windows for platform + throat in/out
+    * DESIGN DECISION: Corridor is NOT included in _resource_windows. The resolver
+      owns station resources (platform, inbound throat, outbound throat). Minimum
+      tracking headway on the corridor is enforced by Layer 3 execution layer,
+      not by the resource resolver. This avoids artificial cross-direction conflicts.
+  - heuristic_action() — earliest legal entry, first legal platform, min dwell
+
+- Created src/control/dispatch_bounds.py
+  - DispatchBounds wraps ScenarioConfig → per-train/per-station Layer 1 bounds
+  - TrainBounds: t_arr_plan, t_dep_plan, t_arr_min, t_dep_max, dwell_min, prio_i, pass_flag, candidate_platforms
+
+[Phase 2] Heuristic baseline
+
+- Created src/experiment/run_heuristic.py
+  - schedule_station() — applies heuristic_action to all trains at a station
+  - _make_rebuild_fn() — closure that rebuilds WindowRequest for any (platform, shift):
+    * Shifts windows by shift amount
+    * Checks t_arr_min / t_dep_max against Layer 1 bounds
+    * Builds _resource_windows from scratch using station config (correct platform → correct resource IDs)
+    * No longer relies on action_to_request for fallback (avoids re-deriving schedule)
+  - resolve_all() called per direction with station-specific rebuild_fn
+  - Reports: granted windows, conflict graph, resource-overlap check, hard-bound check, held/replan trains
+
+[Step 0] Phase 1/2 consolidation
+
+- Fixed fallback resource-window bug: assign_fallback previously copied _resource_windows from old platform; now uses RebuildFn callback to rebuild correct resource IDs for new platform
+- Added conflict test train K999 (A→B, depart=120s, p1, priority=3) — conflicts with D133, verifies fallback
+- Fixed K641 dep_max at A: was 120s, now 240s. Original value too tight for dwell_min=120 + throat 20+20=160s physical minimum
+- Created tests/test_phase12.py — 10 tests covering scenario_loader, action_mask, resource_manager
+- All CLI output uses ASCII characters (OK/FAIL/=) to avoid encoding issues
+- Updated trains reference file with final verified schedule and all Layer 1 bounds
+
+[Network] Physical scaling
+
+- Regenerated sumo/net/two_station.nod.xml — corridor 1200m, platform 250m, throat ~80m
+- Regenerated sumo/net/two_station.edg.xml — speeds: approach 30, throat 20, platform 15, corridor 30 m/s (length=1200 forced)
+- Sumo/net/two_station.net.xml — REQUIRES REGENERATION via netconvert
+- Updated sumo/routes/base.rou.xml:
+  - Train lengths: G=80m, D=100m, Z=140m, K=160m
+  - Depart times sorted by depart: K641@0, G1408@90, D133@120, G5050@180, G5060@240, K667@300, Z386@360, K1666@480
+  - K999 conflict train @120 (uncommented for testing, comment to disable)
+
+[Config] Timetable
+
+- Updated configs/timetable_layer1.yaml to match scaled network and trains schedule
+  - station_dwell_defaults: A=60, B=30
+  - K641 special dwell at A: 120s, dep_max=240 (fixed from 120)
+  - All trains: planned/bounds verified, every train has ≥1 legal action
+  - K999 active (comment - id: K999 to disable)
+  - time_generation: corridor_runtime=90s, dep_max_slack=120s, headway=60s

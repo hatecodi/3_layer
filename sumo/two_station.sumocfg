@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="net/two_station.net.xml"/>
+        <route-files value="routes/base.rou.xml"/>
+    </input>
+
+    <time>
+        <!-- K641 dep=0, K1666 dep=480, last finishes ~750s. end=900 留余量 -->
+        <begin value="0"/>
+        <end value="900"/>
+        <step-length value="1.0"/>
+    </time>
+
+    <processing>
+        <time-to-teleport value="300"/>
+    </processing>
+
+    <gui_only>
+        <!-- delay=0: 全速。观察时调大到 20~50 -->
+        <delay value="0"/>
+        <start value="false"/>
+    </gui_only>
+
+</configuration>

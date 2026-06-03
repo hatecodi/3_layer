@@ -1,0 +1,219 @@
+    当前主要不足
+  1. 还没有 Python 实验系统
+     文档要求 src/env、src/control、src/marl、src/experiment，但当前仓库没有 src/。也就是说还没有环境、资源管理器、动作掩码、观测构造、reward、MAPPO、评估脚本。
+  2. SUMO route 仍然硬编码了站台选择
+     base.rou.xml 里每辆车已经绑定了 up_p1/up_p2/... 路线。Phase 0 可以这样做，但 Layer 2 需要动态选择 platform，所以后续必须把“候选路线/授权路线”交给资源管理器和 Layer 3，而不
+     是固定在车辆 route 里。
+  3. 停车和 dwell 目前没有真实执行
+     base.rou.xml 注释说 stops 不写死，交给 Layer 3 TraCI 控制。但现在没有 executor，所以 SUMO 运行时车辆实际只是通过网络。timetable_layer1.yaml 里的 dwell_min 还没有被仿真使
+     用。
+  4. 配置和文档命名/结构不完全一致
+     文档里建议 timetable.yaml、train_config.yaml、configs/scenarios/...，当前是 timetable_layer1.yaml，没有 training config 和 scenario config。短期没问题，但继续写代码前最好统
+     一命名，避免后面 loader 逻辑混乱。
+  5. 资源冲突表达还偏原型
+     railway_resources.yaml 已有 conflict_group，这是好方向；但还没有显式 resource calendar、窗口重叠检查、站台双向共享占用规则。尤其 A_p1_up / A_p1_down 是不同 SUMO edge，但物
+     理上应共享 A_p1 这个站台资源。
+  6. Layer 1 边界是手工写死的
+     timetable_layer1.yaml 已有 arr_min/dep_max/dwell_min，但还没有从 compact timetable 自动展开，也没有校验 route depart、计划到发、dwell、corridor runtime 是否互相一致。
+  7. 当前 headway 设置有潜在冲突
+     资源配置里 corridor min headway 是 120s，但 timetable assumptions 里 headway 是 60s。这可以用于制造压力测试，但要明确区分“计划发车间隔”和“安全最小追踪间隔”，否则动作掩码会
+     经常无合法动作。
+  8. 工程状态未整理
+     git status 显示多个修改文件，two_station.net.xml 同时有删除和未跟踪状态，.idea 文件也未跟踪。建议先清理 .gitignore，确认哪些文件是源码，哪些是生成物。
+
+
+  Coding Plan
+  Phase 0：固定 SUMO 基线固化
+
+  1. 增加 .gitignore，排除 .idea/、输出日志、checkpoint、临时文件。
+  2. 明确 two_station.net.xml 是否提交：如果由 nod/edg 生成，建议提供生成脚本；如果作为实验输入，直接纳入版本管理。
+  3. 新建 scripts/validate_sumo.ps1 或 Python 脚本，自动运行：
+     sumo -c sumo/two_station.sumocfg --duration-log.statistics true
+  4. 输出基础指标：插入车辆数、完成车辆数、平均 duration、waiting、depart delay。
+
+  Phase 1：配置加载和一致性校验
+
+  1. 建 src/experiment/scenario_loader.py。
+  2. 读取：
+     configs/railway_resources.yaml
+     configs/timetable_layer1.yaml
+     sumo/routes/base.rou.xml
+  3. 校验 train id 一致、platform id 一致、corridor id 一致。
+  4. 校验 dep_max >= arr_min + dwell_min。
+  5. 校验物理站台资源和 SUMO edge 映射完整。
+
+  Phase 2：资源管理器和动作掩码
+
+  1. 建 src/control/resource_manager.py。
+  2. 实现 resource calendar：
+     resource_id -> occupied_windows
+  3. 建 src/control/action_mask.py。
+  4. 实现文档里的动作空间：
+     (platform_choice, entry_choice, dwell_extend)
+  5. 先不接 MAPPO，用 heuristic policy：
+     earliest legal entry + first legal platform + min dwell。
+  6. 输出每辆车的 granted window，并验证无平台/咽喉窗口重叠。
+
+  Phase 3：Layer 3 执行器最小版本
+
+  1. 建 src/control/executor.py。
+  2. 先做最小 TraCI 控制：
+     到站台停车、等待 dwell、再放行。
+  3. 不急着做复杂速度曲线，先保证 dwell 和通过/停车语义真实生效。
+  4. 记录 actual arrival/departure，与 timetable 对比。
+
+  Phase 4：Gym-style 环境
+
+  1. 建 src/env/sumo_env.py。
+  2. 实现：
+     reset() -> obs, info
+     step(action_dict) -> obs, reward, terminated, truncated, info
+  3. info 必须包含：
+     action_masks
+     execution_targets
+     granted_windows
+     metrics
+
+  Phase 5：观测、reward、baseline
+
+  1. 建 src/env/observation_builder.py，固定 74 维观测。
+  2. 建 src/env/reward.py，实现 individual + team reward。
+  3. 建 src/experiment/run_heuristic.py。
+  4. 先让 heuristic baseline 跑完多 seed，多场景，再接 RL。
+
+  Phase 6：MAPPO
+
+  1. 建 src/marl/actor_critic.py、rollout_buffer.py、mappo.py。
+  2. 共享 actor，local critic 输入固定 (K_max + 1) * 74 = 444。
+  3. PPO 采样和更新都必须支持 action mask。
+  4. 训练前先保证 Phase 1 的 rule-based resource manager 零硬约束违规。
+
+  建议你下一步先做的不是 MAPPO，而是 Phase 1 + Phase 2。
+  也就是：先把配置 loader、资源窗口、动作掩码、heuristic resolver 写出来。这个部分跑通后，后面的 MARL 才有可靠的环境基础。
+
+
+  下一步计划
+
+  Step 0：Phase 1/2 收口
+  实现细节：
+
+  - 把所有 CLI 输出里的 ✓、箭头、制表装饰符换成 ASCII，或统一 PYTHONIOENCODING=utf-8。
+  - 给 scenario_loader、action_mask、resource_manager 加最小单元测试。
+  - 修正 fallback 逻辑：现在 assign_fallback 切到新 platform 时 _resource_windows 仍可能继承原 platform 的资源窗口，后续会导致“看似换站台，实际还占原站台资源”。
+  - fallback 必须重新跑一次硬约束检查：arr_min、dep_max、platform compatibility、pass-through dwell。
+
+  成功标准：
+
+  - python -m src.experiment.run_heuristic 在普通 PowerShell 中无异常退出。
+  - 每个 granted window 满足 Layer 1 bounds。
+  - resolver 后平台、咽喉、corridor resource overlap 数为 0。
+  - 至少有一个人工构造冲突 case 能触发 fallback，并验证 fallback 后资源 ID 正确变化。
+
+  Step 1：实现 Layer 3 Executor 最小可用版
+  目标：让 dwell_min、pass-through、granted window 在 SUMO 里真实生效。
+
+  建议新增：
+
+  - src/control/executor.py
+  - src/control/execution_target.py
+  - src/experiment/run_executor_baseline.py
+
+  核心数据结构：
+
+  @dataclass
+  class ExecutionTarget:
+      train_id: str
+      station_id: str
+      allocated_platform: str
+      route_id: str
+      platform_edge: str
+      t_throat_entry: float
+      t_platform_arrival: float
+      t_platform_departure: float
+      t_throat_exit: float
+      pass_flag: bool
+
+  实现方式建议先保守：
+
+  - 当前 base.rou.xml 已有 up_p1/up_p2/up_p3/down_p1/... route。
+  - Executor 根据 granted platform 选择对应 route_id。
+  - 对尚未进入仿真的车辆，用 TraCI 动态 vehicle.add() 更干净；短期也可以先保持 .rou.xml depart，插入后立即 setRouteID()。
+  - 到平台 edge 后，停车列车用 traci.vehicle.setStop() 或速度控制停够 dwell。
+  - pass-through train 不停车，只记录平台通过时间。
+  - 不要一开始写复杂速度曲线，先保证状态机正确：approach -> platform -> dwell/pass -> depart -> completed。
+
+  成功标准：
+
+  - 8 辆车全部完成，SUMO Running=0 Waiting=0。
+  - K641 在 A 的实际 dwell >= 120s，普通 A 站 dwell >= 60s，B 站 dwell >= 30s。
+  - G5050 pass-through dwell = 0 或只保留平台清空时间。
+  - 输出 actual_events.csv：train_id, station_id, arr_actual, dep_actual, dwell_actual, platform。
+  - 实际 platform 与 granted platform 一致。
+
+  Step 2：做 Gym-style 环境骨架
+  建议新增：
+
+  - src/env/sumo_env.py
+  - src/env/train_state.py
+  - src/env/metrics.py
+
+  接口先按文档落地：
+
+  obs, info = env.reset()
+  obs, reward, terminated, truncated, info = env.step(action_dict)
+
+  info 必须包含：
+
+  - action_masks
+  - granted_windows
+  - execution_targets
+  - events
+  - metrics
+
+  先用 heuristic policy 驱动 env.step()，不要接 MAPPO。
+
+  成功标准：
+
+  - run_env_heuristic.py 能跑完整 episode。
+  - 每个 decision step 都能生成 active train set、mask、grant、target。
+  - episode 结束时 completion rate = 1.0。
+  - metrics 能导出 JSON/CSV。
+  - no legal action 时环境执行 hold/replan，不崩溃。
+
+  Step 3：观测和 reward
+  建议新增：
+
+  - src/env/observation_builder.py
+  - src/env/reward.py
+
+  实现细节：
+
+  - observation 固定 74 维。
+  - neighbor padding 固定 K_max=5。
+  - resource state 从 ResourceCalendar 和 SUMO runtime state 构造。
+  - reward 先实现文档版：individual wait/delay/completion + shared team conflict/deadlock。
+
+  成功标准：
+
+  - 每个 active train 的 obs shape 恒为 (74,)。
+  - critic group input shape 恒为 (444,)。
+  - 不同 train 数量下 shape 不变。
+  - reward 无 NaN/inf。
+  - heuristic baseline 能输出总 delay、平均 wait、completion、conflict count。
+
+  Step 4：再进入 MAPPO
+  只有前面通过后再做：
+
+  - src/marl/actor_critic.py
+  - src/marl/rollout_buffer.py
+  - src/marl/mappo.py
+
+  MAPPO 成功标准：
+
+  - action sampling 严格使用 mask。
+  - illegal action sample 数永久为 0。
+  - rollout buffer 记录 legal action 的 logprob。
+  - 训练 1 个短 episode 不报错。
+  - 训练若干 episode 后，至少能复现 heuristic 水平，再谈优化。
+
+  最关键的里程碑是：让 heuristic resource decision 真正控制 SUMO 并产出 actual arrival/departure 日志。做到这一步后，你的项目才从“离线调度原型”进入“可训练环境”。

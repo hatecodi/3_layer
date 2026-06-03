@@ -1,41 +1,41 @@
 <nodes>
-    <!-- ================== Station A 区域 ================== -->
-    <!-- 外围生成与驶离点 -->
-    <node id="A_West_Spawn" x="-1000" y="10" type="priority"/>  <!-- 上行生成点 -->
-    <node id="A_West_Exit"  x="-1000" y="-10" type="priority"/> <!-- 下行驶离销毁点 -->
+    <!-- Station A: spawn/exit at x=-200 -->
+    <node id="A_West_Spawn" x="-200" y="10" type="priority"/>
+    <node id="A_West_Exit"  x="-200" y="-10" type="priority"/>
 
-    <!-- 咽喉集线器 -->
-    <node id="A_Throat_W_In"  x="-500" y="10" type="priority"/>  <!-- A站进站咽喉 (上行 1分3) -->
-    <node id="A_Throat_W_Out" x="-500" y="-10" type="priority"/> <!-- A站出站咽喉 (下行 3合1) -->
+    <!-- A throat west: x=-80 -->
+    <node id="A_Throat_W_In"  x="-80" y="10" type="priority"/>
+    <node id="A_Throat_W_Out" x="-80" y="-10" type="priority"/>
 
-    <node id="A_Throat_E_Out" x="1000" y="10" type="priority"/>  <!-- A站出站咽喉 (上行 3合1) -->
-    <node id="A_Throat_E_In"  x="1000" y="-10" type="priority"/> <!-- A站进站咽喉 (下行 1分3) -->
+    <!-- A platform ends: W at x=0, E at x=250 (250m platform) -->
+    <node id="A_p1_W" x="0"   y="20" type="priority"/>
+    <node id="A_p1_E" x="250" y="20" type="priority"/>
+    <node id="A_p2_W" x="0"   y="0"  type="priority"/>
+    <node id="A_p2_E" x="250" y="0"  type="priority"/>
+    <node id="A_p3_W" x="0"   y="-20" type="priority"/>
+    <node id="A_p3_E" x="250" y="-20" type="priority"/>
 
-    <!-- A站 3个站台的两端节点 (西端 W, 东端 E) -->
-    <node id="A_p1_W" x="0" y="20" type="priority"/>
-    <node id="A_p1_E" x="500" y="20" type="priority"/>
-    <node id="A_p2_W" x="0" y="0" type="priority"/>
-    <node id="A_p2_E" x="500" y="0" type="priority"/>
-    <node id="A_p3_W" x="0" y="-20" type="priority"/>
-    <node id="A_p3_E" x="500" y="-20" type="priority"/>
+    <!-- A throat east: x=330 -->
+    <node id="A_Throat_E_Out" x="330" y="10" type="priority"/>
+    <node id="A_Throat_E_In"  x="330" y="-10" type="priority"/>
 
-    <!-- ================== Station B 区域 ================== -->
-    <!-- 咽喉集线器 -->
-    <node id="B_Throat_W_In"  x="6000" y="10" type="priority"/>  <!-- B站进站咽喉 (上行 1分3) -->
-    <node id="B_Throat_W_Out" x="6000" y="-10" type="priority"/> <!-- B站出站咽喉 (下行 3合1) -->
+    <!-- B throat west: x=1530 (330 + 1200m corridor) -->
+    <node id="B_Throat_W_In"  x="1530" y="10" type="priority"/>
+    <node id="B_Throat_W_Out" x="1530" y="-10" type="priority"/>
 
-    <node id="B_Throat_E_Out" x="7500" y="10" type="priority"/>  <!-- B站出站咽喉 (上行 3合1) -->
-    <node id="B_Throat_E_In"  x="7500" y="-10" type="priority"/> <!-- B站进站咽喉 (下行 1分3) -->
+    <!-- B platform ends: W at x=1610, E at x=1860 (250m platform) -->
+    <node id="B_p1_W" x="1610" y="20" type="priority"/>
+    <node id="B_p1_E" x="1860" y="20" type="priority"/>
+    <node id="B_p2_W" x="1610" y="0"  type="priority"/>
+    <node id="B_p2_E" x="1860" y="0"  type="priority"/>
+    <node id="B_p3_W" x="1610" y="-20" type="priority"/>
+    <node id="B_p3_E" x="1860" y="-20" type="priority"/>
 
-    <!-- B站 3个站台的两端节点 (西端 W, 东端 E) -->
-    <node id="B_p1_W" x="6500" y="20" type="priority"/>
-    <node id="B_p1_E" x="7000" y="20" type="priority"/>
-    <node id="B_p2_W" x="6500" y="0" type="priority"/>
-    <node id="B_p2_E" x="7000" y="0" type="priority"/>
-    <node id="B_p3_W" x="6500" y="-20" type="priority"/>
-    <node id="B_p3_E" x="7000" y="-20" type="priority"/>
+    <!-- B throat east: x=1940 -->
+    <node id="B_Throat_E_Out" x="1940" y="10" type="priority"/>
+    <node id="B_Throat_E_In"  x="1940" y="-10" type="priority"/>
 
-    <!-- 外围生成与驶离点 -->
-    <node id="B_East_Exit"  x="8000" y="10" type="priority"/>  <!-- 上行驶离销毁点 -->
-    <node id="B_East_Spawn" x="8000" y="-10" type="priority"/> <!-- 下行生成点 -->
+    <!-- B spawn/exit at x=2040 -->
+    <node id="B_East_Exit"  x="2040" y="10" type="priority"/>
+    <node id="B_East_Spawn" x="2040" y="-10" type="priority"/>
 </nodes>

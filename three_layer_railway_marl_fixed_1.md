@@ -23,12 +23,14 @@ The main research question:
 
 ### 2.1 Scenario
 
-- Station A and Station B connected by a double-track corridor.
-- Up direction: A -> B, initial trains are G5050, D133, K641, and K667.
-- Down direction: B -> A, initial trains are Z386, G1408, G5060, and K1666.
-- Each station has 3 platform tracks.
-- Departure headways are close to the minimum tracking headway.
-- Current initial demand has eight trains; G5050 is marked pass-through because it is specified as non-stop.
+- Station A and Station B connected by a double-track corridor (1200 m each direction, scaled from 5000 m for training).
+- Up direction: A -> B, trains are K641, D133, G5050, K667 (+ conflict test K999).
+- Down direction: B -> A, trains are G1408, G5060, Z386, K1666.
+- Each station has 3 platform tracks (250 m, scaled from 500 m).
+- Departure headways are scaled to 60 s (from 180 s real).
+- Train lengths scaled: G=80 m, D=100 m, Z=140 m, K=160 m.
+- G5050 is marked pass-through (non-stop). K641 has a special long dwell (120 s) at A.
+- One conflict test train (K999) is included to verify resource resolver fallback.
 
 ### 2.2 Physical Layout (SUMO)
 
@@ -75,21 +77,40 @@ the policy network is queried. The policy never sees an illegal action.
 
 #### 3.1.1 Initial Layer 1 input for the two-station experiment
 
-The initial experiment uses eight trains on the A-B double-track corridor. This
-data should live in `timetable.yaml`, not in Python code.
+The initial experiment uses eight trains + one conflict test train (K999) on the
+scaled A-B double-track corridor.  This data lives in
+`configs/timetable_layer1.yaml`.
 
-| Direction | Train | Plan | Class | Priority | Station service rule |
-|-----------|-------|------|-------|----------|----------------------|
-| A -> B | G5050 | 07:06-08:36 | G | 1 | pass-through / non-stop |
-| A -> B | D133 | 06:48-09:24 | D | 1 | normal passenger service |
-| A -> B | K641 | 05:38-08:42 | K | 3 | must stop at A, minimum 20 min |
-| A -> B | K667 | 07:44-10:20 | K | 3 | normal passenger service |
-| B -> A | Z386 | 08:29-10:40 | Z | 2 | normal passenger service |
-| B -> A | G1408 | 07:40-08:45 | G | 1 | normal passenger service |
-| B -> A | G5060 | 08:02-09:31 | G | 1 | normal passenger service |
-| B -> A | K1666 | 09:03-11:47 | K | 3 | normal passenger service |
+**Training-scale schedule** (all times in simulation seconds):
 
-Priority mapping:
+| Dir    | Train | depart | A arr/dep | B arr/dep | Class | Prio | Rule |
+|--------|-------|--------|-----------|-----------|-------|------|------|
+| A -> B | K641  | 0      | -120 / 0  | 90 / 120  | K | 3 | long dwell A (120 s) |
+| A -> B | D133  | 120    | 60 / 120  | 210 / 240 | D | 1 | normal |
+| A -> B | G5050 | 180    | 180 / 180 | 270 / 270 | G | 1 | pass-through |
+| A -> B | K667  | 300    | 240 / 300 | 390 / 420 | K | 3 | normal |
+| B -> A | G1408 | 90     | 180 / 240 | 60 / 90   | G | 1 | normal |
+| B -> A | G5060 | 240    | 330 / 390 | 210 / 240 | G | 1 | normal |
+| B -> A | Z386  | 360    | 450 / 510 | 330 / 360 | Z | 2 | normal |
+| B -> A | K1666 | 480    | 570 / 630 | 450 / 480 | K | 3 | normal |
+| A -> B | K999  | 120    | 60 / 120  | 210 / 240 | K | 3 | conflict test (commentable) |
+
+**Real → training scaling reference:**
+
+| Parameter            | Real      | Training | Factor |
+|----------------------|-----------|----------|--------|
+| corridor length      | 5000 m    | 1200 m   | ~4× |
+| corridor runtime     | 360 s     | 90 s     | 4× |
+| platform length      | 500 m     | 250 m    | 2× |
+| train length (G)     | 200 m     | 80 m     | 2.5× |
+| train length (K)     | 400 m     | 160 m    | 2.5× |
+| A station dwell      | 600 s     | 60 s     | 10× |
+| B station dwell      | 240 s     | 30 s     | 8× |
+| K641 special dwell A | 1200 s    | 120 s    | 10× |
+| min headway          | 180 s     | 60 s     | 3× |
+| episode duration     | 40000 s   | < 900 s  | ~45× |
+
+Priority mapping (unchanged):
 
 ```text
 priority 1: G, D, C
@@ -97,19 +118,11 @@ priority 2: Z, T
 priority 3: K
 ```
 
-Station dwell rules:
-
-```text
-A station passenger dwell minimum: 10 min
-B station passenger dwell minimum: 4 min
-K641 at A: 20 min minimum
-```
-
 The Layer 1 timetable generator expands these rules into per-train fields:
 `t_arr_plan`, `t_dep_plan`, `t_arr_min`, `t_dep_max`, `dwell_min`, `P_i`,
-`prio_i`, `pass_flag`, and `seg_runtime_bounds`. If exact planned times are not
-provided manually, they are generated from `base_departure_sec`, direction, train
-order, and headway settings in the scenario config.
+`prio_i`, `pass_flag`, and `seg_runtime_bounds`.  For Phase 1 the bounds are
+pre-computed in `timetable_layer1.yaml`; later phases will auto-generate them
+from compact spec via `time_generation` parameters.
 
 ---
 
@@ -665,59 +678,56 @@ The Python system should discover the active railway problem from:
 
 - SUMO network topology (`.net.xml`)
 - SUMO route and train demand files (`.rou.xml` or generated trip files)
-- A railway resource config (`railway_resources.yaml`)
-- A timetable and dispatch-bound config (`timetable.yaml`)
-- A training config (`train_config.yaml`)
+- A railway resource config (`configs/railway_resources.yaml`)
+- A timetable and dispatch-bound config (`configs/timetable_layer1.yaml`)
+- (future) A training config (`configs/train_config.yaml`)
 
 No station name, train ID, platform ID, or number of trains should be hard-coded
-inside Python modules.
+inside Python modules.  This holds for the current Phase 1+2 implementation.
 
 ---
 
-### 9.2 Recommended project structure
+### 9.2 Project structure (actual as of 2026-05-24)
 
 ```text
 project/
   configs/
-    railway_resources.yaml
-    timetable.yaml
-    train_config.yaml
-    scenarios/
-      two_station_base.yaml
-      two_station_dense.yaml
-      three_station_generalization.yaml
+    railway_resources.yaml          # station/platform/corridor physical resources
+    timetable_layer1.yaml           # train schedule + Layer 1 hard bounds
   sumo/
-    nets/
-      two_station.net.xml
-      three_station.net.xml
+    net/
+      two_station.nod.xml           # node coordinates (scaled)
+      two_station.edg.xml           # edge definitions (scaled)
+      two_station.net.xml           # generated by netconvert
     routes/
-      base.rou.xml
-      dense.rou.xml
+      base.rou.xml                  # vTypes + routes + vehicles (sorted by depart)
+  scripts/
+    validate_sumo.py                # Phase 0: headless SUMO sanity check
   src/
-    env/
-      sumo_env.py
-      topology.py
-      resource_manager.py
-      action_mask.py
-      observation_builder.py
-      reward.py
+    __init__.py
     control/
-      dispatch_bounds.py
-      resolver.py
-      executor.py
-    marl/
-      mappo.py
-      actor_critic.py
-      rollout_buffer.py
+      __init__.py
+      action_mask.py                # action space + derive_schedule + mask
+      dispatch_bounds.py            # Layer 1 dispatch wrapper
+      resource_manager.py           # resource calendar + conflict resolver
+    env/
+      __init__.py                   # (placeholder)
     experiment/
-      run_train.py
-      run_eval.py
-      metrics.py
-      scenario_loader.py
-  outputs/
+      __init__.py
+      scenario_loader.py            # config loading + cross-file validation
+      run_heuristic.py              # Phase 2 heuristic baseline
+    marl/
+      __init__.py                   # (placeholder)
+  tests/
+    __init__.py
+    test_phase12.py                 # unit tests for Phase 1+2
+  outputs/                          # (to be created)
     checkpoints/
     logs/
     eval_reports/
+  coding_plan                       # implementation roadmap
+  coding_log                        # change log
+  trains                            # final verified schedule reference
 ```
 
 ---
@@ -777,94 +787,57 @@ corridors:
     min_headway_sec: 120
 ```
 
-The timetable config describes trains and Layer 1 bounds:
+The timetable config (actual file: `configs/timetable_layer1.yaml`) describes
+trains and Layer 1 bounds.  For Phase 1 the bounds are pre-computed; later
+phases will auto-expand from compact spec using `time_generation` parameters.
+
+Training-scale values (see `trains` reference for full real→training table):
 
 ```yaml
-priority_rules:
-  high: {classes: [G, D, C], priority: 1}
-  medium: {classes: [Z, T], priority: 2}
-  low: {classes: [K], priority: 3}
+priority_map:
+  G: 1
+  D: 1
+  Z: 2
+  K: 3
 
-station_dwell_min_sec:
-  A: 600
-  B: 240
+station_dwell_defaults:
+  A: 60    # training (real: 600 s)
+  B: 30    # training (real: 240 s)
 
 time_generation:
-  base_departure_sec:
-    A_to_B: 0
-    B_to_A: 0
-  headway_sec:
-    A_to_B: 180
-    B_to_A: 180
   corridor_runtime_sec:
-    A_to_B: 360
-    B_to_A: 360
-  dep_max_slack_sec: 600
+    A_to_B: 90
+    B_to_A: 90
+  headway_sec:
+    A_to_B: 60
+    B_to_A: 60
+  dep_max_slack_sec: 120
 
 trains:
-  - id: G5050
-    class: G
-    direction: A_to_B
-    origin: A
-    destination: B
-    stop_pattern:
-      A: stop
-      B: stop
-    candidate_platforms:
-      A: [A_p1, A_p2, A_p3]
-      B: [B_p1, B_p2, B_p3]
-
-  - id: D133
-    class: D
-    direction: A_to_B
-    origin: A
-    destination: B
-    stop_pattern: {A: stop, B: stop}
-    candidate_platforms:
-      A: [A_p1, A_p2, A_p3]
-      B: [B_p1, B_p2, B_p3]
-
   - id: K641
-    class: K
-    direction: A_to_B
-    origin: A
-    destination: B
-    stop_pattern: {A: stop, B: stop}
-    special_dwell_min_sec:
-      A: 1200  # locomotive change at A
-    candidate_platforms:
-      A: [A_p1, A_p2, A_p3]
-      B: [B_p1, B_p2, B_p3]
+    direction: up
+    train_class: K
+    priority: 3
+    pass_through: false
+    planned: {A: {arr: -120, dep: 0}, B: {arr: 90, dep: 120}}
+    bounds:
+      A: {arr_min: -120, dep_max: 240, dwell_min: 120}   # special long dwell
+      B: {arr_min: 90, dep_max: 240, dwell_min: 30}
+    candidate_platforms: {A: [A_p1, A_p2, A_p3], B: [B_p1, B_p2, B_p3]}
 
-  - id: Z186
-    class: Z
-    direction: B_to_A
-    origin: B
-    destination: A
-    stop_pattern: {B: stop, A: stop}
-    candidate_platforms:
-      B: [B_p1, B_p2, B_p3]
-      A: [A_p1, A_p2, A_p3]
+  - id: G5050
+    direction: up
+    train_class: G
+    priority: 1
+    pass_through: true                                     # non-stop
+    planned: {A: {arr: 180, dep: 180}, B: {arr: 270, dep: 270}}
+    bounds:
+      A: {arr_min: 180, dep_max: 300, dwell_min: 0}
+      B: {arr_min: 270, dep_max: 390, dwell_min: 0}
+    ...
 
-  - id: G1408
-    class: G
-    direction: B_to_A
-    origin: B
-    destination: A
-    stop_pattern: {B: stop, A: stop}
-    candidate_platforms:
-      B: [B_p1, B_p2, B_p3]
-      A: [A_p1, A_p2, A_p3]
-
-  - id: G5060
-    class: G
-    direction: B_to_A
-    origin: B
-    destination: A
-    stop_pattern: {B: stop, A: stop}
-    candidate_platforms:
-      B: [B_p1, B_p2, B_p3]
-      A: [A_p1, A_p2, A_p3]
+  # (+ D133, K667, G1408, G5060, Z386, K1666, and conflict test K999)
+  # Full listing in configs/timetable_layer1.yaml
 ```
 
 Layer 1 expands the compact timetable config as follows:
@@ -958,45 +931,51 @@ The following rules make train/station expansion possible without code changes:
 
 ### 9.6 Experiment phases
 
-#### Phase 0: SUMO sanity baseline
+#### Phase 0: SUMO sanity baseline  [DONE]
 
 Goal: verify that the railway network and routes are physically valid before RL.
 
 Tasks:
 
-- Build the two-station SUMO network.
-- Define 6 trains: 3 up, 3 down.
-- Run fixed timetable execution with no learning.
-- Verify every train can complete its route.
-- Log arrival time, departure time, platform occupancy, and headway.
+- [DONE] Build the two-station SUMO network (scaled: 1200 m corridor, 250 m platforms).
+- [DONE] Define 9 trains: 4 up, 4 down + 1 conflict test (K999).
+- [DONE] Run fixed timetable execution with no learning.
+- [DONE] Verify every train can complete its route.
+- [DONE] Log arrival time, departure time, platform occupancy, and headway.
 
 Pass criteria:
 
 - No SUMO route error.
 - No train is stuck forever.
 - Platform and throat occupancy logs match expected resource use.
+- `scripts/validate_sumo.py` exits cleanly.
 
-#### Phase 1: Rule-based resource manager only
+#### Phase 1: Rule-based resource manager only  [DONE]
 
 Goal: verify that time windows, hard masks, conflict detection, fallback, and
 execution targets work before MAPPO is introduced.
 
 Tasks:
 
-- Replace policy actions with a deterministic heuristic:
+- [DONE] `src/experiment/scenario_loader.py` — load + validate 3 config files.
+- [DONE] `src/control/dispatch_bounds.py` — Layer 1 per-train bounds wrapper.
+- [DONE] `src/control/resource_manager.py` — ResourceCalendar + conflict resolver + RebuildFn fallback.
+- [DONE] `src/control/action_mask.py` — derive_schedule + joint action mask + heuristic_action.
+- [DONE] Replace policy actions with a deterministic heuristic:
   - choose earliest legal entry
   - choose first legal platform
   - choose minimum dwell
-- Run the resource resolver.
-- Execute granted targets in SUMO.
-- Stress test dense headways.
+- [DONE] Run the resource resolver via `run_heuristic.py`.
+- [NEXT] Execute granted targets in SUMO (Phase 3 executor).
 
 Pass criteria:
 
-- No granted window violates Layer 1 bounds.
-- No two trains occupy the same platform window.
-- No conflicting throat routes overlap.
-- If no legal action exists, the train is held and replanned.
+- [DONE] No granted window violates Layer 1 bounds.
+- [DONE] No two trains occupy the same platform window after resolution.
+- [DONE] No conflicting throat routes overlap.
+- [DONE] If no legal action exists, the train is held and replanned.
+- [DONE] K999 conflict test triggers fallback with correct resource-ID change.
+- [DONE] `python -m pytest tests/test_phase12.py` — 10/10 pass.
 
 #### Phase 2: MAPPO integration on the minimum network
 
@@ -1098,41 +1077,40 @@ deadlock rate while preserving hard feasibility.
 
 ---
 
-### 9.7 Minimal implementation order
+### 9.7 Implementation order
 
-Implement in this order:
+Items marked [DONE] below are implemented and tested as of 2026-05-24.
+See `coding_log` for details.
 
-1. Scenario/config loader.
-2. SUMO wrapper and train state extractor.
-3. Topology/resource parser.
-4. Resource calendar and conflict checker.
-5. `derive_schedule` and joint action mask.
-6. Rule-based fallback resolver.
-7. Execution target generator.
-8. Rule-based SUMO executor.
-9. Observation builder with padding and masks.
-10. Reward and metric logger.
-11. Heuristic baseline.
-12. MAPPO rollout buffer.
-13. Shared actor and local critic.
-14. PPO update with action masks.
-15. Evaluation and report scripts.
+1.  [DONE] Scenario/config loader — `src/experiment/scenario_loader.py`
+2.  [DONE] Topology/resource parser — integrated in scenario_loader
+3.  [DONE] Resource calendar and conflict checker — `src/control/resource_manager.py`
+4.  [DONE] `derive_schedule` and joint action mask — `src/control/action_mask.py`
+5.  [DONE] Rule-based fallback resolver — `resource_manager.py` (RebuildFn callback)
+6.  [DONE] Dispatch bounds (Layer 1) — `src/control/dispatch_bounds.py`
+7.  [DONE] Heuristic baseline — `src/experiment/run_heuristic.py`
+8.  [NEXT] SUMO wrapper / train state extractor — `src/env/sumo_env.py`
+9.  [NEXT] Execution target generator + rule-based executor — `src/control/executor.py`
+10. [ ] Observation builder with padding and masks — `src/env/observation_builder.py`
+11. [ ] Reward and metric logger — `src/env/reward.py`, `src/env/metrics.py`
+12. [ ] MAPPO rollout buffer — `src/marl/rollout_buffer.py`
+13. [ ] Shared actor and local critic — `src/marl/actor_critic.py`
+14. [ ] PPO update with action masks — `src/marl/mappo.py`
+15. [ ] Evaluation and report scripts — `src/experiment/run_eval.py`
 
-Do not start MAPPO training before Phase 1 passes. Most failures in this
-experiment will come from invalid resource accounting or SUMO execution drift,
-not from the neural network.
+Next priority (per coding_plan Step 1): implement Layer 3 Executor minimal
+version — make dwell_min, pass-through, and granted windows actually control
+SUMO via TraCI.  Do not start MAPPO before this is verified.
 
 ---
 
 ### 9.8 Acceptance checklist
 
-The experiment is considered implementable when all of the following are true:
-
-- Adding a train requires only SUMO route/timetable config changes.
-- Adding a station requires only SUMO network/resource/timetable config changes.
-- Python code contains no station-specific or train-specific branches.
-- Every policy action is checked by the joint action mask before sampling.
-- Every fallback window is checked by the same hard feasibility logic.
-- Every granted window is logged and can be replayed.
-- Evaluation can run with a checkpoint on a scenario not used in training.
-- Metrics are exported to CSV/JSON for every seed and scenario.
+- [DONE] Adding a train requires only SUMO route/timetable config changes.
+- [N/A]  Adding a station requires only SUMO network/resource/timetable config changes. (single-station-pair experiment)
+- [DONE] Python code contains no station-specific or train-specific branches.
+- [DONE] Every policy action is checked by the joint action mask before sampling.
+- [DONE] Every fallback window is checked by the same hard feasibility logic (RebuildFn checks bounds).
+- [DONE] Every granted window is logged and can be replayed (run_heuristic.py output).
+- [ ] Evaluation can run with a checkpoint on a scenario not used in training.
+- [ ] Metrics are exported to CSV/JSON for every seed and scenario.

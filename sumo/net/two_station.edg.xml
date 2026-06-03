@@ -1,80 +1,79 @@
 <edges>
     <!-- ========================================================= -->
-    <!--                       上行方向 (A -> B)                     -->
+    <!--                    上行方向 (A -> B)                        -->
     <!-- ========================================================= -->
 
-    <!-- 1. A站进站与分配 (1分3) -->
-    <edge id="A_up_approach" from="A_West_Spawn" to="A_Throat_W_In" speed="30" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_up_in_1" from="A_Throat_W_In" to="A_p1_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_up_in_2" from="A_Throat_W_In" to="A_p2_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_up_in_3" from="A_Throat_W_In" to="A_p3_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- A站进站 -->
+    <edge id="A_up_approach" from="A_West_Spawn" to="A_Throat_W_In" speed="30" numLanes="1" allow="rail"/>
+    <edge id="A_up_in_1" from="A_Throat_W_In" to="A_p1_W" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_up_in_2" from="A_Throat_W_In" to="A_p2_W" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_up_in_3" from="A_Throat_W_In" to="A_p3_W" speed="20" numLanes="1" allow="rail"/>
 
-    <!-- 2. A站站台轨道 (上行: 西向东) -->
-    <edge id="A_p1_up" from="A_p1_W" to="A_p1_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_p2_up" from="A_p2_W" to="A_p2_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_p3_up" from="A_p3_W" to="A_p3_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- A站站台 (上行 W->E) -->
+    <edge id="A_p1_up" from="A_p1_W" to="A_p1_E" speed="15" numLanes="1" allow="rail"/>
+    <edge id="A_p2_up" from="A_p2_W" to="A_p2_E" speed="15" numLanes="1" allow="rail"/>
+    <edge id="A_p3_up" from="A_p3_W" to="A_p3_E" speed="15" numLanes="1" allow="rail"/>
 
-    <!-- 3. A站出站汇聚 (3合1) -->
-    <edge id="A_up_out_1" from="A_p1_E" to="A_Throat_E_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_up_out_2" from="A_p2_E" to="A_Throat_E_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_up_out_3" from="A_p3_E" to="A_Throat_E_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- A站出站 -->
+    <edge id="A_up_out_1" from="A_p1_E" to="A_Throat_E_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_up_out_2" from="A_p2_E" to="A_Throat_E_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_up_out_3" from="A_p3_E" to="A_Throat_E_Out" speed="20" numLanes="1" allow="rail"/>
 
-    <!-- 4. 上行双线廊道正线 (A -> B, 强制长度5000米) -->
-    <edge id="Up_line" from="A_Throat_E_Out" to="B_Throat_W_In" speed="30" numLanes="1" allow="rail_urban rail_electric rail_fast" length="5000"/>
+    <!-- 上行走廊 (1200m 强制长度) -->
+    <edge id="Up_line" from="A_Throat_E_Out" to="B_Throat_W_In" speed="30" numLanes="1" allow="rail" length="1200"/>
 
-    <!-- 5. B站进站与分配 (1分3) -->
-    <edge id="B_up_in_1" from="B_Throat_W_In" to="B_p1_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_up_in_2" from="B_Throat_W_In" to="B_p2_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_up_in_3" from="B_Throat_W_In" to="B_p3_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- B站进站 -->
+    <edge id="B_up_in_1" from="B_Throat_W_In" to="B_p1_W" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_up_in_2" from="B_Throat_W_In" to="B_p2_W" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_up_in_3" from="B_Throat_W_In" to="B_p3_W" speed="20" numLanes="1" allow="rail"/>
 
-    <!-- 6. B站站台轨道 (上行: 西向东) -->
-    <edge id="B_p1_up" from="B_p1_W" to="B_p1_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_p2_up" from="B_p2_W" to="B_p2_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_p3_up" from="B_p3_W" to="B_p3_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- B站站台 (上行 W->E) -->
+    <edge id="B_p1_up" from="B_p1_W" to="B_p1_E" speed="15" numLanes="1" allow="rail"/>
+    <edge id="B_p2_up" from="B_p2_W" to="B_p2_E" speed="15" numLanes="1" allow="rail"/>
+    <edge id="B_p3_up" from="B_p3_W" to="B_p3_E" speed="15" numLanes="1" allow="rail"/>
 
-    <!-- 7. B站出站驶离 (3合1) -->
-    <edge id="B_up_out_1" from="B_p1_E" to="B_Throat_E_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_up_out_2" from="B_p2_E" to="B_Throat_E_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_up_out_3" from="B_p3_E" to="B_Throat_E_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_up_depart" from="B_Throat_E_Out" to="B_East_Exit" speed="30" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-
+    <!-- B站出站 -->
+    <edge id="B_up_out_1" from="B_p1_E" to="B_Throat_E_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_up_out_2" from="B_p2_E" to="B_Throat_E_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_up_out_3" from="B_p3_E" to="B_Throat_E_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_up_depart" from="B_Throat_E_Out" to="B_East_Exit" speed="30" numLanes="1" allow="rail"/>
 
     <!-- ========================================================= -->
-    <!--                       下行方向 (B -> A)                     -->
+    <!--                    下行方向 (B -> A)                        -->
     <!-- ========================================================= -->
 
-    <!-- 1. B站进站与分配 (从东往西开, 1分3) -->
-    <edge id="B_down_approach" from="B_East_Spawn" to="B_Throat_E_In" speed="30" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_down_in_1" from="B_Throat_E_In" to="B_p1_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_down_in_2" from="B_Throat_E_In" to="B_p2_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_down_in_3" from="B_Throat_E_In" to="B_p3_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- B站进站 -->
+    <edge id="B_down_approach" from="B_East_Spawn" to="B_Throat_E_In" speed="30" numLanes="1" allow="rail"/>
+    <edge id="B_down_in_1" from="B_Throat_E_In" to="B_p1_E" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_down_in_2" from="B_Throat_E_In" to="B_p2_E" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_down_in_3" from="B_Throat_E_In" to="B_p3_E" speed="20" numLanes="1" allow="rail"/>
 
-    <!-- 2. B站站台轨道 (下行反向: 东向西) -->
-    <edge id="B_p1_down" from="B_p1_E" to="B_p1_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_p2_down" from="B_p2_E" to="B_p2_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_p3_down" from="B_p3_E" to="B_p3_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- B站站台 (下行 E->W) -->
+    <edge id="B_p1_down" from="B_p1_E" to="B_p1_W" speed="15" numLanes="1" allow="rail"/>
+    <edge id="B_p2_down" from="B_p2_E" to="B_p2_W" speed="15" numLanes="1" allow="rail"/>
+    <edge id="B_p3_down" from="B_p3_E" to="B_p3_W" speed="15" numLanes="1" allow="rail"/>
 
-    <!-- 3. B站出站汇聚 (3合1) -->
-    <edge id="B_down_out_1" from="B_p1_W" to="B_Throat_W_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_down_out_2" from="B_p2_W" to="B_Throat_W_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="B_down_out_3" from="B_p3_W" to="B_Throat_W_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- B站出站 -->
+    <edge id="B_down_out_1" from="B_p1_W" to="B_Throat_W_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_down_out_2" from="B_p2_W" to="B_Throat_W_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="B_down_out_3" from="B_p3_W" to="B_Throat_W_Out" speed="20" numLanes="1" allow="rail"/>
 
-    <!-- 4. 下行双线廊道正线 (B -> A, 强制长度5000米) -->
-    <edge id="Down_line" from="B_Throat_W_Out" to="A_Throat_E_In" speed="30" numLanes="1" allow="rail_urban rail_electric rail_fast" length="5000"/>
+    <!-- 下行走廊 (1200m 强制长度) -->
+    <edge id="Down_line" from="B_Throat_W_Out" to="A_Throat_E_In" speed="30" numLanes="1" allow="rail" length="1200"/>
 
-    <!-- 5. A站进站与分配 (1分3) -->
-    <edge id="A_down_in_1" from="A_Throat_E_In" to="A_p1_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_down_in_2" from="A_Throat_E_In" to="A_p2_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_down_in_3" from="A_Throat_E_In" to="A_p3_E" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- A站进站 -->
+    <edge id="A_down_in_1" from="A_Throat_E_In" to="A_p1_E" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_down_in_2" from="A_Throat_E_In" to="A_p2_E" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_down_in_3" from="A_Throat_E_In" to="A_p3_E" speed="20" numLanes="1" allow="rail"/>
 
-    <!-- 6. A站站台轨道 (下行反向: 东向西) -->
-    <edge id="A_p1_down" from="A_p1_E" to="A_p1_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_p2_down" from="A_p2_E" to="A_p2_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_p3_down" from="A_p3_E" to="A_p3_W" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- A站站台 (下行 E->W) -->
+    <edge id="A_p1_down" from="A_p1_E" to="A_p1_W" speed="15" numLanes="1" allow="rail"/>
+    <edge id="A_p2_down" from="A_p2_E" to="A_p2_W" speed="15" numLanes="1" allow="rail"/>
+    <edge id="A_p3_down" from="A_p3_E" to="A_p3_W" speed="15" numLanes="1" allow="rail"/>
 
-    <!-- 7. A站出站驶离 (3合1) -->
-    <edge id="A_down_out_1" from="A_p1_W" to="A_Throat_W_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_down_out_2" from="A_p2_W" to="A_Throat_W_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_down_out_3" from="A_p3_W" to="A_Throat_W_Out" speed="15" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
-    <edge id="A_down_depart" from="A_Throat_W_Out" to="A_West_Exit" speed="30" numLanes="1" allow="rail_urban rail_electric rail_fast"/>
+    <!-- A站出站 -->
+    <edge id="A_down_out_1" from="A_p1_W" to="A_Throat_W_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_down_out_2" from="A_p2_W" to="A_Throat_W_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_down_out_3" from="A_p3_W" to="A_Throat_W_Out" speed="20" numLanes="1" allow="rail"/>
+    <edge id="A_down_depart" from="A_Throat_W_Out" to="A_West_Exit" speed="30" numLanes="1" allow="rail"/>
 </edges>
