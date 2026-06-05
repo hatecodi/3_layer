@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 
-OBS_DIM = 74
+DEFAULT_OBS_DIM = 74  # fallback for backward compat
 DEFAULT_ACTION_DIM = 45
 GLOBAL_STATE_DIM = 14
 
@@ -27,20 +27,22 @@ def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
 class MaskedActor(nn.Module):
     def __init__(
         self,
-        obs_dim: int = OBS_DIM,
+        obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
         hidden_dim: int = 128,
     ):
         super().__init__()
         self.action_dim = action_dim
+        self.norm = nn.LayerNorm(obs_dim)
         self.net = _mlp(obs_dim, hidden_dim, action_dim)
 
     def logits(self, obs: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        obs = self.norm(obs)
         logits = self.net(obs)
         if mask is None:
             return logits
         mask = mask.to(dtype=torch.bool, device=logits.device)
-        return logits.masked_fill(~mask, -1e9)
+        return logits.masked_fill(~mask, float("-inf"))
 
     def dist(self, obs: torch.Tensor, mask: torch.Tensor | None = None) -> Categorical:
         return Categorical(logits=self.logits(obs, mask))
@@ -49,16 +51,17 @@ class MaskedActor(nn.Module):
 class LocalCritic(nn.Module):
     def __init__(
         self,
-        obs_dim: int = OBS_DIM,
+        obs_dim: int = DEFAULT_OBS_DIM,
         k_local: int = 3,
         hidden_dim: int = 128,
     ):
         super().__init__()
         self.input_dim = (k_local + 1) * obs_dim
+        self.norm = nn.LayerNorm(self.input_dim)
         self.net = _mlp(self.input_dim, hidden_dim, 1)
 
     def forward(self, local_group_obs: torch.Tensor) -> torch.Tensor:
-        return self.net(local_group_obs).squeeze(-1)
+        return self.net(self.norm(local_group_obs)).squeeze(-1)
 
 
 class GlobalCritic(nn.Module):
@@ -68,10 +71,11 @@ class GlobalCritic(nn.Module):
         hidden_dim: int = 128,
     ):
         super().__init__()
+        self.norm = nn.LayerNorm(global_state_dim)
         self.net = _mlp(global_state_dim, hidden_dim, 1)
 
     def forward(self, global_state: torch.Tensor) -> torch.Tensor:
-        return self.net(global_state).squeeze(-1)
+        return self.net(self.norm(global_state)).squeeze(-1)
 
 
 @dataclass
@@ -86,7 +90,7 @@ class ActorCriticOutput:
 class Layer2ActorCritic(nn.Module):
     def __init__(
         self,
-        obs_dim: int = OBS_DIM,
+        obs_dim: int = DEFAULT_OBS_DIM,
         action_dim: int = DEFAULT_ACTION_DIM,
         k_local: int = 3,
         global_state_dim: int = GLOBAL_STATE_DIM,
@@ -136,17 +140,17 @@ def compact_global_state(metrics: dict) -> List[float]:
     """Build the 14-dim global critic input from metrics."""
     return [
         float(metrics.get("n_active", 0)),
-        float(metrics.get("mean_delay", 0.0)),
-        float(metrics.get("max_delay", 0.0)),
+        float(metrics.get("mean_dep_delay", 0.0)),
+        float(metrics.get("mean_arr_delay", 0.0)),
         float(metrics.get("unresolved_conflicts", 0)),
         float(metrics.get("n_granted", 0)),
         float(metrics.get("n_held", 0)),
-        float(metrics.get("total_delay", 0.0)),
+        float(metrics.get("total_dep_delay", 0.0)),
         float(metrics.get("deadlock_flag", 0)),
         float(metrics.get("completion_rate", 0.0)),
         float(metrics.get("hard_bound_infeasible_count", 0)),
-        0.0,
-        0.0,
+        float(metrics.get("ontime_rate", 0.0)),
+        float(metrics.get("n_ontime_dep", 0)),
         0.0,
         0.0,
     ]

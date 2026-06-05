@@ -240,6 +240,7 @@ def resolve_all(
     candidate_platforms: Dict[str, List[str]],
     rebuild_fn: RebuildFn,
     min_gap: float = 5.0,
+    parked_windows: Dict[str, Tuple[float, float]] | None = None,
 ) -> List[GrantResult]:
     """Batch-resolve all requests.
 
@@ -252,6 +253,10 @@ def resolve_all(
     Returns ordered list of GrantResult (same length as requests).
     """
     calendar = ResourceCalendar(min_gap)
+    # Pre-book parked trains (K-type occupying platforms at B, C)
+    if parked_windows:
+        for rid, (s, e) in parked_windows.items():
+            calendar.book(rid, "PARKED", s, e)
     results: Dict[str, GrantResult] = {}
     sorted_reqs = sorted(requests, key=_resolve_score)
 

@@ -2,8 +2,8 @@
 Phase 1: Scenario configuration loader and cross-file consistency validator.
 
 Loads and validates:
-  - configs/railway_resources.yaml   → physical infrastructure
-  - configs/timetable_layer1.yaml    → train schedule + Layer1 bounds
+  - configs/{scenario}/railway_resources.yaml   → physical infrastructure
+  - configs/{scenario}/timetable.yaml            → train schedule + Layer1 bounds
   - sumo/routes/base.rou.xml         → SUMO vehicle definitions
 
 Validation rules (per coding_plan Phase 1):
@@ -418,29 +418,41 @@ def _validate(stations: Dict[str, StationConfig],
 # public API
 # ---------------------------------------------------------------------------
 
-def load_scenario(project_root: Optional[Path] = None) -> ScenarioConfig:
+def load_scenario(
+    project_root: Optional[Path] = None,
+    scenario_name: str = "two_station",
+) -> ScenarioConfig:
     """Load and validate all config files.  Raises ValidationError on failure.
 
     Args:
         project_root: root dir containing configs/ and sumo/.  Defaults to
                       two levels above this file (src/experiment -> project).
+        scenario_name: subdirectory under configs/ and sumo/ to load from
+                       (\"two_station\" or \"five_station\").
     """
     if project_root is None:
         project_root = Path(__file__).resolve().parent.parent.parent
 
-    resources_path = project_root / "configs" / "railway_resources.yaml"
-    timetable_path = project_root / "configs" / "timetable_layer1.yaml"
-    routes_path = project_root / "sumo" / "routes" / "base.rou.xml"
+    config_dir = project_root / "configs" / scenario_name
+    resources_path = config_dir / "railway_resources.yaml"
+    timetable_path = config_dir / "timetable.yaml"
 
-    for p in (resources_path, timetable_path, routes_path):
+    for p in (resources_path, timetable_path):
         if not p.exists():
             raise ValidationError(f"Config file not found: {p}")
 
     network, stations, corridors = _parse_resources(resources_path)
     trains, priority_map, time_gen = _parse_timetable(timetable_path)
-    sumo_routes, sumo_vehicles, sumo_vtypes = _parse_sumo_routes(routes_path)
 
-    errors = _validate(stations, corridors, trains, sumo_routes, sumo_vehicles)
+    # SUMO routes are optional (five-station env may not have them yet)
+    routes_path = project_root / "sumo" / scenario_name / "routes" / "base.rou.xml"
+    if routes_path.exists():
+        sumo_routes, sumo_vehicles, sumo_vtypes = _parse_sumo_routes(routes_path)
+        errors = _validate(stations, corridors, trains, sumo_routes, sumo_vehicles)
+    else:
+        sumo_routes, sumo_vehicles, sumo_vtypes = {}, {}, {}
+        errors = []
+
     if errors:
         raise ValidationError(
             "Scenario validation failed:\n  - " + "\n  - ".join(errors))

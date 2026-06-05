@@ -27,7 +27,7 @@ assumptions:
   - Corridor 1200m at 30m/s (~40s) + throat/platform at 15-20m/s (~50s) ≈ 90s one-way.
   - A dwell 60s, B dwell 30s, K641 special A 120s.
   - G5050 is pass-through (dwell=0 at both stations).
-  - dep_max = dep_plan + dwell_min + slack (120s).
+  - dep_max = dep_plan + dep_max_slack_sec (120s).
 
 trains:
   # ==================== UP: A -> B ====================
@@ -266,13 +266,14 @@ trains:
       B: [B_p1, B_p2, B_p3]
       A: [A_p1, A_p2, A_p3]
 
-  # ---- Step 0 conflict test train (comment to disable) ----
-  # K999: A->B p1, depart 120s (same as D133).
-  # Priority 3 vs D133 priority 1 -> K999 loses, gets fallback.
+  # ---- Disturbance train: delayed from upstream ----
+  # K999: A->B Z-class, priority 2.  Arrives at A with 60s upstream delay.
+  # Window [150,220] overlaps G5050 pass-through (arr=180) on same platform.
+  # Combined with corridor speed restriction, tests L2 re-scheduling.
   - id: K999
     direction: up
-    train_class: K
-    priority: 3
+    train_class: Z
+    priority: 2
     pass_through: false
     route:
       origin_station: A
@@ -280,19 +281,19 @@ trains:
       corridor: A_B_up
     planned:
       A:
-        arr: 60
-        dep: 120
+        arr: 150
+        dep: 220
       B:
-        arr: 210
-        dep: 240
+        arr: 310
+        dep: 340
     bounds:
       A:
-        arr_min: 60
-        dep_max: 240
-        dwell_min: 60
+        arr_min: 150
+        dep_max: 340
+        dwell_min: 70
       B:
-        arr_min: 210
-        dep_max: 360
+        arr_min: 310
+        dep_max: 460
         dwell_min: 30
     candidate_platforms:
       A: [A_p1, A_p2, A_p3]

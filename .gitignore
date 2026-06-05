@@ -17,6 +17,7 @@ sumo/output/
 *.sumocfg.bak
 
 # Training artifacts
+output/
 outputs/checkpoints/
 outputs/logs/
 outputs/eval_reports/

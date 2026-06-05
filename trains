@@ -1,86 +1,115 @@
-# Final version — 2026-05-24
-# All times verified: every train has ≥1 legal action, bounds check passed.
+# Five-Station Railway — Train Schedule Reference
+# Generated: 2026-06-04
 
-# ==========================================================================
-# Schedule (all times in simulation seconds)
-# ==========================================================================
+## Network
+# A ←1200m/90s→ B ←2400m/180s→ C ←1200m/90s→ D ←1200m/90s→ E
+# D station: 2 platforms (intentional bottleneck), dwell=15s
+# C station: 4 platforms, dwell=60s
 
-# A->B (up)
-# ───────────────
-# | Train | depart | arr_plan | dep_plan | Notes              |
-# | K641  | 0      | 90       | 120      | A站长停120s, K车    |
-# | D133  | 120    | 210      | 240      | 正常,D车            |
-# | G5050 | 180    | 270      | 270      | pass-through,G车    |
-# | K667  | 300    | 390      | 420      | 正常,K车            |
-# ───────────────
+## Dwell defaults
+# A=60s, B=30s, C=60s, D=15s, E=30s
+# K641 special: A=120s (long dwell)
+# G5050: pass-through (all stations dwell=0)
 
-# B->A (down)
-# ───────────────
-# | Train | depart | arr_plan | dep_plan |
-# | G1408 | 90     | 180      | 240      |
-# | G5060 | 240    | 330      | 390      |
-# | Z386  | 360    | 450      | 510      |
-# | K1666 | 480    | 570      | 630      |
-# ───────────────
+## Train dimensions (Layer 3 execution)
+# G=80m, D=100m, Z=140m, K=160m
+# Platform=250m → all trains fit, but throat clearance time varies
+# Throat at 20m/s: G=4s, D=5s, Z=7s, K=8s
+# Currently THROAT_CLEARANCE_TIME fixed at 20s — needs per-train adjustment in L3
 
-# Conflict test train (comment to disable)
-# K999: A->B, depart 120, p1 — conflicts with D133, gets fallback.
+## Up trains (A → B → C → D → E)
 
-# ==========================================================================
-# Time generation parameters (for Layer 1 auto-expansion)
-# ==========================================================================
+### K641 (K-class, 160m, priority=3, stopping, special dwell=120s at A)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| A       |     -120 |        0 |   120 | 3 (A_p1-3) |
+| B       |       90 |      120 |    30 | 3 (B_p1-3) |
+| C       |      300 |      360 |    60 | 4 (C_p1-4) |
+| D       |      450 |      465 |    15 | 2 (D_p1-2) |
+| E       |      555 |      585 |    30 | 3 (E_p1-3) |
 
-# | Item             | Real    | Training | Notes                         |
-# | corridor runtime | 360s    | 90s      | 1200m corridor @30m/s + approaches |
-# | A dwell          | 600s    | 60s      |                               |
-# | B dwell          | 240s    | 30s      |                               |
-# | K641 special     | 1200s   | 120s     | A station long dwell           |
-# | headway          | 180s    | 60s      | minimum departure interval     |
-# | dep_max_slack    | 1200s   | 120s     | dep_max = dep_plan + dwell + slack |
-# | corridor         | 5000m   | 1200m    |                               |
-# | platform         | 500m    | 250m     |                               |
-# | G length         | 200m    | 80m      |                               |
-# | D length         | 220m    | 100m     |                               |
-# | Z length         | 350m    | 140m     |                               |
-# | K length         | 400m    | 160m     |                               |
-# | episode          | 40000s  | < 900s   |                               |
+### D133 (D-class, 100m, priority=1, stopping)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| A       |       60 |      120 |    60 | 3 |
+| B       |      210 |      240 |    30 | 3 |
+| C       |      420 |      480 |    60 | 4 |
+| D       |      570 |      585 |    15 | 2 |
+| E       |      675 |      705 |    30 | 3 |
 
-# ==========================================================================
-# Layer 1 bounds per train (verified 2026-05-24)
-# ==========================================================================
+### G5050 (G-class, 80m, priority=1, pass-through)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| A       |      180 |      180 |     0 | 3 |
+| B       |      270 |      270 |     0 | 3 |
+| C       |      450 |      450 |     0 | 4 |
+| D       |      540 |      540 |     0 | 2 |
+| E       |      630 |      630 |     0 | 3 |
 
-# K641 (A->B, A站长停120s, priority 3)
-#   A: arr/dep=-120/0, arr_min=-120, dep_max=240, dwell_min=120
-#   B: arr/dep=90/120, arr_min=90, dep_max=240, dwell_min=30
+### K667 (K-class, 160m, priority=3, stopping)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| A       |      240 |      300 |    60 | 3 |
+| B       |      390 |      420 |    30 | 3 |
+| C       |      600 |      660 |    60 | 4 |
+| D       |      750 |      765 |    15 | 2 |
+| E       |      855 |      885 |    30 | 3 |
 
-# D133 (A->B, priority 1)
-#   A: arr/dep=60/120, arr_min=60, dep_max=240, dwell_min=60
-#   B: arr/dep=210/240, arr_min=210, dep_max=360, dwell_min=30
+### K999 (Z-class, 140m, priority=2, stopping, delayed from upstream)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| A       |      160 |      220 |    60 | 3 |
+| B       |      310 |      340 |    30 | 3 |
+| C       |      520 |      580 |    60 | 4 |
+| D       |      670 |      685 |    15 | 2 |
+| E       |      775 |      805 |    30 | 3 |
 
-# G5050 (A->B, pass-through, priority 1)
-#   A: arr/dep=180/180, arr_min=180, dep_max=300, dwell_min=0
-#   B: arr/dep=270/270, arr_min=270, dep_max=390, dwell_min=0
+## Down trains (E → D → C → B → A)
 
-# K667 (A->B, priority 3)
-#   A: arr/dep=240/300, arr_min=240, dep_max=420, dwell_min=60
-#   B: arr/dep=390/420, arr_min=390, dep_max=540, dwell_min=30
+### G1408 (G-class, 80m, priority=1, stopping)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| E       |       60 |       90 |    30 | 3 (E_p1-3) |
+| D       |      180 |      195 |    15 | 2 (D_p1-2) |
+| C       |      285 |      345 |    60 | 4 (C_p1-4) |
+| B       |      525 |      555 |    30 | 3 (B_p1-3) |
+| A       |      645 |      705 |    60 | 3 (A_p1-3) |
 
-# G1408 (B->A, priority 1)
-#   B: arr/dep=60/90, arr_min=60, dep_max=210, dwell_min=30
-#   A: arr/dep=180/240, arr_min=180, dep_max=360, dwell_min=60
+### G5060 (G-class, 80m, priority=1, stopping)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| E       |      210 |      240 |    30 | 3 |
+| D       |      330 |      345 |    15 | 2 |
+| C       |      435 |      495 |    60 | 4 |
+| B       |      675 |      705 |    30 | 3 |
+| A       |      795 |      855 |    60 | 3 |
 
-# G5060 (B->A, priority 1)
-#   B: arr/dep=210/240, arr_min=210, dep_max=360, dwell_min=30
-#   A: arr/dep=330/390, arr_min=330, dep_max=510, dwell_min=60
+### Z386 (Z-class, 140m, priority=2, stopping)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| E       |      330 |      360 |    30 | 3 |
+| D       |      450 |      465 |    15 | 2 |
+| C       |      555 |      615 |    60 | 4 |
+| B       |      795 |      825 |    30 | 3 |
+| A       |      915 |      975 |    60 | 3 |
 
-# Z386 (B->A, priority 2)
-#   B: arr/dep=330/360, arr_min=330, dep_max=480, dwell_min=30
-#   A: arr/dep=450/510, arr_min=450, dep_max=630, dwell_min=60
+### K1666 (K-class, 160m, priority=3, stopping)
+| Station | arr_plan | dep_plan | dwell | Platforms |
+|---------|----------|----------|-------|-----------|
+| E       |      450 |      480 |    30 | 3 |
+| D       |      570 |      585 |    15 | 2 |
+| C       |      675 |      735 |    60 | 4 |
+| B       |      915 |      945 |    30 | 3 |
+| A       |     1035 |     1095 |    60 | 3 |
 
-# K1666 (B->A, priority 3)
-#   B: arr/dep=450/480, arr_min=450, dep_max=600, dwell_min=30
-#   A: arr/dep=570/630, arr_min=570, dep_max=750, dwell_min=60
+## D station bottleneck
+# Conflicts:
+#   K641[450-465](P3) vs Z386[450-465](P2) — Z386 wins (priority 2 > 3)
+#   D133[570-585](P1) vs K1666[570-585](P3) — D133 wins (priority 1 > 3)
+#   G5050 pass-through at t=540 adds transient occupancy
 
-# K999 (A->B, conflict test, priority 3) — COMMENT to disable
-#   A: arr/dep=60/120, arr_min=60, dep_max=240, dwell_min=60
-#   B: arr/dep=210/240, arr_min=210, dep_max=360, dwell_min=30
+## Train length Layer 3 TODO
+# THROAT_CLEARANCE_TIME currently fixed at 20s for all trains.
+# Should be: train_length / throat_speed (20 m/s) + safety_margin.
+#   G(80m) → 4+2=6s, D(100m) → 5+2=7s, Z(140m) → 7+2=9s, K(160m) → 8+2=10s
+# This affects platform occupancy window calculations in Layer 3 execution.

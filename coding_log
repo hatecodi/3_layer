@@ -1,3 +1,365 @@
+[2026-06-04 23:00]
+Task: Port GPU_8_9 techniques — progressive delay penalty, LayerNorm critics, entropy schedule
+
+== P0: Dynamic progressive delay penalty ==
+  src/env/reward.py — dep_delay and arr_delay penalties now scale non-linearly:
+    penalty = 0.05 * delay * prio_weight * (1 + delay // 300)
+    Every 300s (5 min) of delay doubles the marginal cost.
+    100s delay: mult=1.0 → penalty=5.0
+    500s delay: mult=2.0 → penalty=50.0 (10× worse, not 5×)
+
+== P1: LayerNorm on critic inputs ==
+  src/marl/actor_critic.py — LocalCritic + GlobalCritic: LayerNorm before MLP.
+    GPU_8_9 uses BatchNorm1d(affine=False, track_running_stats=False) but their
+    critic only runs during update (batch≥256). Our critic runs during both
+    collection (batch=1) and update (batch=256). LayerNorm is batch-size agnostic
+    and handles heterogeneous input scales (seconds vs priorities vs bits).
+    LocalCritic: 230-dim input, LayerNorm(230) → _mlp(230, 128, 1)
+    GlobalCritic: 14-dim input, LayerNorm(14) → _mlp(14, 128, 1)
+
+== P2: Exploration entropy decay schedule ==
+  src/experiment/run_train.py — entropy_coef now decays linearly:
+    0.01 → 0.001 over first 30% of episodes, flat at 0.001 after.
+    More entropy-driven exploration early, more exploitation late.
+    HP: entropy_coef_start=0.01, entropy_coef_end=0.001
+
+Rationale: GPU_8_9 MADDPG project showed three techniques that directly apply:
+  progressive delay penalty prevents the policy from tolerating large delays;
+  input normalization stabilizes critic training with heterogeneous feature
+  scales; entropy scheduling gives more structured exploration.
+Status: DONE — ready to re-run training
+
+---
+[2026-06-04 22:30]
+Task: Fix reward flatness + reduce entropy for five-station MAPPO
+
+== Diagnosis ==
+  500-ep training: 97% steps have n_granted=1, mean_reward flat, no improvement.
+  Root cause is NOT the resolver (heuristic grants 5/5 at origin stations).
+  Root: +5.0 base bonus makes all granted actions look similar after PPO advantage
+  normalization. Policy has 24-60 legal actions at each step but can't distinguish
+  good from bad. Random exploration picks bad actions 75% of time (dwell+120,
+  plan+4 entry) → cascading delays downstream.
+
+== Fixes ==
+  src/env/reward.py: base bonus 5.0→0.0 (sharpen gradient), delay_coef 0.02→0.05,
+    held penalty -1.0→-3.0
+  src/experiment/run_train.py: entropy_coef 0.01→0.001 (exploit more, explore less)
+  Verified: dynamic bounds at intermediate stations give 24/45 legal actions
+    (vs 0 without the fix), confirming P1-3 works correctly.
+
+Rationale: PPO advantage normalization already subtracts mean, so +5.0 doesn't
+  help learning — it only adds noise. Sharper delay penalty gives clearer gradient
+  toward "earliest entry, min dwell". Lower entropy prevents policy from wasting
+  exploration budget on obviously bad actions.
+Status: DONE — ready to re-run training
+
+---
+[2026-06-04 18:30]
+Task: Fix five-station env blocking bugs + MAPPO critic training/collection mismatch
+
+== P0-1: reset() info missing active_train_ids + requests ==
+  src/env/five_station_env.py — reset() info added: active_train_ids, requests,
+    default metrics (n_active, n_granted, n_held, mean_dep_delay, mean_arr_delay).
+    Previously reset info lacked these keys, causing first step to use heuristic
+    (empty action_dict) and critic_input to have no conflict_graph.
+
+== P0-2: Removed duplicate time jump, restructured step() ==
+  src/env/five_station_env.py — step() method restructured:
+    rewards/metrics (step 6) → time advance (step 7, unified single block)
+    → deadlock detection (step 8, based on final state)
+    → observation (step 9, reflects new t_now).
+    Previously: first jump (248-255) duplicated second jump (293-306),
+    adding +10s penalty per station. Deadlock used stale pre-jump granted_ids.
+
+== P1-3: Intermediate station dep_max too tight ==
+  src/env/five_station_env.py — _get_effective_bounds now accepts t_now, uses
+    ref_time = max(actual_arrival, t_now) for dep_max calculation.
+    Physical overhead uses TRAVEL_TIME_TO_THROAT + 2*THROAT_CLEARANCE_TIME
+    instead of magic number 70. Callers updated to pass self._t_now.
+
+== P1-4: MAPPO critic training/collection mismatch (ROOT CAUSE of no convergence) ==
+  src/marl/rollout_buffer.py — AgentTransition: +global_state [14], +local_group_obs
+    [critic_input_dim]; collate_transitions batches both new fields.
+  src/marl/mappo.py — update() uses batch["global_states"] instead of torch.zeros(),
+    batch["local_group_obs"] instead of padded obs. Previous: GlobalCritic trained on
+    all-zero inputs, LocalCritic trained on zero-padded obs (not real neighbor obs).
+  src/experiment/run_train.py — AgentTransition creation stores real gs_vec and
+    group_obs[agent_id] from collection context.
+
+== P2-5: _neighbor_block hardcoded priority 3.0 ==
+  src/env/observation_builder.py — replaced hardcoded 3.0 with float(r.priority);
+    added conflict_flag (in_conflict) as 5th neighbor field. 8-dim neighbor block
+    now matches V4 spec: [t_plat, t_dwell, t_out, prio, conflict, delay, speed, same_plat].
+
+== Verified ==
+  two_station heuristic: OK
+  five_station heuristic: 35 steps, 9/9 complete ✓
+  All imports: five_station_env, rollout_buffer, mappo, run_train ✓
+
+Rationale: Five-station MAPPO training was not converging because both critics
+  received garbage inputs during PPO updates. Global critic trained on zeros → constant
+  output. Local critic trained on zero-padded obs (not real neighbor observations) →
+  distribution mismatch with collection. Combined with env bugs (duplicate time jump,
+  tight intermediate bounds, missing reset info), training never improved.
+Status: DONE
+
+---
+[2026-06-04]
+Task: Config-driven observation dimension + action mask padding fix + training diagnostics
+
+== Five-station MAPPO training analysis (2000 episodes, no convergence) ==
+  mean_reward: -31.89 (vs heuristic ~-30.03) — MAPPO worse than heuristic
+  mean_dep_delay: 550s (vs heuristic 340s) — 60% worse
+  mean_arr_delay: 504s (vs heuristic 320s) — 58% worse
+  No improvement trend: first 200 reward=-31.34, last 200 reward=-31.29
+  Root cause: observation truncated to 74-dim (6 platforms, 8 conflict groups),
+    but five-station has 15 platforms + 40 conflict groups → most resource state
+    invisible to policy. Also action mask not padded to model dim.
+
+== Observation builder — config-driven rewrite ==
+  src/env/observation_builder.py:
+    OBS_DIM no longer hardcoded. compute_obs_dim(cfg) computes from config:
+      OBS_DIM = SELF(14) + NEIGHBOR(8×5) + VALIDITY(5) + RESOURCE
+      RESOURCE = total_platforms + scoped_conflict_groups + 1
+    Two-station:  6+8+1=15  → OBS_DIM=74 (matches V4 spec)
+    Five-station: 15+40+1=56 → OBS_DIM=115
+    _resource_state: no truncation (removed occupied[:6], busy[:8])
+    Conflict groups now station-scoped: "{sid}/{group}" (e.g. "A/A_up_in_g1")
+      — globally unique, no accidental dedup across stations
+    Added helper: _grant_is_at_station(), _grant_uses_scoped_group()
+    Cached get_obs_dim(cfg) for modules that need dimension before config loaded
+
+== Actor-critic + training — dynamic dimensions ==
+  src/marl/actor_critic.py:
+    OBS_DIM=74 → DEFAULT_OBS_DIM=74 (fallback only)
+  src/marl/mappo.py:
+    collect_step: pad action mask to model's action_dim (fixes RuntimeError
+      when station-specific action count ≠ fixed model dim)
+  src/experiment/run_train.py:
+    train() accepts obs_dim + action_dim parameters
+    main() auto-computes both from scenario config per --env flag
+    Two-station: obs_dim=74,  action_dim=45
+    Five-station: obs_dim=115, action_dim=60
+  scripts/two_station/verify_phase4_mappo.py:
+    Updated to use get_obs_dim(load_scenario("two_station"))
+
+== Verified ==
+  Two-station MAPPO: obs_dim=74, action_dim=45 ✓
+  Five-station MAPPO: obs_dim=115, action_dim=60 ✓
+  Five-station heuristic: 31 steps, 9/9 complete ✓
+
+---
+[2026-06-04]
+Task: Project refactoring — separate two-station/five-station envs, decouple training, fix multi-station bugs
+
+== Project structure refactoring ==
+  configs/ → configs/two_station/ + configs/five_station/
+  src/env/sumo_env.py → src/env/two_station_env.py (class RailwaySumoEnv → TwoStationEnv)
+  multistation/multistation_env.py → src/env/five_station_env.py (class MultistationEnv → FiveStationEnv)
+  multistation/ deleted — all code merged into src/
+  scripts/ → scripts/two_station/ + scripts/five_station/
+  sumo/ → sumo/two_station/ + sumo/five_station/
+  tests/ → tests/two_station/ + tests/five_station/
+  output/ → output/two_station/ + output/five_station/
+
+  NEW: src/common/base_env.py — BaseRailwayEnv ABC (reset, step, pending_trains, last_requests)
+  NEW: src/sumo/ — reserved for future TraCI connector
+
+== Shared modules — multi-station fixes ==
+  src/env/reward.py:
+    compute_metrics / compute_layered_rewards / compute_rewards:
+      + station_map: Optional[Dict[str, str]] parameter
+      When provided, delay computed relative to the train's current station
+      instead of origin_station (critical for multi-station accuracy)
+  src/env/observation_builder.py:
+    build_observations: + station_map parameter
+    _resource_state / _grant_uses_conflict_group: use station_map instead of
+      hardcoded train.origin_station for resource lookup
+    Added _station_for() helper — falls back to origin_station when map is None
+  src/experiment/scenario_loader.py:
+    load_scenario: + scenario_name param ("two_station"/"five_station")
+    Config paths: configs/{scenario}/railway_resources.yaml + timetable.yaml
+    SUMO routes made optional (five_station has no valid routes yet)
+
+== Training decoupling ==
+  src/experiment/run_train.py:
+    train(): accepts env_factory: Callable[[int], BaseRailwayEnv] + action_dim
+    _build_critic_inputs: uses info["requests"] instead of env._last_requests
+    main(): --env flag → builds correct env_factory + action_dim per env
+    CSV output: training_metrics.csv auto-generated (primary data for plotting)
+    Output dir: output/{env}/{timestamp}/ (timestamped per run)
+  src/marl/mappo.py:
+    collect_step: pad action mask to model's action_dim before sampling
+    (fixes RuntimeError when station action count ≠ model dim)
+
+== Five-station env fixes ==
+  src/env/five_station_env.py:
+    _apply_corridor_delays: dynamic corridor_id per leg (was always A_B_up)
+      → f"{cur}_{nxt}_{train.direction}"
+    grant_station captured BEFORE _advance_trains (reward metrics accuracy)
+    _journey_station_map() helper — train_id → current_station
+    build_observations called with station_map in reset() and step()
+    _last_requests initialized in __init__ and reset()
+    Fixed NameError in _apply_corridor_delays (stale 'direction' variable)
+
+== Workflow rules added ==
+  CSV-first: training/experiment results → CSV first, then plot from CSV
+  README maintenance: update README.md after major structural/API changes
+  memory/MEMORY.md: index updated
+
+== Results verified ==
+  two_station heuristic: 100 episodes, 100% success ✓
+  five_station heuristic: 31 steps, 9/9 trains complete ✓
+  two_station MAPPO training: runs cleanly ✓
+  five_station MAPPO training: runs cleanly (28-32 steps, success) ✓
+  All imports verified clean ✓
+
+---
+[2026-06-03 23:59]
+Task: Phase 3 completion + Phase 4 MAPPO + Multi-station 5-station expansion
+
+== Phase 3 收尾 ==
+  PARAMETERS.md — Chinese-English parameter glossary + 正点/晚点定义
+  configs/timetable_layer1.yaml — fixed assumptions comment: dep_max = dep_plan + dep_max_slack_sec
+  src/env/reward.py — Metrics split into total_dep_delay + total_arr_delay;
+    local reward now penalizes both departure and arrival delay
+  src/env/sumo_env.py — Full rewrite: multi-step scheduling episode with train
+    lifecycle, NOMINAL path, L2 activation, deadlock detection, episode termination
+    (SUCCESS/TRUNCATED/DEADLOCK). Rewards only for step-processed trains.
+  src/env/disturbance.py — Added DEADLOCK_THRESHOLD=15, CorridorDisturbance dataclass,
+    compute_corridor_delay()
+  scripts/verify_phase3_env.py — 66 acceptance tests
+  scripts/run_heuristic_baseline.py — heuristic baseline runner with metrics
+
+== K999 redesign + corridor disturbance ==
+  configs/timetable_layer1.yaml — K999: K→Z class, priority 3→2,
+    arr=150 dep=220, simulates delayed train from upstream, conflicts with G5050/K667
+  src/env/sumo_env.py — integrated CorridorDisturbance, initial_train_delays param
+  scripts/run_heuristic_baseline.py — updated with corridor + K999 delay support
+
+== Phase 4 MAPPO ==
+  src/marl/rollout_buffer.py — NEW: AgentTransition, RolloutBuffer,
+    independent GAE (local + global), collate_transitions
+  src/marl/mappo.py — NEW: MAPPOTrainer, V4 dual-critic loss-level fusion:
+    A_combined = A_local + lam_team * A_global, curriculum_lambda 0.05→0.30
+  src/experiment/run_train.py — NEW: training script with checkpointing, JSON metrics
+  src/marl/actor_critic.py — mask fill: -1e9 → float('-inf'),
+    LocalCritic K_local=3 → 296-dim
+  scripts/verify_phase4_mappo.py — 128 acceptance tests, all 9 criteria passed
+
+  Training result: 500 episodes, reward oscillates between discrete values (2.47-3.56).
+  Root cause: single-step scheduling is a bandit problem, not an MDP.
+  MAPPO cannot learn meaningful state→action mapping with 1-step episodes.
+
+== Multi-station expansion (5 stations A-B-C-D-E) ==
+  multistation/configs/railway_resources.yaml — 5 stations:
+    A(3p), B(3p), C(4p), D(2p bottleneck), E(3p)
+    Corridors: AB=90s, BC=180s, CD=90s, DE=90s; D dwell=15s
+  multistation/configs/timetable.yaml — auto-generated from distance/speed ratios,
+    9 trains × 5 stations, dep_max accounts for physical feasibility
+  multistation/multistation_env.py — Multi-station scheduling env:
+    TrainJourney state machine, arrival time tracking, time jump on transit,
+    dynamic bounds for intermediate stations, D bottleneck creates real conflicts
+  src/control/action_mask.py — added bounds_override parameter to
+    is_legal_action, derive_schedule, compute_joint_action_mask, heuristic_action
+    (needed because intermediate station bounds differ from precomputed timetable)
+  multistation/scripts/run_heuristic.py — heuristic baseline runner for 5-station
+  multistation/scripts/visualize.py — text-based network visualization
+  multistation/scripts/plot_timetable.py — matplotlib train running chart:
+    planned (dashed) vs actual (solid), delay bars, cumulative delay,
+    station dwell comparison, D bottleneck detail
+  multistation/output/heuristic_running_chart.png — running chart output
+  multistation/output/station_D_detail.png — D station zoom
+
+  Heuristic baseline: 31 steps, 9/9 trains complete, total delay=4505s,
+    avg delay=125s/decision. Key finding: heuristic always picks first platform (p1),
+    D_p1 handles 8 trains while D_p2 only 1 → MAPPO can optimize load balancing.
+
+== SUMO network generation (partial) ==
+  multistation/scripts/generate_sumo_network.py — generates .nod.xml, .edg.xml,
+    .rou.xml, .sumocfg for 5-station SUMO simulation
+  multistation/sumo/net/five_station.net.xml — netconvert succeeded,
+    120 edges, 13500m total, but bidirectional track sharing causes sequential
+    train operation (needs separate node pairs for up/down corridors)
+  Status: deferred — SUMO visualization needs track topology fix
+
+== Key architectural insight ==
+  Single-station MAPPO cannot learn because episodes have 1 step → bandit problem.
+  Multi-station creates proper MDP: scheduling at station N → corridor transit →
+  state at station N+1 depends on prior decisions. D station (2 platforms) + C
+  station (converging from both directions) produce rich conflict dynamics.
+
+Rationale: Complete Phase 3-4 per V4 spec, then expand to 5-station multi-station
+  network as training environment for meaningful MAPPO learning.
+Status: Phase 3-4 DONE, Multi-station env ready, MAPPO training pending
+
+Files:
+  src/marl/rollout_buffer.py — NEW: AgentTransition, RolloutBuffer, GAE independent
+    computation for local/global, collate_transitions for batching
+  src/marl/mappo.py — NEW: MAPPOTrainer with V4 dual-critic architecture:
+    A_combined = A_local + lam_team * A_global (policy loss only, no advantage fusion);
+    L_V = MSE(V_local) + lam_team * MSE(V_global); curriculum_lambda 0.05→0.30
+  src/experiment/run_train.py — NEW: training script with corridor disturbance +
+    K999 initial delay, checkpoint saving, JSON metrics export
+  src/marl/actor_critic.py — fixed mask fill: -1e9 → float("-inf") for correct
+    isinf detection; K_local=3 → 296-dim LocalCritic input
+  scripts/verify_phase4_mappo.py — NEW: 128 acceptance tests covering 9 criteria
+Also:
+  configs/timetable_layer1.yaml — K999 redesigned: Z-class priority=2, arr=150 dep=220,
+    simulates delayed train from upstream, conflicts with G5050 and K667
+  src/env/disturbance.py — added CorridorDisturbance (speed restriction on corridor
+    during time window) + compute_corridor_delay()
+  src/env/sumo_env.py — integrated corridor disturbance, initial_train_delays param,
+    corridor_delays in info dict; reward only for step-processed trains
+  scripts/run_heuristic_baseline.py — updated for corridor + K999 delay
+  scripts/verify_phase3_env.py — 74 acceptance tests
+Rationale: coding_plan Step 4 + V4 Phase 4. The dual-critic architecture preserves
+  MAPPO stability while injecting global efficiency signal. K999 and corridor
+  disturbance create meaningful scheduling conflicts for L2 to learn.
+Verification: 128/128 passed (verify_phase4_mappo.py), 50-episode training completes
+Status: DONE
+
+---
+
+[2026-06-03 21:30]
+Task: Implement disturbance, observation, reward, env L2 loop (Phase 3 completion)
+Files:
+  src/env/sumo_env.py — Full rewrite: multi-step scheduling episode with train
+    lifecycle management. Added EpisodeStatus enum (RUNNING/SUCCESS/TRUNCATED/
+    DEADLOCK), pending/scheduled train tracking, deadlock counter, NOMINAL path
+    (trains follow timetable directly without policy), L2 ACTIVE path (policy
+    action → mask → request → resolve), episode termination on SUCCESS/all-done,
+    TRUNCATED/timeout (>900s), or DEADLOCK (≥15 consecutive no-grant steps).
+    Removed old single-step max_steps=1 skeleton.
+  src/env/disturbance.py — Added DEADLOCK_THRESHOLD = 15 (V4 spec)
+Rationale: Phase 3 completion per coding_plan. The env now has proper multi-step
+  L2 scheduling loop. Verified: 9-train NOMINAL episode → 2-step SUCCESS;
+  100% disturbance triggers all-ACTIVE with 9-24 legal actions per train.
+Status: DONE
+
+---
+
+[2026-06-03 21:00]
+Task: Add arrival punctuality (正点/晚点) to reward and metrics
+Files:
+  src/env/reward.py — Metrics: split total_delay into total_dep_delay + total_arr_delay;
+    added mean_dep_delay, mean_arr_delay, max_dep_delay, max_arr_delay;
+    compute_metrics calculates arrival delay (max(0, t_in_start - t_arr_plan));
+    compute_layered_rewards: local reward now penalises both dep_delay and arr_delay
+    (each weighted by prio_weight); global reward includes total_arr_delay term
+  src/marl/actor_critic.py — compact_global_state: updated dict keys to match new
+    Metrics field names (mean_dep_delay, mean_arr_delay, total_dep_delay)
+  configs/timetable_layer1.yaml — fixed assumptions comment:
+    dep_max = dep_plan + dep_max_slack_sec (was incorrectly: + dwell_min + slack)
+  PARAMETERS.md — new reference file: Chinese-English parameter glossary +
+    正点/晚点 definitions (departure and arrival)
+Rationale: User defined punctuality rules: departure on-time = t_dep_plan,
+  arrival on-time = t_arr_plan. Previously only departure delay was tracked.
+Status: DONE
+
+---
+
 [2026-06-03 20:30]
 Task: Set up coding workflow discipline (skill + hooks + CLAUDE.md update)
 Files:
@@ -96,3 +458,66 @@ Status: DONE
   - All trains: planned/bounds verified, every train has ≥1 legal action
   - K999 active (comment - id: K999 to disable)
   - time_generation: corridor_runtime=90s, dep_max_slack=120s, headway=60s
+
+---
+[2026-06-07 17:40]
+Task: Real timetable + Actor LayerNorm + Parked trains + Deadlock threshold
+
+== New timetable (configs/five_station/timetable.yaml) ==
+  Replaced auto-generated timetable with real compressed schedule:
+  - 9 trains on 5-station corridor (A:???, B:???, C:???, D:???, E:???)
+  - Time compression: real seconds / 25 = sim seconds, base 15:00 = t=0
+  - Corridors: A-B=90s, B-C=90s, C-D=180s, D-E=180s (sim seconds)
+  - Priority: P1=Fuxing (G1380,G1616,G7629), P2=Hexie, P3=K
+  - UP (A->E): G1380, G230, G1616, G238, K834 (3 full, 2 partial)
+  - DOWN (E->A): G7629, G2245, G1487, K1185 (0 full, 4 partial)
+  - G230 skips C; G238 skips B,C (pass-through)
+  - Partial trains: K834 enters at C, G1487 enters at C, K1185 enters at B
+  - Partial trains: G238 exits at D, G7629 exits at D, G2245 terminates at D
+  - Partial station handling: arr=dep=0 before origin, arr=dep=instant after dest
+  - Departure spacing at A: 31,53,65,79s -> tight bunching creates L2 conflicts
+
+== Actor LayerNorm (src/marl/actor_critic.py) ==
+  MaskedActor: added nn.LayerNorm(obs_dim) before MLP.
+    Observation features span 4 orders of magnitude (t_now~0-1500 vs
+    platform_occupied~0/1). Without normalization, timestamp features
+    dominate gradient 1000x over resource state, making policy blind
+    to platform occupancy and conflict group status.
+    LayerNorm equalizes all feature contributions.
+    Critic already had LayerNorm from P1-3 patch; actor now matches.
+
+== Parked trains (src/env/five_station_env.py) ==
+  New mechanism: _generate_parked_trains() creates random K-type trains
+  parked at stations B and C, physically occupying platforms in the
+  resource calendar via parked_windows parameter in resolve_all().
+    - Probability: 0.4 per target station (B, C)
+    - Duration: 300-900s (random uniform)
+    - Type: K (lower priority, long dwell)
+    - Effect: reduces available platforms at B(3->2) and C(4->3),
+      creating persistent bottlenecks that force L2 to make trade-off
+      decisions throughout the episode.
+  src/control/resource_manager.py: resolve_all() accepts optional
+    parked_windows dict, pre-books them into ResourceCalendar before
+    processing train requests.
+  Rationale: real timetable is conflict-free by design. Without
+  external perturbations, conflicts only occur at origin station (t=0)
+  and when corridor disturbances cascade. Parked trains create sustained
+  platform scarcity, giving MAPPO repeated opportunities to learn
+  conflict resolution patterns.
+
+== Deadlock threshold (src/env/disturbance.py) ==
+  DEADLOCK_THRESHOLD: 15 -> 25. New timetable's tighter spacing at A
+  (22-14s between departures) caused 5.35% deadlock rate in training.
+  Higher threshold gives resolver more steps to find fallbacks before
+  declaring deadlock.
+
+== Training results (2000ep, new timetable + LayerNorm, no parked) ==
+  Reward: -276 -> -253 (8.5% improvement)
+  Dep delay: 584s -> 488s (16% improvement)
+  Deadlock: 107/2000 (5.35%)
+  Conclusion: actor normalization helps (16% delay reduction vs flat
+    results on old timetable), but deadlock rate is too high and learning
+    speed is too slow. Parked trains expected to improve both metrics
+    by increasing conflict density.
+
+Status: DONE - ready to re-run training with parked trains

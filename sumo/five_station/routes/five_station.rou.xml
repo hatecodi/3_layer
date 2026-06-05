@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<routes>
+    <vType id="G" vClass="rail" length="80" maxSpeed="83.3" accel="1.0" decel="1.5" sigma="0.3" minGap="5" color="1,0,0" guiShape="rail" />
+    <vType id="D" vClass="rail" length="100" maxSpeed="69.4" accel="1.0" decel="1.5" sigma="0.3" minGap="5" color="0,0,1" guiShape="rail" />
+    <vType id="Z" vClass="rail" length="140" maxSpeed="55.6" accel="1.0" decel="1.5" sigma="0.3" minGap="5" color="0,1,0" guiShape="rail" />
+    <vType id="K" vClass="rail" length="160" maxSpeed="44.4" accel="1.0" decel="1.5" sigma="0.3" minGap="5" color="1,0.5,0" guiShape="rail" />
+    <route id="up_p1" edges="A_up_approach A_up_in_1 A_p1_up A_up_out_1 A_up_depart B_up_in_1 B_p1_up B_up_out_1 B_up_depart C_up_in_1 C_p1_up C_up_out_1 C_up_depart D_up_in_1 D_p1_up D_up_out_1 D_up_depart E_up_in_1 E_p1_up E_up_out_1 E_up_depart" />
+    <route id="up_p1_d2" edges="A_up_approach A_up_in_1 A_p1_up A_up_out_1 A_up_depart B_up_in_1 B_p1_up B_up_out_1 B_up_depart C_up_in_1 C_p1_up C_up_out_1 C_up_depart D_up_in_1 D_p1_up D_up_out_1 D_up_depart E_up_in_1 E_p1_up E_up_out_1 E_up_depart" />
+    <route id="down_p1" edges="E_down_approach E_down_in_1 E_p1_down E_down_out_1 E_down_depart D_down_in_1 D_p1_down D_down_out_1 D_down_depart C_down_in_1 C_p1_down C_down_out_1 C_down_depart B_down_in_1 B_p1_down B_down_out_1 B_down_depart A_down_in_1 A_p1_down A_down_out_1 A_down_depart" />
+    <route id="up_p2" edges="A_up_approach A_up_in_2 A_p2_up A_up_out_2 A_up_depart B_up_in_2 B_p2_up B_up_out_2 B_up_depart C_up_in_2 C_p2_up C_up_out_2 C_up_depart D_up_in_2 D_p2_up D_up_out_2 D_up_depart E_up_in_2 E_p2_up E_up_out_2 E_up_depart" />
+    <route id="up_p2_d2" edges="A_up_approach A_up_in_2 A_p2_up A_up_out_2 A_up_depart B_up_in_2 B_p2_up B_up_out_2 B_up_depart C_up_in_2 C_p2_up C_up_out_2 C_up_depart D_up_in_2 D_p2_up D_up_out_2 D_up_depart E_up_in_2 E_p2_up E_up_out_2 E_up_depart" />
+    <route id="down_p2" edges="E_down_approach E_down_in_2 E_p2_down E_down_out_2 E_down_depart D_down_in_2 D_p2_down D_down_out_2 D_down_depart C_down_in_2 C_p2_down C_down_out_2 C_down_depart B_down_in_2 B_p2_down B_down_out_2 B_down_depart A_down_in_2 A_p2_down A_down_out_2 A_down_depart" />
+    <route id="up_p3" edges="A_up_approach A_up_in_3 A_p3_up A_up_out_3 A_up_depart B_up_in_3 B_p3_up B_up_out_3 B_up_depart C_up_in_3 C_p3_up C_up_out_3 C_up_depart D_up_in_2 D_p2_up D_up_out_2 D_up_depart E_up_in_3 E_p3_up E_up_out_3 E_up_depart" />
+    <route id="down_p3" edges="E_down_approach E_down_in_3 E_p3_down E_down_out_3 E_down_depart D_down_in_2 D_p2_down D_down_out_2 D_down_depart C_down_in_3 C_p3_down C_down_out_3 C_down_depart B_down_in_3 B_p3_down B_down_out_3 B_down_depart A_down_in_3 A_p3_down A_down_out_3 A_down_depart" />
+    <vehicle id="K641" type="K" route="up_p3" depart="0" departLane="best" departSpeed="max" />
+    <vehicle id="G1408" type="G" route="down_p2" depart="90" departLane="best" departSpeed="max" />
+    <vehicle id="D133" type="D" route="up_p1" depart="120" departLane="best" departSpeed="max" />
+    <vehicle id="G5050" type="G" route="up_p2" depart="180" departLane="best" departSpeed="max" />
+    <vehicle id="K999" type="Z" route="up_p2" depart="220" departLane="best" departSpeed="max" />
+    <vehicle id="G5060" type="G" route="down_p3" depart="240" departLane="best" departSpeed="max" />
+    <vehicle id="K667" type="K" route="up_p2" depart="300" departLane="best" departSpeed="max" />
+    <vehicle id="Z386" type="Z" route="down_p1" depart="360" departLane="best" departSpeed="max" />
+    <vehicle id="K1666" type="K" route="down_p2" depart="480" departLane="best" departSpeed="max" />
+</routes>

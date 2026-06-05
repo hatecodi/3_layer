@@ -1,0 +1,615 @@
+"""Five-station (A-B-C-D-E) scheduling environment.
+
+Each train visits 5 stations (A→B→C→D→E or reverse). At each station,
+the train competes for platform and throat resources. After being granted,
+it transits to the next station via a corridor. Corridor disturbances may
+delay this transit, causing cascading conflicts downstream.
+
+Key difference from two-station: trains have state transitions between
+stations, creating a proper MDP where decisions at station N affect the
+state at station N+1.
+"""
+from __future__ import annotations
+
+import random
+from collections import defaultdict
+from dataclasses import asdict, dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from ..common.base_env import BaseRailwayEnv
+from ..control.action_mask import (
+    THROAT_CLEARANCE_TIME,
+    ActionSpec,
+    action_to_request,
+    compute_joint_action_mask,
+    heuristic_action,
+)
+from ..control.dispatch_bounds import DispatchBounds
+from ..control.resource_manager import (
+    GrantResult,
+    WindowRequest,
+    build_conflict_graph,
+    resolve_all,
+)
+from ..experiment.heuristic_planner import make_rebuild_fn
+from ..experiment.scenario_loader import ScenarioConfig, TrainBound
+from .disturbance import (
+    DEADLOCK_THRESHOLD,
+    ControlStatus,
+    CorridorDisturbance,
+    DisturbanceInjector,
+    TrainRuntimeState,
+    compute_corridor_delay,
+    layer2_control_status,
+)
+from .observation_builder import build_observations
+from .reward import compute_layered_rewards, compute_metrics
+
+# ---------------------------------------------------------------------------
+# Multi-station train tracking
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TrainJourney:
+    """Tracks a train's progress through its multi-station route."""
+    train_id: str
+    route: List[str]           # ordered list of station IDs
+    current_idx: int = 0       # index into route
+    arrival_at_current: float = 0.0  # sim time when train arrived at current station
+    corridor_runtime: float = 90.0   # normal corridor transit time (legacy)
+
+    @property
+    def current_station(self) -> str:
+        if self.is_done:
+            return ""
+        return self.route[self.current_idx]
+
+    @property
+    def next_station(self) -> str | None:
+        if self.current_idx + 1 < len(self.route):
+            return self.route[self.current_idx + 1]
+        return None
+
+    @property
+    def is_done(self) -> bool:
+        return self.current_idx >= len(self.route)
+
+    @property
+    def is_in_transit(self) -> bool:
+        """Train has been granted but hasn't arrived at next station yet."""
+        return self.arrival_at_current < 0  # negative means hasn't arrived
+
+    def set_arrival(self, t_arrival: float) -> None:
+        """Set arrival time at the next station after corridor transit."""
+        self.arrival_at_current = t_arrival
+
+    def advance(self) -> None:
+        """Move to next station. caller must set arrival_at_current afterward."""
+        self.current_idx += 1
+
+
+# ---------------------------------------------------------------------------
+# Episode status
+# ---------------------------------------------------------------------------
+
+MAX_EPISODE_TIME = 1500.0
+TRAVEL_TIME_TO_THROAT = 30.0
+
+
+class EpisodeStatus(Enum):
+    RUNNING = "running"
+    SUCCESS = "success"
+    TRUNCATED = "truncated"
+    DEADLOCK = "deadlock"
+
+
+# ---------------------------------------------------------------------------
+# Multi-station environment
+# ---------------------------------------------------------------------------
+
+class FiveStationEnv(BaseRailwayEnv):
+    def __init__(
+        self,
+        cfg: ScenarioConfig,
+        decision_interval_sec: float = 10.0,
+        disturbance_prob: float = 0.03,
+        corridor_disturbances: Optional[List[CorridorDisturbance]] = None,
+        initial_train_delays: Optional[Dict[str, float]] = None,
+        seed: Optional[int] = None,
+    ):
+        self.cfg = cfg
+        self.layer1 = DispatchBounds(cfg)
+        self.decision_interval_sec = decision_interval_sec
+        self.rng = random.Random(seed)
+        self.disturbance = DisturbanceInjector(
+            prob_per_step=disturbance_prob, rng=self.rng)
+        self.corridor_disturbances = corridor_disturbances or []
+        self.initial_train_delays = initial_train_delays or {}
+        self._force_policy = True  # training: all trains use policy
+        # Parked trains: K-type occupying platforms at B, C to create bottlenecks
+        self._parked_trains_enabled = True
+        self._parked_prob = 0.4  # probability per station B,C
+        self._parked_duration_min = 300
+        self._parked_duration_max = 900
+        self._parked_windows: Dict[str, Tuple[float, float]] = {}
+
+        # Build routes for each train
+        self._routes: Dict[str, List[str]] = {}
+        for tid, train in cfg.trains.items():
+            stops = self._get_train_route(train)
+            self._routes[tid] = stops
+
+        # State
+        self._t_now = 0.0
+        self._step_idx = 0
+        self._journeys: Dict[str, TrainJourney] = {}
+        self._states: Dict[str, TrainRuntimeState] = {}
+        self._deadlock_counter = 0
+        self._episode_status = EpisodeStatus.RUNNING
+        self._last_requests: List[WindowRequest] = []
+        self._last_grants: List[GrantResult] = []
+        self._last_held: List[str] = []
+        self._last_corridor_delays: Dict[str, float] = {}
+        self._completed_ids: List[str] = []
+
+    def _get_train_route(self, train) -> List[str]:
+        """Extract ordered station list for a train."""
+        # Route is derived from direction: up = A→E, down = E→A
+        if train.direction == "up":
+            return ["A", "B", "C", "D", "E"]
+        else:
+            return ["E", "D", "C", "B", "A"]
+
+    # ------------------------------------------------------------------
+    # Gym interface
+    # ------------------------------------------------------------------
+
+    def reset(self) -> Tuple[Dict[str, List[float]], Dict]:
+        self._t_now = 0.0
+        self._step_idx = 0
+        self._deadlock_counter = 0
+        self._episode_status = EpisodeStatus.RUNNING
+        self._completed_ids = []
+
+        all_ids = sorted(self.cfg.trains.keys())
+        self._states = {
+            tid: TrainRuntimeState(
+                train_id=tid,
+                delay_sec=self.initial_train_delays.get(tid, 0.0),
+            )
+            for tid in all_ids
+        }
+        self._journeys = {
+            tid: TrainJourney(train_id=tid, route=list(self._routes[tid]))
+            for tid in all_ids
+        }
+
+        self._last_requests = []
+        self._last_grants = []
+        self._last_held = []
+        self._last_corridor_delays = {}
+        # Generate parked trains for this episode (K-type at B, C)
+        self._parked_windows = self._generate_parked_trains()
+
+        # Inject initial disturbances
+        injected = self.disturbance.step(all_ids, self._states)
+        obs = build_observations(self.cfg, [], [], self._t_now,
+                                 station_map=self._journey_station_map())
+
+        pending = self._pending_trains()
+        info = {
+            "action_masks": self._action_masks(pending),
+            "pending": pending,
+            "completed": self._completed_ids,
+            "active_train_ids": pending,
+            "active_l2": self._active_l2_ids({}),
+            "control_status": self._control_status_snapshot({}),
+            "requests": self._last_requests,
+            "disturbances": injected,
+            "episode_status": self._episode_status.value,
+            "t_now": self._t_now,
+            "metrics": {
+                "n_active": len(pending),
+                "n_granted": 0, "n_held": 0,
+                "mean_dep_delay": 0.0, "mean_arr_delay": 0.0,
+                "total_dep_delay": 0.0,
+            },
+        }
+        return obs, info
+
+    def step(self, action_dict: Optional[Dict[str, int]] = None) -> Tuple:
+        if self._episode_status != EpisodeStatus.RUNNING:
+            raise RuntimeError("Episode terminated; call reset().")
+
+        action_dict = action_dict or {}
+        injected = self.disturbance.step(
+            [tid for tid in self._journeys if not self._journeys[tid].is_done],
+            self._states)
+
+        # 1. Build requests for all pending trains
+        requests, held, infeasible = self._build_requests(action_dict)
+        conflict_graph = build_conflict_graph(requests)
+
+        # 2. Resolve
+        grants = self._resolve_requests(requests)
+        granted_ids = {g.train_id for g in grants}
+        held.extend(r.train_id for r in requests if r.train_id not in granted_ids)
+        held = sorted(set(held))
+
+        # 3. Capture grant-time station before advancing (for reward metrics)
+        grant_station = {
+            g.train_id: self._journeys[g.train_id].current_station
+            for g in grants if not self._journeys[g.train_id].is_done
+        }
+
+        # 4. Compute corridor delays & advance trains
+        corridor_delays = self._apply_corridor_delays(grants)
+        newly_advanced = self._advance_trains(grants, corridor_delays)
+
+        # 5. Update states
+        for tid in granted_ids:
+            self._states[tid].pending_layer2_target = False
+            self._states[tid].held_steps = 0
+        for tid in held:
+            self._states[tid].held_steps += 1
+
+        # 5. Check completion
+        self._completed_ids = [
+            tid for tid, j in self._journeys.items() if j.is_done
+        ]
+
+        # 6. Rewards & metrics (based on this decision's outcome)
+        active_ids = self._active_l2_ids(conflict_graph)
+        unresolved = sum(len(v) for v in conflict_graph.values()) // 2
+        rewards = compute_layered_rewards(
+            self.cfg, grants, held,
+            active_train_ids=active_ids,
+            unresolved_conflicts=unresolved,
+            hard_bound_infeasible_count=infeasible,
+            station_map=grant_station,
+        )
+        metrics = compute_metrics(
+            self.cfg, grants, held,
+            active_train_ids=active_ids,
+            unresolved_conflicts=unresolved,
+            hard_bound_infeasible_count=infeasible,
+            station_map=grant_station,
+        )
+
+        # 7. Advance time (single unified block)
+        self._step_idx += 1
+        pending = self._pending_trains()
+        if len(pending) == 0 and not all(j.is_done for j in self._journeys.values()):
+            # All trains in transit — jump to next arrival
+            future_arrivals = [
+                j.arrival_at_current for j in self._journeys.values()
+                if not j.is_done and j.arrival_at_current > self._t_now
+            ]
+            if future_arrivals:
+                self._t_now = min(future_arrivals)
+            else:
+                self._t_now += self.decision_interval_sec
+        else:
+            self._t_now += self.decision_interval_sec
+
+        # 8. Deadlock detection (based on state after time advance)
+        self._deadlock_counter = (
+            self._deadlock_counter + 1
+            if len(pending) > 0 and len(granted_ids) == 0
+            else 0
+        )
+        if self._deadlock_counter >= DEADLOCK_THRESHOLD:
+            self._episode_status = EpisodeStatus.DEADLOCK
+        elif all(j.is_done for j in self._journeys.values()):
+            self._episode_status = EpisodeStatus.SUCCESS
+        elif self._t_now >= MAX_EPISODE_TIME:
+            self._episode_status = EpisodeStatus.TRUNCATED
+
+        # 9. Observation (reflects state at new t_now for next decision)
+        obs = build_observations(self.cfg, requests, grants, self._t_now,
+                                 station_map=self._journey_station_map())
+
+        self._last_requests = requests
+        self._last_grants = grants
+        self._last_held = held
+        self._last_corridor_delays = corridor_delays
+
+        terminated = self._episode_status in (EpisodeStatus.SUCCESS, EpisodeStatus.DEADLOCK)
+        truncated = self._episode_status == EpisodeStatus.TRUNCATED
+
+        info = {
+            "action_masks": self._action_masks(self._pending_trains()),
+            "requests": requests,
+            "active_train_ids": self._pending_trains(),
+            "pending": self._pending_trains(),
+            "completed": self._completed_ids,
+            "active_l2": self._active_l2_ids(conflict_graph),
+            "control_status": self._control_status_snapshot(conflict_graph),
+            "granted_windows": grants,
+            "held_train_ids": held,
+            "corridor_delays": corridor_delays,
+            "disturbances": injected,
+            "reward_breakdown": {tid: asdict(r) for tid, r in rewards.items()},
+            "metrics": asdict(metrics),
+            "episode_status": self._episode_status.value,
+            "deadlock_counter": self._deadlock_counter,
+            "t_now": self._t_now,
+        }
+        return (
+            obs,
+            {tid: reward.total for tid, reward in rewards.items()},
+            terminated,
+            truncated,
+            info,
+        )
+
+    # ------------------------------------------------------------------
+    # request building
+    # ------------------------------------------------------------------
+
+
+    def _generate_parked_trains(self) -> Dict[str, Tuple[float, float]]:
+        """Generate parked K-type trains at stations B and C.
+        
+        Returns a dict of {resource_id: (start_time, end_time)} windows
+        that pre-occupy platforms in the resource calendar.
+        """
+        parked: Dict[str, Tuple[float, float]] = {}
+        target_stations = ["B", "C"]
+        for st in target_stations:
+            if self.rng.random() >= self._parked_prob:
+                continue
+            station = self.cfg.stations[st]
+            # Pick a random platform
+            plat = self.rng.choice(station.platforms)
+            # Random duration within configured range
+            duration = self.rng.uniform(self._parked_duration_min, self._parked_duration_max)
+            start = self.rng.uniform(0, max(0, MAX_EPISODE_TIME - duration))
+            end = start + duration
+            resource_id = f"{st}/{plat.id}"
+            parked[resource_id] = (start, end)
+        return parked
+
+    def _pending_trains(self) -> List[str]:
+        """Trains that have arrived at current station and need scheduling."""
+        pending = []
+        for tid, j in self._journeys.items():
+            if j.is_done:
+                continue
+            if self._t_now >= j.arrival_at_current:
+                pending.append(tid)
+        return pending
+
+    def _build_requests(self, action_dict: Dict[str, int]) -> Tuple[
+        List[WindowRequest], List[str], int
+    ]:
+        requests: List[WindowRequest] = []
+        held: List[str] = []
+        infeasible = 0
+        empty_conflicts: Dict[str, set] = {}
+
+        for train_id in self._pending_trains():
+            if self._journeys[train_id].is_done:
+                continue
+
+            train = self.cfg.trains[train_id]
+            station_id = self._journeys[train_id].current_station
+            bounds = self._get_effective_bounds(train_id, station_id, self._t_now)
+            status = layer2_control_status(
+                self._states[train_id], bounds, empty_conflicts.get(train_id))
+
+            try:
+                if self._force_policy or status == ControlStatus.LAYER2_ACTIVE:
+                    action = self._policy_action(train_id, station_id, bounds, action_dict)
+                else:
+                    action = heuristic_action(
+                        train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT,
+                        self.cfg, bounds_override=bounds)
+            except ValueError:
+                held.append(train_id)
+                infeasible += 1
+                continue
+
+            request = action_to_request(
+                train, station_id, action, self._t_now,
+                TRAVEL_TIME_TO_THROAT,
+                current_delay=self._states[train_id].delay_sec,
+                cfg=self.cfg,
+            )
+            if request.W_in[0] < bounds.arr_min - 1e-6 or request.W_out[0] > bounds.dep_max + 1e-6:
+                held.append(train_id)
+                infeasible += 1
+                continue
+
+            requests.append(request)
+        return requests, held, infeasible
+
+    def _policy_action(self, train_id: str, station_id: str, bounds,
+                       action_dict: Dict[str, int]) -> Tuple:
+        train = self.cfg.trains[train_id]
+        mask_set = compute_joint_action_mask(
+            train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT, self.cfg,
+            bounds_override=bounds)
+        if mask_set.status == "NO_LEGAL_ACTION":
+            raise ValueError(f"No legal action for {train_id}")
+
+        idx = action_dict.get(train_id)
+        if idx is None:
+            return heuristic_action(
+                train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT,
+                self.cfg, bounds_override=bounds)
+        if idx < 0 or idx >= len(mask_set.actions) or not mask_set.mask[idx]:
+            raise ValueError(f"Invalid action for {train_id}")
+
+        spec: ActionSpec = mask_set.actions[idx]
+        return spec.platform, spec.entry_choice, spec.dwell_extend
+
+    # ------------------------------------------------------------------
+    # resolver + corridor
+    # ------------------------------------------------------------------
+
+    def _resolve_requests(self, requests: List[WindowRequest]) -> List[GrantResult]:
+        grants: List[GrantResult] = []
+        for station_id in sorted(self.cfg.stations):
+            st_reqs = [r for r in requests
+                       if self._journeys[r.train_id].current_station == station_id]
+            if st_reqs:
+                candidate_platforms = {
+                    tid: self.layer1.for_train(
+                        tid, self._journeys[tid].current_station).candidate_platforms
+                    for tid in [r.train_id for r in st_reqs]
+                }
+                grants.extend(resolve_all(
+                    st_reqs, candidate_platforms,
+                    make_rebuild_fn(self.layer1, station_id),
+                    parked_windows=self._parked_windows if self._parked_trains_enabled else None))
+        return grants
+
+    def _apply_corridor_delays(self, grants: List[GrantResult]) -> Dict[str, float]:
+        """Apply corridor disturbance delays to granted trains."""
+        delays: Dict[str, float] = {}
+        if not self.corridor_disturbances:
+            return delays
+
+        for g in grants:
+            train = self.cfg.trains[g.train_id]
+            journey = self._journeys[g.train_id]
+            if journey.next_station is None:
+                continue  # final station, no corridor
+
+            # Determine corridor for this leg
+            cur = journey.current_station
+            nxt = journey.next_station
+            corridor_id = f"{cur}_{nxt}_{train.direction}"
+            corridor_runtime = self._corridor_runtime(cur, nxt, train.direction)
+
+            t_corridor_entry = g.W_out[1]  # t_out_end
+            extra = compute_corridor_delay(
+                g.train_id, corridor_id, t_corridor_entry,
+                corridor_runtime, self.corridor_disturbances)
+            if extra > 0:
+                delays[g.train_id] = extra
+                self._states[g.train_id].delay_sec += extra
+        return delays
+
+    def _advance_trains(
+        self, grants: List[GrantResult], corridor_delays: Dict[str, float]
+    ) -> int:
+        """Move granted trains to their next station, setting arrival time."""
+        advanced = 0
+        for g in grants:
+            journey = self._journeys[g.train_id]
+            if journey.next_station is None:
+                # Final station — mark as done
+                journey.advance()
+                advanced += 1
+                continue
+
+            # Compute arrival time at next station
+            cur = journey.current_station
+            nxt = journey.next_station
+            runtime = self._corridor_runtime(cur, nxt, self.cfg.trains[g.train_id].direction)
+            extra = corridor_delays.get(g.train_id, 0.0)
+            t_corridor_exit = g.W_out[1] + runtime + extra  # outbound throat end + transit
+
+            journey.advance()
+            journey.set_arrival(t_corridor_exit)
+            advanced += 1
+        return advanced
+
+    def _get_effective_bounds(self, train_id: str, station_id: str, t_now: float):
+        """Get scheduling bounds.
+
+        Origin stations: use precomputed timetable bounds.
+        Intermediate stations: shift to actual arrival time, with dep_max
+        allowing scheduling from the later of actual arrival and current time.
+        """
+        train = self.cfg.trains[train_id]
+        journey = self._journeys[train_id]
+        orig_bounds = train.bounds.get(station_id)
+
+        if journey.current_idx == 0 or orig_bounds is None:
+            return orig_bounds
+
+        actual_arrival = journey.arrival_at_current
+        dwell = orig_bounds.dwell_min
+        slack = self.cfg.time_generation.get("dep_max_slack_sec", 120)
+        ref_time = max(actual_arrival, t_now)
+        physical_overhead = TRAVEL_TIME_TO_THROAT + 2 * THROAT_CLEARANCE_TIME
+        physical_min_dep = ref_time + physical_overhead + dwell
+        return TrainBound(
+            arr_min=actual_arrival,
+            dep_max=max(ref_time + dwell + slack, physical_min_dep),
+            dwell_min=dwell,
+        )
+
+    def _corridor_runtime(self, from_st: str, to_st: str, direction: str) -> float:
+        """Look up corridor runtime from config."""
+        time_gen = self.cfg.time_generation
+        runtimes = time_gen.get("corridor_runtime_sec", {})
+        key = f"{from_st}_to_{to_st}"
+        return float(runtimes.get(key, 90.0))
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _journey_station_map(self) -> Dict[str, str]:
+        """train_id → current_station for all non-done trains."""
+        return {
+            tid: j.current_station
+            for tid, j in self._journeys.items()
+            if not j.is_done and j.current_station
+        }
+
+    def _active_l2_ids(self, conflict_graph: Dict[str, set]) -> List[str]:
+        active = []
+        for train_id in self._pending_trains():
+            train = self.cfg.trains[train_id]
+            station_id = self._journeys[train_id].current_station
+            bounds = self.layer1.for_train(train_id, station_id)
+            if bounds is None:
+                continue
+            status = layer2_control_status(
+                self._states[train_id], bounds, conflict_graph.get(train_id))
+            if status == ControlStatus.LAYER2_ACTIVE:
+                active.append(train_id)
+        return active
+
+    def _control_status_snapshot(self, conflict_graph: Dict[str, set]) -> Dict[str, str]:
+        snap = {}
+        for tid in self._pending_trains():
+            train = self.cfg.trains[tid]
+            st = self._journeys[tid].current_station
+            bounds = self.layer1.for_train(tid, st)
+            if bounds:
+                snap[tid] = layer2_control_status(
+                    self._states[tid], bounds, conflict_graph.get(tid)).value
+        return snap
+
+    def _action_masks(self, pending_ids: List[str]) -> Dict[str, List[bool]]:
+        masks = {}
+        for tid in pending_ids:
+            train = self.cfg.trains[tid]
+            st = self._journeys[tid].current_station
+            bounds = self._get_effective_bounds(tid, st, self._t_now)
+            mask_set = compute_joint_action_mask(
+                train, st, t_now=self._t_now,
+                travel_time_to_throat=TRAVEL_TIME_TO_THROAT, cfg=self.cfg,
+                bounds_override=bounds)
+            masks[tid] = mask_set.mask
+        return masks
+
+    # ------------------------------------------------------------------
+    # BaseRailwayEnv interface properties
+    # ------------------------------------------------------------------
+
+    @property
+    def pending_trains(self) -> List[str]:
+        return self._pending_trains()
+
+    @property
+    def last_requests(self) -> List[WindowRequest]:
+        return self._last_requests

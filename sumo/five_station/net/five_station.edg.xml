@@ -1,0 +1,123 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<edges>
+    <edge id="A_up_approach" from="A_W_Spawn" to="A_Throat_W" speed="30" numLanes="1" allow="rail" />
+    <edge id="A_up_throat_in" from="A_Throat_W" to="A_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_up_in_1" from="A_Throat_W" to="A_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_up_in_2" from="A_Throat_W" to="A_p2_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_up_in_3" from="A_Throat_W" to="A_p3_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_p1_up" from="A_p1_W" to="A_p1_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="A_p2_up" from="A_p2_W" to="A_p2_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="A_p3_up" from="A_p3_W" to="A_p3_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="A_up_throat_out" from="A_p1_E" to="A_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_up_out_1" from="A_p1_E" to="A_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_up_out_2" from="A_p2_E" to="A_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_up_out_3" from="A_p3_E" to="A_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_up_depart" from="A_Throat_E" to="B_Throat_W" speed="30" numLanes="1" allow="rail" />
+    <edge id="A_down_approach" from="B_Throat_W" to="A_Throat_E" speed="30" numLanes="1" allow="rail" />
+    <edge id="A_down_in_1" from="A_Throat_E" to="A_p1_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_down_in_2" from="A_Throat_E" to="A_p2_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_down_in_3" from="A_Throat_E" to="A_p3_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_p1_down" from="A_p1_E" to="A_p1_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="A_p2_down" from="A_p2_E" to="A_p2_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="A_p3_down" from="A_p3_E" to="A_p3_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="A_down_out_1" from="A_p1_W" to="A_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_down_out_2" from="A_p2_W" to="A_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_down_out_3" from="A_p3_W" to="A_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="A_down_depart" from="A_Throat_W" to="A_W_Spawn" speed="30" numLanes="1" allow="rail" />
+    <edge id="B_up_approach" from="A_Throat_E" to="B_Throat_W" speed="30" numLanes="1" allow="rail" length="1200.0" />
+    <edge id="B_up_throat_in" from="B_Throat_W" to="B_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_up_in_1" from="B_Throat_W" to="B_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_up_in_2" from="B_Throat_W" to="B_p2_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_up_in_3" from="B_Throat_W" to="B_p3_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_p1_up" from="B_p1_W" to="B_p1_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="B_p2_up" from="B_p2_W" to="B_p2_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="B_p3_up" from="B_p3_W" to="B_p3_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="B_up_throat_out" from="B_p1_E" to="B_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_up_out_1" from="B_p1_E" to="B_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_up_out_2" from="B_p2_E" to="B_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_up_out_3" from="B_p3_E" to="B_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_up_depart" from="B_Throat_E" to="C_Throat_W" speed="30" numLanes="1" allow="rail" />
+    <edge id="B_down_approach" from="C_Throat_W" to="B_Throat_E" speed="30" numLanes="1" allow="rail" />
+    <edge id="B_down_in_1" from="B_Throat_E" to="B_p1_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_down_in_2" from="B_Throat_E" to="B_p2_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_down_in_3" from="B_Throat_E" to="B_p3_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_p1_down" from="B_p1_E" to="B_p1_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="B_p2_down" from="B_p2_E" to="B_p2_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="B_p3_down" from="B_p3_E" to="B_p3_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="B_down_out_1" from="B_p1_W" to="B_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_down_out_2" from="B_p2_W" to="B_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_down_out_3" from="B_p3_W" to="B_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="B_down_depart" from="B_Throat_W" to="A_Throat_E" speed="30" numLanes="1" allow="rail" />
+    <edge id="C_up_approach" from="B_Throat_E" to="C_Throat_W" speed="30" numLanes="1" allow="rail" length="2400.0" />
+    <edge id="C_up_throat_in" from="C_Throat_W" to="C_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_in_1" from="C_Throat_W" to="C_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_in_2" from="C_Throat_W" to="C_p2_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_in_3" from="C_Throat_W" to="C_p3_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_in_4" from="C_Throat_W" to="C_p4_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_p1_up" from="C_p1_W" to="C_p1_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="C_p2_up" from="C_p2_W" to="C_p2_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="C_p3_up" from="C_p3_W" to="C_p3_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="C_p4_up" from="C_p4_W" to="C_p4_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="C_up_throat_out" from="C_p1_E" to="C_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_out_1" from="C_p1_E" to="C_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_out_2" from="C_p2_E" to="C_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_out_3" from="C_p3_E" to="C_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_out_4" from="C_p4_E" to="C_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_up_depart" from="C_Throat_E" to="D_Throat_W" speed="30" numLanes="1" allow="rail" />
+    <edge id="C_down_approach" from="D_Throat_W" to="C_Throat_E" speed="30" numLanes="1" allow="rail" />
+    <edge id="C_down_in_1" from="C_Throat_E" to="C_p1_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_down_in_2" from="C_Throat_E" to="C_p2_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_down_in_3" from="C_Throat_E" to="C_p3_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_down_in_4" from="C_Throat_E" to="C_p4_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_p1_down" from="C_p1_E" to="C_p1_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="C_p2_down" from="C_p2_E" to="C_p2_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="C_p3_down" from="C_p3_E" to="C_p3_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="C_p4_down" from="C_p4_E" to="C_p4_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="C_down_out_1" from="C_p1_W" to="C_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_down_out_2" from="C_p2_W" to="C_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_down_out_3" from="C_p3_W" to="C_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_down_out_4" from="C_p4_W" to="C_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="C_down_depart" from="C_Throat_W" to="B_Throat_E" speed="30" numLanes="1" allow="rail" />
+    <edge id="D_up_approach" from="C_Throat_E" to="D_Throat_W" speed="30" numLanes="1" allow="rail" length="1200.0" />
+    <edge id="D_up_throat_in" from="D_Throat_W" to="D_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_up_in_1" from="D_Throat_W" to="D_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_up_in_2" from="D_Throat_W" to="D_p2_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_p1_up" from="D_p1_W" to="D_p1_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="D_p2_up" from="D_p2_W" to="D_p2_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="D_up_throat_out" from="D_p1_E" to="D_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_up_out_1" from="D_p1_E" to="D_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_up_out_2" from="D_p2_E" to="D_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_up_depart" from="D_Throat_E" to="E_Throat_W" speed="30" numLanes="1" allow="rail" />
+    <edge id="D_down_approach" from="E_Throat_W" to="D_Throat_E" speed="30" numLanes="1" allow="rail" />
+    <edge id="D_down_in_1" from="D_Throat_E" to="D_p1_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_down_in_2" from="D_Throat_E" to="D_p2_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_p1_down" from="D_p1_E" to="D_p1_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="D_p2_down" from="D_p2_E" to="D_p2_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="D_down_out_1" from="D_p1_W" to="D_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_down_out_2" from="D_p2_W" to="D_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="D_down_depart" from="D_Throat_W" to="C_Throat_E" speed="30" numLanes="1" allow="rail" />
+    <edge id="E_up_approach" from="D_Throat_E" to="E_Throat_W" speed="30" numLanes="1" allow="rail" length="1200.0" />
+    <edge id="E_up_throat_in" from="E_Throat_W" to="E_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_up_in_1" from="E_Throat_W" to="E_p1_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_up_in_2" from="E_Throat_W" to="E_p2_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_up_in_3" from="E_Throat_W" to="E_p3_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_p1_up" from="E_p1_W" to="E_p1_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="E_p2_up" from="E_p2_W" to="E_p2_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="E_p3_up" from="E_p3_W" to="E_p3_E" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="E_up_throat_out" from="E_p1_E" to="E_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_up_out_1" from="E_p1_E" to="E_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_up_out_2" from="E_p2_E" to="E_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_up_out_3" from="E_p3_E" to="E_Throat_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_up_depart" from="E_Throat_E" to="E_E_Exit" speed="30" numLanes="1" allow="rail" />
+    <edge id="E_down_approach" from="E_E_Exit" to="E_Throat_E" speed="30" numLanes="1" allow="rail" />
+    <edge id="E_down_in_1" from="E_Throat_E" to="E_p1_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_down_in_2" from="E_Throat_E" to="E_p2_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_down_in_3" from="E_Throat_E" to="E_p3_E" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_p1_down" from="E_p1_E" to="E_p1_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="E_p2_down" from="E_p2_E" to="E_p2_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="E_p3_down" from="E_p3_E" to="E_p3_W" speed="15" numLanes="1" allow="rail" length="250.0" />
+    <edge id="E_down_out_1" from="E_p1_W" to="E_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_down_out_2" from="E_p2_W" to="E_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_down_out_3" from="E_p3_W" to="E_Throat_W" speed="20" numLanes="1" allow="rail" />
+    <edge id="E_down_depart" from="E_Throat_W" to="D_Throat_E" speed="30" numLanes="1" allow="rail" />
+</edges>

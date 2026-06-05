@@ -217,3 +217,11 @@
   - 训练若干 episode 后，至少能复现 heuristic 水平，再谈优化。
 
   最关键的里程碑是：让 heuristic resource decision 真正控制 SUMO 并产出 actual arrival/departure 日志。做到这一步后，你的项目才从“离线调度原型”进入“可训练环境”。
+
+2026/06/03：
+Inspect config/schema and current skeleton boundaries【done】
+Patch V4.1 documentation and config-driven executor schema【done】
+Implement disturbance, observation, reward, env L2 loop
+Implement MAPPO modules and train/eval scripts
+Add tests for config-driven, safety, env, MAPPO smoke
+Run tests and fix failures

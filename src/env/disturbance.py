@@ -10,6 +10,7 @@ from ..control.dispatch_bounds import TrainBounds
 
 
 TRIGGER_THRESHOLD_SEC = 30.0
+DEADLOCK_THRESHOLD = 25           # V4: consecutive no-legal-action steps before deadlock
 
 
 class ControlStatus(Enum):
@@ -48,6 +49,52 @@ class DisturbanceInjector:
             injected[train_id] = delta
         return injected
 
+
+# ---------------------------------------------------------------------------
+# Corridor speed restriction — simulates track failure / maintenance
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CorridorDisturbance:
+    """Speed restriction on a corridor segment during a time window.
+
+    During [start_time, end_time], trains traversing *corridor_id* experience
+    reduced speed, increasing their transit time and causing downstream delays.
+    """
+    corridor_id: str            # e.g. "A_B_up", "B_A_down"
+    start_time: float           # restriction window start (sim seconds)
+    end_time: float             # restriction window end
+    speed_ratio: float = 0.3    # fraction of normal speed (0.3 = 30% → 3.3× transit)
+
+    def extra_transit_time(self, corridor_runtime_sec: float) -> float:
+        """Additional seconds added to corridor transit."""
+        return corridor_runtime_sec * (1.0 / max(self.speed_ratio, 0.01) - 1.0)
+
+
+def compute_corridor_delay(
+    train_id: str,
+    corridor_id: str,
+    t_corridor_entry: float,
+    corridor_runtime_sec: float,
+    disturbances: list[CorridorDisturbance],
+) -> float:
+    """Return extra delay (seconds) caused by corridor restrictions.
+
+    If the train's corridor transit window [entry, entry+runtime] overlaps
+    any restriction on this corridor, return the extra transit time.
+    """
+    t_exit = t_corridor_entry + corridor_runtime_sec
+    for d in disturbances:
+        if d.corridor_id != corridor_id:
+            continue
+        if t_corridor_entry < d.end_time and t_exit > d.start_time:
+            return d.extra_transit_time(corridor_runtime_sec)
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 activation
+# ---------------------------------------------------------------------------
 
 def layer2_control_status(
     state: TrainRuntimeState,

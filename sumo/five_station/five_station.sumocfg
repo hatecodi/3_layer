@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<configuration>
+    <input>
+        <net-file value="D:\sumo_pract\three_layer_railway_marl_fixed_1\multistation\sumo\net\five_station.net.xml" />
+        <route-files value="D:\sumo_pract\three_layer_railway_marl_fixed_1\multistation\sumo\routes\five_station.rou.xml" />
+    </input>
+    <time>
+        <begin value="0" />
+        <end value="1200" />
+        <step-length value="1.0" />
+    </time>
+    <processing>
+        <time-to-teleport value="600" />
+    </processing>
+    <gui_only>
+        <delay value="50" />
+        <start value="true" />
+    </gui_only>
+</configuration>

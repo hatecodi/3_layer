@@ -84,6 +84,7 @@ def derive_schedule(
     action: Tuple[str, str, int],
     t_now: float,
     travel_time_to_throat: float,
+    bounds_override=None,  # optional: use these bounds instead of train.bounds
 ) -> Tuple[float, float, float, float, float, float]:
     """Convert an action to concrete time windows.
 
@@ -102,7 +103,7 @@ def derive_schedule(
         t_plat_start = t_in_end
         t_plat_end = t_plat_start + THROUGH_PLATFORM_CLEARANCE_TIME
     else:
-        bounds = train.bounds.get(station_id)
+        bounds = bounds_override if bounds_override else train.bounds.get(station_id)
         dwell_min = bounds.dwell_min if bounds else 0.0
         dwell = dwell_min + dwell_extend
         t_plat_start = t_in_end
@@ -125,10 +126,11 @@ def is_legal_action(
     t_now: float,
     travel_time_to_throat: float,
     cfg: ScenarioConfig,
+    bounds_override=None,  # optional: use these bounds instead of train.bounds
 ) -> bool:
     """Check an action against all Layer 1 hard bounds."""
     platform, entry_choice, dwell_extend = action
-    bounds = train.bounds.get(station_id)
+    bounds = bounds_override if bounds_override else train.bounds.get(station_id)
     if bounds is None:
         return True  # no bounds = no constraints (degenerate)
 
@@ -152,7 +154,8 @@ def is_legal_action(
 
     # derive windows
     times = derive_schedule(
-        train, station_id, action, t_now, travel_time_to_throat)
+        train, station_id, action, t_now, travel_time_to_throat,
+        bounds_override=bounds_override)
     t_in_start, t_in_end, _, _, t_out_start, t_out_end = times
 
     # hard floor: cannot enter before arr_min
@@ -215,19 +218,16 @@ def compute_joint_action_mask(
     t_now: float,
     travel_time_to_throat: float,
     cfg: ScenarioConfig,
+    bounds_override=None,  # optional: dynamic bounds for intermediate stations
 ) -> MaskedActionSet:
-    """Build the valid-action mask for one train at one station.
-
-    Returns MaskedActionSet with status="NO_LEGAL_ACTION" if every action is
-    illegal.  The caller should trigger a deterministic hold/replan transition
-    instead of sampling from the policy.
-    """
+    """Build the valid-action mask for one train at one station."""
     actions = candidate_actions(train, station_id, cfg)
     mask = [
         is_legal_action(
             train, station_id,
             (a.platform, a.entry_choice, a.dwell_extend),
             t_now, travel_time_to_throat, cfg,
+            bounds_override=bounds_override,
         )
         for a in actions
     ]
@@ -342,17 +342,16 @@ def heuristic_action(
     t_now: float,
     travel_time_to_throat: float,
     cfg: ScenarioConfig,
+    bounds_override=None,
 ) -> Tuple[str, str, int]:
-    """Deterministic heuristic: earliest legal entry, first legal platform, min dwell.
-
-    Used as the baseline policy before MAPPO is introduced.
-    """
+    """Deterministic heuristic: earliest legal entry, first legal platform, min dwell."""
     actions = candidate_actions(train, station_id, cfg)
     for a in actions:
         if is_legal_action(
             train, station_id,
             (a.platform, a.entry_choice, a.dwell_extend),
             t_now, travel_time_to_throat, cfg,
+            bounds_override=bounds_override,
         ):
             return (a.platform, a.entry_choice, a.dwell_extend)
     # No legal action — caller must hold/replan

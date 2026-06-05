@@ -1,0 +1,211 @@
+# Five-station railway network
+# A ←1200m→ B ←2400m→ C ←1200m→ D ←1200m→ E
+# D station is intentional bottleneck (2 platforms)
+
+network:
+  sumo_net: multistation/sumo/net/five_station.net.xml
+  corridor_runtime_sec:
+    A_to_B: 90
+    B_to_A: 90
+    B_to_C: 180
+    C_to_B: 180
+    C_to_D: 90
+    D_to_C: 90
+    D_to_E: 90
+    E_to_D: 90
+
+stations:
+  - id: A
+    platforms:
+      - {id: A_p1, up_edge: A_p1_up, down_edge: A_p1_down, through_allowed: true}
+      - {id: A_p2, up_edge: A_p2_up, down_edge: A_p2_down, through_allowed: true}
+      - {id: A_p3, up_edge: A_p3_up, down_edge: A_p3_down, through_allowed: true}
+    dwell_min_sec: {stop: 60}
+    up:
+      approach_edge: A_up_approach
+      depart_edge: A_up_depart
+      in_routes:
+        - {id: A_in_1, edges: [A_up_in_1], platform: A_p1, conflict_group: A_up_in_g1}
+        - {id: A_in_2, edges: [A_up_in_2], platform: A_p2, conflict_group: A_up_in_g1}
+        - {id: A_in_3, edges: [A_up_in_3], platform: A_p3, conflict_group: A_up_in_g2}
+      out_routes:
+        - {id: A_out_1, edges: [A_up_out_1], platform: A_p1, conflict_group: A_up_out_g1}
+        - {id: A_out_2, edges: [A_up_out_2], platform: A_p2, conflict_group: A_up_out_g2}
+        - {id: A_out_3, edges: [A_up_out_3], platform: A_p3, conflict_group: A_up_out_g2}
+    down:
+      approach_edge: A_down_approach
+      depart_edge: A_down_depart
+      in_routes:
+        - {id: A_dn_in_1, edges: [A_down_in_1], platform: A_p1, conflict_group: A_down_in_g1}
+        - {id: A_dn_in_2, edges: [A_down_in_2], platform: A_p2, conflict_group: A_down_in_g2}
+        - {id: A_dn_in_3, edges: [A_down_in_3], platform: A_p3, conflict_group: A_down_in_g2}
+      out_routes:
+        - {id: A_dn_out_1, edges: [A_down_out_1], platform: A_p1, conflict_group: A_down_out_g1}
+        - {id: A_dn_out_2, edges: [A_down_out_2], platform: A_p2, conflict_group: A_down_out_g2}
+        - {id: A_dn_out_3, edges: [A_down_out_3], platform: A_p3, conflict_group: A_down_out_g2}
+
+  - id: B
+    platforms:
+      - {id: B_p1, up_edge: B_p1_up, down_edge: B_p1_down, through_allowed: true}
+      - {id: B_p2, up_edge: B_p2_up, down_edge: B_p2_down, through_allowed: true}
+      - {id: B_p3, up_edge: B_p3_up, down_edge: B_p3_down, through_allowed: true}
+    dwell_min_sec: {stop: 30}
+    up:
+      approach_edge: B_up_approach
+      depart_edge: B_up_depart
+      in_routes:
+        - {id: B_in_1, edges: [B_up_in_1], platform: B_p1, conflict_group: B_up_in_g1}
+        - {id: B_in_2, edges: [B_up_in_2], platform: B_p2, conflict_group: B_up_in_g2}
+        - {id: B_in_3, edges: [B_up_in_3], platform: B_p3, conflict_group: B_up_in_g2}
+      out_routes:
+        - {id: B_out_1, edges: [B_up_out_1], platform: B_p1, conflict_group: B_up_out_g1}
+        - {id: B_out_2, edges: [B_up_out_2], platform: B_p2, conflict_group: B_up_out_g2}
+        - {id: B_out_3, edges: [B_up_out_3], platform: B_p3, conflict_group: B_up_out_g2}
+    down:
+      approach_edge: B_down_approach
+      depart_edge: B_down_depart
+      in_routes:
+        - {id: B_dn_in_1, edges: [B_down_in_1], platform: B_p1, conflict_group: B_down_in_g1}
+        - {id: B_dn_in_2, edges: [B_down_in_2], platform: B_p2, conflict_group: B_down_in_g2}
+        - {id: B_dn_in_3, edges: [B_down_in_3], platform: B_p3, conflict_group: B_down_in_g2}
+      out_routes:
+        - {id: B_dn_out_1, edges: [B_down_out_1], platform: B_p1, conflict_group: B_down_out_g1}
+        - {id: B_dn_out_2, edges: [B_down_out_2], platform: B_p2, conflict_group: B_down_out_g2}
+        - {id: B_dn_out_3, edges: [B_down_out_3], platform: B_p3, conflict_group: B_down_out_g2}
+
+  - id: C
+    platforms:
+      - {id: C_p1, up_edge: C_p1_up, down_edge: C_p1_down, through_allowed: true}
+      - {id: C_p2, up_edge: C_p2_up, down_edge: C_p2_down, through_allowed: true}
+      - {id: C_p3, up_edge: C_p3_up, down_edge: C_p3_down, through_allowed: true}
+      - {id: C_p4, up_edge: C_p4_up, down_edge: C_p4_down, through_allowed: true}
+    dwell_min_sec: {stop: 60}
+    up:
+      approach_edge: C_up_approach
+      depart_edge: C_up_depart
+      in_routes:
+        - {id: C_in_1, edges: [C_up_in_1], platform: C_p1, conflict_group: C_up_in_g1}
+        - {id: C_in_2, edges: [C_up_in_2], platform: C_p2, conflict_group: C_up_in_g1}
+        - {id: C_in_3, edges: [C_up_in_3], platform: C_p3, conflict_group: C_up_in_g2}
+        - {id: C_in_4, edges: [C_up_in_4], platform: C_p4, conflict_group: C_up_in_g2}
+      out_routes:
+        - {id: C_out_1, edges: [C_up_out_1], platform: C_p1, conflict_group: C_up_out_g1}
+        - {id: C_out_2, edges: [C_up_out_2], platform: C_p2, conflict_group: C_up_out_g1}
+        - {id: C_out_3, edges: [C_up_out_3], platform: C_p3, conflict_group: C_up_out_g2}
+        - {id: C_out_4, edges: [C_up_out_4], platform: C_p4, conflict_group: C_up_out_g2}
+    down:
+      approach_edge: C_down_approach
+      depart_edge: C_down_depart
+      in_routes:
+        - {id: C_dn_in_1, edges: [C_down_in_1], platform: C_p1, conflict_group: C_down_in_g1}
+        - {id: C_dn_in_2, edges: [C_down_in_2], platform: C_p2, conflict_group: C_down_in_g2}
+        - {id: C_dn_in_3, edges: [C_down_in_3], platform: C_p3, conflict_group: C_down_in_g2}
+        - {id: C_dn_in_4, edges: [C_down_in_4], platform: C_p4, conflict_group: C_down_in_g2}
+      out_routes:
+        - {id: C_dn_out_1, edges: [C_down_out_1], platform: C_p1, conflict_group: C_down_out_g1}
+        - {id: C_dn_out_2, edges: [C_down_out_2], platform: C_p2, conflict_group: C_down_out_g2}
+        - {id: C_dn_out_3, edges: [C_down_out_3], platform: C_p3, conflict_group: C_down_out_g2}
+        - {id: C_dn_out_4, edges: [C_down_out_4], platform: C_p4, conflict_group: C_down_out_g2}
+
+  - id: D
+    platforms:
+      - {id: D_p1, up_edge: D_p1_up, down_edge: D_p1_down, through_allowed: true}
+      - {id: D_p2, up_edge: D_p2_up, down_edge: D_p2_down, through_allowed: true}
+    dwell_min_sec: {stop: 15}
+    up:
+      approach_edge: D_up_approach
+      depart_edge: D_up_depart
+      in_routes:
+        - {id: D_in_1, edges: [D_up_in_1], platform: D_p1, conflict_group: D_up_in_g1}
+        - {id: D_in_2, edges: [D_up_in_2], platform: D_p2, conflict_group: D_up_in_g2}
+      out_routes:
+        - {id: D_out_1, edges: [D_up_out_1], platform: D_p1, conflict_group: D_up_out_g1}
+        - {id: D_out_2, edges: [D_up_out_2], platform: D_p2, conflict_group: D_up_out_g2}
+    down:
+      approach_edge: D_down_approach
+      depart_edge: D_down_depart
+      in_routes:
+        - {id: D_dn_in_1, edges: [D_down_in_1], platform: D_p1, conflict_group: D_down_in_g1}
+        - {id: D_dn_in_2, edges: [D_down_in_2], platform: D_p2, conflict_group: D_down_in_g2}
+      out_routes:
+        - {id: D_dn_out_1, edges: [D_down_out_1], platform: D_p1, conflict_group: D_down_out_g1}
+        - {id: D_dn_out_2, edges: [D_down_out_2], platform: D_p2, conflict_group: D_down_out_g2}
+
+  - id: E
+    platforms:
+      - {id: E_p1, up_edge: E_p1_up, down_edge: E_p1_down, through_allowed: true}
+      - {id: E_p2, up_edge: E_p2_up, down_edge: E_p2_down, through_allowed: true}
+      - {id: E_p3, up_edge: E_p3_up, down_edge: E_p3_down, through_allowed: true}
+    dwell_min_sec: {stop: 30}
+    up:
+      approach_edge: E_up_approach
+      depart_edge: E_up_depart
+      in_routes:
+        - {id: E_in_1, edges: [E_up_in_1], platform: E_p1, conflict_group: E_up_in_g1}
+        - {id: E_in_2, edges: [E_up_in_2], platform: E_p2, conflict_group: E_up_in_g2}
+        - {id: E_in_3, edges: [E_up_in_3], platform: E_p3, conflict_group: E_up_in_g2}
+      out_routes:
+        - {id: E_out_1, edges: [E_up_out_1], platform: E_p1, conflict_group: E_up_out_g1}
+        - {id: E_out_2, edges: [E_up_out_2], platform: E_p2, conflict_group: E_up_out_g2}
+        - {id: E_out_3, edges: [E_up_out_3], platform: E_p3, conflict_group: E_up_out_g2}
+    down:
+      approach_edge: E_down_approach
+      depart_edge: E_down_depart
+      in_routes:
+        - {id: E_dn_in_1, edges: [E_down_in_1], platform: E_p1, conflict_group: E_down_in_g1}
+        - {id: E_dn_in_2, edges: [E_down_in_2], platform: E_p2, conflict_group: E_down_in_g2}
+        - {id: E_dn_in_3, edges: [E_down_in_3], platform: E_p3, conflict_group: E_down_in_g2}
+      out_routes:
+        - {id: E_dn_out_1, edges: [E_down_out_1], platform: E_p1, conflict_group: E_down_out_g1}
+        - {id: E_dn_out_2, edges: [E_down_out_2], platform: E_p2, conflict_group: E_down_out_g2}
+        - {id: E_dn_out_3, edges: [E_down_out_3], platform: E_p3, conflict_group: E_down_out_g2}
+
+corridors:
+  - id: A_B_up
+    direction: up
+    from_station: A
+    to_station: B
+    edges: [AB_up_1, AB_up_2]
+    min_headway_sec: 120
+  - id: B_A_down
+    direction: down
+    from_station: B
+    to_station: A
+    edges: [BA_down_1, BA_down_2]
+    min_headway_sec: 120
+  - id: B_C_up
+    direction: up
+    from_station: B
+    to_station: C
+    edges: [BC_up_1, BC_up_2]
+    min_headway_sec: 120
+  - id: C_B_down
+    direction: down
+    from_station: C
+    to_station: B
+    edges: [CB_down_1, CB_down_2]
+    min_headway_sec: 120
+  - id: C_D_up
+    direction: up
+    from_station: C
+    to_station: D
+    edges: [CD_up_1, CD_up_2]
+    min_headway_sec: 120
+  - id: D_C_down
+    direction: down
+    from_station: D
+    to_station: C
+    edges: [DC_down_1, DC_down_2]
+    min_headway_sec: 120
+  - id: D_E_up
+    direction: up
+    from_station: D
+    to_station: E
+    edges: [DE_up_1, DE_up_2]
+    min_headway_sec: 120
+  - id: E_D_down
+    direction: down
+    from_station: E
+    to_station: D
+    edges: [ED_down_1, ED_down_2]
+    min_headway_sec: 120
