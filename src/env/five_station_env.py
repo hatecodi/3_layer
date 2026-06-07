@@ -130,9 +130,9 @@ class FiveStationEnv(BaseRailwayEnv):
         self._force_policy = True  # training: all trains use policy
         # Parked trains: K-type occupying platforms at B, C to create bottlenecks
         self._parked_trains_enabled = True
-        self._parked_prob = 0.4  # probability per station B,C
-        self._parked_duration_min = 300
-        self._parked_duration_max = 900
+        self._parked_prob = 0.3  # probability per station B,C
+        self._parked_duration_min = 120
+        self._parked_duration_max = 360
         self._parked_windows: Dict[str, Tuple[float, float]] = {}
 
         # Build routes for each train
@@ -195,8 +195,10 @@ class FiveStationEnv(BaseRailwayEnv):
 
         # Inject initial disturbances
         injected = self.disturbance.step(all_ids, self._states)
+        ctx = self._obs_context()
         obs = build_observations(self.cfg, [], [], self._t_now,
-                                 station_map=self._journey_station_map())
+                                 station_map=self._journey_station_map(),
+                                 context=ctx)
 
         pending = self._pending_trains()
         info = {
@@ -308,8 +310,10 @@ class FiveStationEnv(BaseRailwayEnv):
             self._episode_status = EpisodeStatus.TRUNCATED
 
         # 9. Observation (reflects state at new t_now for next decision)
+        ctx = self._obs_context()
         obs = build_observations(self.cfg, requests, grants, self._t_now,
-                                 station_map=self._journey_station_map())
+                                 station_map=self._journey_station_map(),
+                                 context=ctx)
 
         self._last_requests = requests
         self._last_grants = grants
@@ -371,6 +375,17 @@ class FiveStationEnv(BaseRailwayEnv):
             resource_id = f"{st}/{plat.id}"
             parked[resource_id] = (start, end)
         return parked
+
+
+    def _obs_context(self) -> Dict:
+        """Build context dict for observation builder."""
+        return {
+            "parked_windows": self._parked_windows if self._parked_trains_enabled else {},
+            "cumulative_delays": {tid: s.delay_sec for tid, s in self._states.items()},
+            "corridor_delays": self._last_corridor_delays,
+            "journeys": {tid: {"current": j.current_station, "next": j.next_station}
+                        for tid, j in self._journeys.items() if not j.is_done},
+        }
 
     def _pending_trains(self) -> List[str]:
         """Trains that have arrived at current station and need scheduling."""

@@ -9,8 +9,8 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 
-DEFAULT_OBS_DIM = 74  # fallback for backward compat
-DEFAULT_ACTION_DIM = 45
+DEFAULT_OBS_DIM = 22  # fallback for backward compat
+DEFAULT_ACTION_DIM = 60
 GLOBAL_STATE_DIM = 14
 
 

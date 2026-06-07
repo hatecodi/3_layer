@@ -521,3 +521,42 @@ Task: Real timetable + Actor LayerNorm + Parked trains + Deadlock threshold
     by increasing conflict density.
 
 Status: DONE - ready to re-run training with parked trains
+
+---
+[2026-06-07 18:49]
+Task: Compact actor observation (115->22 dims) + context-driven design
+
+== Design rationale ==
+  Actor only needs to make 3 decisions per station: platform, entry, dwell.
+  This requires knowing (a) own state, (b) next station congestion,
+  (c) current resource availability. It does NOT need:
+  - Per-platform occupancy bitmaps (15 dims) -> replaced with counts
+  - Per-conflict-group status (40 dims) -> handled by resolver
+  - Per-neighbor detailed state (40 dims) -> competitive outcome is resolver's job
+  - Position/speed placeholders (2 dims) -> always zero in Python sim
+
+== New observation (22 dims) ==
+  src/env/observation_builder.py: complete rewrite
+  Self (14): t_now, cum_delay, plan/bounds/slack, priority, pass_flag, class one-hot
+  Next (5):  available_platforms, n_heading_there, est_arrival, congestion, dwell
+  Resource (3): available_now, corridor_delay, parked_blocking
+  All features normalized to [0,1] range.
+  context dict passed from env: parked_windows, cumulative_delays,
+    corridor_delays, journeys (for next-station lookup).
+
+== Downstream changes ==
+  src/marl/actor_critic.py: DEFAULT_OBS_DIM 74->22
+  src/env/five_station_env.py: _obs_context() method, build_observations
+    calls updated to pass context dict.
+  LocalCritic input: (k_local+1)*22 = 44d (was 460d). GlobalCritic: 14d.
+  Total model params: ~74K (was ~178K).
+
+== Rationale ==
+  Previous 115-dim obs was 64% zero. Timestamp features dominated gradient
+  by 1000x over resource state. Compact design:
+  - Eliminates zero dimensions -> higher signal density
+  - Adds forward-looking info (next station, congestion)
+  - Separates actor (decision) from critic (value) concerns
+  - Reduces overfitting from sparse vector
+
+Status: DONE - ready to test training with compact obs
