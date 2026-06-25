@@ -26,7 +26,7 @@ from .resource_manager import WindowRequest
 # constants
 # ---------------------------------------------------------------------------
 
-THROAT_CLEARANCE_TIME = 20.0        # seconds to traverse throat
+THROAT_CLEARANCE_TIME = 5.0         # seconds to traverse throat (aligned to time compression)
 THROUGH_PLATFORM_CLEARANCE_TIME = 5.0   # minimum platform pass-through time
 MIN_CLEARANCE_SECONDS = 5.0          # safety gap between resource windows
 

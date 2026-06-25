@@ -90,7 +90,7 @@ class TrainJourney:
 # ---------------------------------------------------------------------------
 
 MAX_EPISODE_TIME = 1500.0
-TRAVEL_TIME_TO_THROAT = 30.0
+TRAVEL_TIME_TO_THROAT = 5.0   # approach time, aligned to time compression
 
 
 class EpisodeStatus(Enum):
