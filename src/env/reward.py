@@ -10,7 +10,7 @@ from ..control.resource_manager import GrantResult
 from ..experiment.scenario_loader import ScenarioConfig
 
 
-ONTIME_THRESHOLD_SEC = 30.0   # within 30s of plan = on-time
+ONTIME_THRESHOLD_SEC = 15.0   # within 15s of plan = on-time (both early and late)
 ONTIME_BONUS = 2.0            # per-train local reward bonus
 
 
@@ -66,8 +66,8 @@ def compute_metrics(
         train = cfg.trains[grant.train_id]
         sid = station_map.get(grant.train_id) if station_map else train.origin_station
         bounds = layer1.for_train(grant.train_id, sid)
-        dep_delays.append(max(0.0, grant.W_out[0] - bounds.t_dep_plan))
-        arr_delays.append(max(0.0, grant.W_in[0] - bounds.t_arr_plan))
+        dep_delays.append(abs(grant.W_out[0] - bounds.t_dep_plan))
+        arr_delays.append(abs(grant.W_in[0] - bounds.t_arr_plan))
 
     total_dep = sum(dep_delays)
     total_arr = sum(arr_delays)
@@ -137,8 +137,8 @@ def compute_layered_rewards(
         if train_id in held or grant is None:
             local = -3.0
         else:
-            dep_delay = max(0.0, grant.W_out[0] - bounds.t_dep_plan)
-            arr_delay = max(0.0, grant.W_in[0] - bounds.t_arr_plan)
+            dep_delay = abs(grant.W_out[0] - bounds.t_dep_plan)
+            arr_delay = abs(grant.W_in[0] - bounds.t_arr_plan)
             prio_weight = {1: 2.0, 2: 1.0, 3: 0.5}.get(bounds.prio_i, 1.0)
             wait = max(0.0, grant.W_in[0] - bounds.t_arr_plan)
             dwell = max(0.0, grant.W_out[0] - grant.W_plat[0])

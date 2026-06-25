@@ -60,38 +60,40 @@ def requested_entry_time(
 ) -> float:
     """Compute the *requested* inbound-throat entry time for a given choice.
 
-    When bounds_override is provided (intermediate station / delayed train),
-    entry choices are relative to earliest_allowed rather than the planned
-    timetable.  This prevents all 6 entry choices from degenerating to the
-    same value when the planned arrival is in the past.
+    "earliest" = physically earliest possible entry.
+    "plan"      = entry that achieves the planned departure time,
+                  clamped to [earliest, viable].
+    "plan+N"    = plan + N*60s.
     """
     earliest_physical = t_now + travel_time_to_throat
+    plan_data = train.planned.get(station_id)
+    planned_arr = plan_data.arr if plan_data else 0.0
+    planned_dep = plan_data.dep if plan_data else 0.0
 
     if bounds_override is not None:
         earliest_allowed = max(earliest_physical, bounds_override.arr_min)
+        dwell = bounds_override.dwell_min
     else:
         bounds = train.bounds.get(station_id)
         earliest_allowed = max(earliest_physical,
                                bounds.arr_min if bounds else 0.0)
+        dwell = bounds.dwell_min if bounds else 0.0
 
     if entry_choice == "earliest":
         return earliest_allowed
 
-    if bounds_override is not None:
-        # Relative to actual conditions: plan  = earliest, plan+N = earliest + N*60s
-        offset_sec = 0.0 if entry_choice == "plan" else float(entry_choice.split("+")[1]) * 60.0
-        return earliest_allowed + offset_sec
-
-    plan = train.planned.get(station_id)
-    planned_arr = plan.arr if plan else 0.0
+    # Target entry: arrive at platform in time to depart at planned_dep
+    # entry = planned_dep - dwell - THROAT_CLEARANCE_TIME
+    # Clamp: can't be earlier than planned_arr (for origin) or physically possible
+    target_entry = planned_dep - dwell - THROAT_CLEARANCE_TIME
+    target_entry = max(target_entry, planned_arr)
+    plan_entry = max(earliest_allowed, target_entry)
 
     if entry_choice == "plan":
-        offset_sec = 0.0
-    else:
-        # "plan+N" where N is minutes
-        offset_sec = float(entry_choice.split("+")[1]) * 60.0
+        return plan_entry
 
-    return max(planned_arr + offset_sec, earliest_allowed)
+    offset_sec = float(entry_choice.split("+")[1]) * 60.0
+    return plan_entry + offset_sec
 
 
 def derive_schedule(
@@ -363,15 +365,22 @@ def heuristic_action(
     cfg: ScenarioConfig,
     bounds_override=None,
 ) -> Tuple[str, str, int]:
-    """Deterministic heuristic: earliest legal entry, first legal platform, min dwell."""
-    actions = candidate_actions(train, station_id, cfg)
-    for a in actions:
-        if is_legal_action(
-            train, station_id,
-            (a.platform, a.entry_choice, a.dwell_extend),
-            t_now, travel_time_to_throat, cfg,
-            bounds_override=bounds_override,
-        ):
-            return (a.platform, a.entry_choice, a.dwell_extend)
+    """Deterministic heuristic: try planned-time entry first, then earliest,
+    first legal platform, min dwell.  Prefers on-time departure over early."""
+    candidate = train.candidate_platforms.get(station_id, [])
+    # Search plan entries first (plan → plan+4), then earliest as fallback
+    preferred_entries = ENTRY_CHOICES  # ["earliest", "plan", "plan+1", ...]
+    # Move "earliest" to the end
+    search_entries = [e for e in preferred_entries if e != "earliest"] + ["earliest"]
+    for entry in search_entries:
+        for platform in candidate:
+            for dwell_ext in DWELL_EXTEND_CHOICES:
+                if is_legal_action(
+                    train, station_id,
+                    (platform, entry, dwell_ext),
+                    t_now, travel_time_to_throat, cfg,
+                    bounds_override=bounds_override,
+                ):
+                    return (platform, entry, dwell_ext)
     # No legal action — caller must hold/replan
     raise ValueError(f"No legal action for {train.id} at {station_id}")
