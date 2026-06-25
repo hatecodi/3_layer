@@ -30,7 +30,7 @@ THROAT_CLEARANCE_TIME = 20.0        # seconds to traverse throat
 THROUGH_PLATFORM_CLEARANCE_TIME = 5.0   # minimum platform pass-through time
 MIN_CLEARANCE_SECONDS = 5.0          # safety gap between resource windows
 
-ENTRY_CHOICES = ["earliest", "plan", "plan+1", "plan+2", "plan+4"]  # minutes
+ENTRY_CHOICES = ["earliest", "plan", "plan+1", "plan+2", "plan+3", "plan+4"]  # minutes
 DWELL_EXTEND_CHOICES = [0, 60, 120]  # seconds
 
 
@@ -56,15 +56,31 @@ def requested_entry_time(
     entry_choice: str,
     t_now: float,
     travel_time_to_throat: float,
+    bounds_override=None,
 ) -> float:
-    """Compute the *requested* inbound-throat entry time for a given choice."""
+    """Compute the *requested* inbound-throat entry time for a given choice.
+
+    When bounds_override is provided (intermediate station / delayed train),
+    entry choices are relative to earliest_allowed rather than the planned
+    timetable.  This prevents all 6 entry choices from degenerating to the
+    same value when the planned arrival is in the past.
+    """
     earliest_physical = t_now + travel_time_to_throat
-    bounds = train.bounds.get(station_id)
-    earliest_allowed = max(earliest_physical,
-                           bounds.arr_min if bounds else 0.0)
+
+    if bounds_override is not None:
+        earliest_allowed = max(earliest_physical, bounds_override.arr_min)
+    else:
+        bounds = train.bounds.get(station_id)
+        earliest_allowed = max(earliest_physical,
+                               bounds.arr_min if bounds else 0.0)
 
     if entry_choice == "earliest":
         return earliest_allowed
+
+    if bounds_override is not None:
+        # Relative to actual conditions: plan  = earliest, plan+N = earliest + N*60s
+        offset_sec = 0.0 if entry_choice == "plan" else float(entry_choice.split("+")[1]) * 60.0
+        return earliest_allowed + offset_sec
 
     plan = train.planned.get(station_id)
     planned_arr = plan.arr if plan else 0.0
@@ -95,7 +111,8 @@ def derive_schedule(
     platform, entry_choice, dwell_extend = action
 
     t_in_start = requested_entry_time(
-        train, station_id, entry_choice, t_now, travel_time_to_throat)
+        train, station_id, entry_choice, t_now, travel_time_to_throat,
+        bounds_override=bounds_override)
     t_in_end = t_in_start + THROAT_CLEARANCE_TIME
 
     if train.pass_through:
@@ -250,6 +267,7 @@ def action_to_request(
     travel_time_to_throat: float,
     current_delay: float,
     cfg: ScenarioConfig,
+    bounds_override=None,
 ) -> WindowRequest:
     """Convert a legal action to a WindowRequest with resource windows.
 
@@ -259,7 +277,8 @@ def action_to_request(
     """
     platform, _, _ = action
     times = derive_schedule(
-        train, station_id, action, t_now, travel_time_to_throat)
+        train, station_id, action, t_now, travel_time_to_throat,
+        bounds_override=bounds_override)
     t_in_start, t_in_end, t_plat_start, t_plat_end, t_out_start, t_out_end = times
 
     station = cfg.stations[station_id]

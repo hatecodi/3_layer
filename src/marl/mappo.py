@@ -102,27 +102,29 @@ class MAPPOTrainer:
                                 device=device).unsqueeze(0)
 
         for agent_id in sorted(obs.keys()):
-            if agent_id not in masks or not any(masks[agent_id]):
+            if agent_id not in masks:
+                continue
+            mask_tuple = masks[agent_id]
+            p_mask, e_mask = mask_tuple
+            if not any(p_mask) and not any(e_mask):
                 # No legal action — hold, handled by env
                 continue
 
             obs_t = torch.tensor(obs[agent_id], dtype=torch.float32,
                                  device=device).unsqueeze(0)
-            raw_mask = list(masks[agent_id])
-            # Pad to fixed action_dim (station-dependent action counts vary)
-            padded = raw_mask[:self.ac.actor.action_dim]
-            padded.extend([False] * (self.ac.actor.action_dim - len(padded)))
-            mask_t = torch.tensor(padded, dtype=torch.bool, device=device)
+            # Pad platform mask to 4
+            p_mask_t = torch.tensor(list(p_mask) + [False] * (4 - len(p_mask)), dtype=torch.bool, device=device)
+            e_mask_t = torch.tensor(list(e_mask), dtype=torch.bool, device=device)
             local_t = torch.tensor(local_group_obs.get(agent_id, obs[agent_id]),
                                    dtype=torch.float32,
                                    device=device).unsqueeze(0)
 
             with torch.no_grad():
-                out = self.ac.act(obs_t, mask_t, local_t, global_t)
+                out = self.ac.act(obs_t, p_mask_t, e_mask_t, local_t, global_t)
 
-            action_idx = out.action.item()
             actions[agent_id] = AgentAction(
-                index=action_idx,
+                platform=out.platform.item(),
+                entry=out.entry.item(),
                 logprob=out.logprob.item(),
                 value_local=out.value_local.item(),
                 value_global=out.value_global.item(),
@@ -163,9 +165,12 @@ class MAPPOTrainer:
                 mb_idx = indices[start:start + self.minibatch_size]
 
                 mb_obs = batch["obs"][mb_idx]
-                mb_actions = batch["actions"][mb_idx]
+
                 mb_old_logprobs = batch["old_logprobs"][mb_idx]
-                mb_masks = batch["masks"][mb_idx]
+                mb_pmask = batch["platform_masks"][mb_idx]
+                mb_emask = batch["entry_masks"][mb_idx]
+                mb_platform = batch["platform"][mb_idx]
+                mb_entry = batch["entry"][mb_idx]
                 mb_adv_local = batch["advantages_local"][mb_idx]
                 mb_adv_global = batch["advantages_global"][mb_idx]
                 mb_ret_local = batch["returns_local"][mb_idx]
@@ -175,12 +180,15 @@ class MAPPOTrainer:
 
                 # Evaluate actions under current policy
                 out = self.ac.evaluate_actions(
-                    mb_obs, mb_masks, mb_actions, mb_local_obs, mb_global)
+                    mb_obs, mb_pmask, mb_emask, mb_platform, mb_entry,
+                    mb_local_obs, mb_global)
 
                 # ---- Policy loss (V4: A_combined = A_local + lam_team * A_global) ----
                 advantages = mb_adv_local + self._lam_team * mb_adv_global
-                # Normalize advantages
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                # Normalize advantages (guard against zero-variance, which produces NaN)
+                adv_std = advantages.std()
+                if adv_std > 1e-8:
+                    advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
 
                 ratio = torch.exp(out.logprob - mb_old_logprobs)
                 surr1 = ratio * advantages
@@ -230,7 +238,8 @@ class MAPPOTrainer:
 
 @dataclass
 class AgentAction:
-    index: int
+    platform: int
+    entry: int
     logprob: float
     value_local: float
     value_global: float

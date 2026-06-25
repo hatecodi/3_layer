@@ -10,7 +10,7 @@ from ..control.dispatch_bounds import TrainBounds
 
 
 TRIGGER_THRESHOLD_SEC = 30.0
-DEADLOCK_THRESHOLD = 25           # V4: consecutive no-legal-action steps before deadlock
+DEADLOCK_THRESHOLD = 15           # V4: global NO_LEGAL_ACTION consecutive steps           # V4: consecutive no-legal-action steps before deadlock
 
 
 class ControlStatus(Enum):

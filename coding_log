@@ -1,3 +1,195 @@
+[2026-06-08 21:30]
+Task: Session summary — B1 fixed, B2/B3/B4 identified, visitor train design started
+
+== Today's accomplishments ==
+
+P1: Batch scheduling window (FIXED)
+  MDP transitions work mechanically but n_granted=1 in 100% of steps.
+  Added batch_window_sec=60s lookahead to _pending_trains().
+  Result: multi-grant steps 0% → 13%. Zero-grant 47% (held trains block time jumps).
+
+P2: Entry choice degeneracy (FIXED) — KEY FIX
+  requested_entry_time() ignored bounds_override → used original timetable values.
+  For delayed trains, 5/6 entry choices collapsed to same value → policy gradient diluted.
+  Fix: pass bounds_override, compute offsets relative to earliest_allowed (actual conditions).
+  Training result: reward -197→-199 (flat) → -152→-131 (improving +21 delta).
+  Steps/ep: 51→19 (eliminated physically-impossible pre-arrival entries).
+
+== Bugs identified (NOT YET FIXED) ==
+
+B2: Partial trains visit phantom stations (FIXED 2026-06-08)
+  G1487 origin=C but route=[E,D,C,B,A] — spent scheduling steps at E,D with dummy bounds.
+  Affected: G1487, G2245, G7629, K1185, K834, G238.
+  Fix: _get_train_route() now slices route from origin to destination only.
+  Result: G1487 [C,B,A], K834 [C,D,E], K1185 [B,A], G238 [A,B,C,D].
+  Steps/ep: 25→17 (-32%).
+
+B3: Platform choice has no learning signal
+  is_legal_action() doesn't check resource occupancy in mask.
+  Policy can't see which platforms are occupied → learns arbitrary preference (always p2).
+  Proposed fix: visitor trains with advance notification in observation (see plan).
+  Policy sees "p1 blocked [200,500]" → learns to pick p2 → avoids resolver conflicts.
+
+B4: Timetable planned times exclude throat traversal
+  Planned arr/dep represent platform times, NOT including physical throat traversal.
+  Physics: arrival → approach(30s) → in_throat(20s) → dwell → out_throat(20s) → departure.
+  Per-station overhead ~70s not in timetable → 337s baseline delay even with zero disturbance.
+  Also missing: inter-station distances, throat lengths, train speed profiles.
+  Next session: add physical geometry + speed model to env, or adjust ontime tolerance.
+
+== Visitor train design (IN PROGRESS) ==
+  Plan: .claude/plans/visitor_trains.md
+
+  Design rationale (为什么需要访客列车):
+    B3 根因: is_legal_action() 只检查时间边界(arr_min/dep_max/dwell_min), 不检查
+    资源占用。策略的 action mask 不区分"站台已被占"和"站台空闲" — 所有站台看起来
+    一样。所以策略学到了随机偏好(总是选p2), 没有任何梯度信号告诉它"选p2比选p1好"。
+
+    访客列车思路: 在B/C/D冲突站生成预设的"访客列车", 占用特定站台特定时间窗。
+    访客信息在t=0一次性生成, 作为"预报"传入observation → 策略在执行决策前就看到
+    "前方站的p1在[200,500]时段被占, p2/p3空闲" → 主动选p2避让。
+
+    与当前parked_trains的本质区别:
+                                       parked_trains    访客列车
+      策略可见性                       不可见(纯噪声)    observation里可见预报
+      策略学习信号                     无                有(看到p1被占→选p2)
+      竞争类型                         被动(被拒才知道)  主动(提前调整计划)
+      heuristic的反应                  盲选p1→冲突       同样盲选p1→冲突
+      policy的反应                     盲选p1→冲突       预报→避让→无冲突
+
+    为什么heuristic做不到而policy可以:
+      Heuristic总是选候选列表中的第一个合法平台(p1) + earliest entry。
+      规则无法表达"如果p1被访客占且p2空闲则选p2" — 这需要策略学习。
+      Policy通过observation感知到平台占用预报, 通过PPO学到: 选空闲平台→
+      无冲突→低delay→高reward; 选被占平台→resolver fallback→delay→低reward。
+
+    具体实现:
+      1. _generate_visitors(): 替代_generate_parked_trains()
+         - 目标站: B, C, D (A/E是端点站冲突少)
+         - 每站2-3个访客
+         - 60% K类(普速,优先3,停60-180s), 40% G类(高速,优先2,停30-90s)
+         - 随机站台(均匀分布), 随机时间窗(在episode范围内)
+         - 预占resource calendar (复用parked_windows机制)
+      2. Observation: parked_flag(标量) → platform_blocked[4](位掩码)
+         - 对当前站每个站台, 检查访客时间窗是否与[t_now, t_now+600]重叠
+         - 策略看到: [p1=blocked, p2=free, p3=free, p4=free]
+         - 观测维度: 22 → 25 (resource段 3→6 dims)
+      3. 训练: 去掉initial_train_delays和corridor_disturbances
+         - 列车按时刻表正常运行
+         - 延迟只来源于访客冲突, 而非随机注入
+
+    当前冲突密度模拟 (2-3 visitor/station, 10 seeds):
+      平均 8%, 范围 2-19%, 无"全站台被占"情况
+      → 冲突存在但不会阻塞所有选择, 策略有空间学习避让
+
+    待决问题:
+      - 停靠时长是否合理? K:60-180s, G:30-90s 对于模拟环境是否太短?
+        现实中K类可能停5-15分钟, 但模拟时间被压缩(/25), 需要讨论。
+      - 冲突密度8%是否足够提供学习信号? 可能需要调高访客数量或延长停靠时间。
+      - B4咽喉时间问题修复后, 基线延迟下降, 访客造成的边际延迟会更明显。
+
+  Timetable annotated: configs/five_station/timetable_annotated.yaml
+
+== Next session priorities ==
+  1. B4: Add station geometry (distances, throat lengths) + train speed profiles
+     OR add ~70s throat tolerance to ontime calculation
+  2. B2: Fix partial train routes (origin→destination only)
+  3. B3 + visitor trains: platform-aware observation + resource pre-booking
+  4. Re-run training after B2+B3+B4 fixes
+
+Files changed today:
+  src/env/five_station_env.py — batch_window_sec, lookahead in _pending_trains
+  src/experiment/run_train.py — batch_window_sec=60.0
+  src/control/action_mask.py — requested_entry_time + derive_schedule + action_to_request bounds_override
+  configs/five_station/timetable_annotated.yaml — NEW: detailed Chinese annotations
+  .claude/plans/batch_scheduling.md — NEW
+  .claude/plans/visitor_trains.md — NEW
+
+---
+[2026-06-08 19:30]
+Task: Fix entry choice degeneracy — `requested_entry_time()` ignores `bounds_override`
+
+== Diagnosis (2000-ep training, no learning, reward flat at -198) ==
+  Traced trained policy (checkpoint ep 1019): multi-grant 13-26%, zero-grant 38-50%.
+  Policy learned to always pick p2 (meaningless preference), entry choices uniform.
+  Root cause analysis found THREE bugs:
+
+  B1 (FIXED): `requested_entry_time()` ignores `bounds_override`
+    - Uses `train.bounds` (original timetable) for `earliest_allowed`
+    - Uses `train.planned.arr` for "plan"+"plan+N" offsets
+    - For delayed trains: `planned_arr` is in the past → all 6 entry choices collapse
+      to `earliest_allowed` → 6 logits map to 1 unique schedule → PPO gradient diluted
+    - Entry picks (idx 0-5): uniform distribution confirms policy can't differentiate
+    - Also affects on-time partial trains (G1487, etc.) where pre-origin stations
+      have planned_arr=0 → all choices collapse to earliest_allowed
+
+  B2 (NOTED): Partial trains go through phantom stations
+    - G1487 origin=C, route hardcoded to [E,D,C,B,A] → wastes 2 stations
+    - E/D have arr=0/dep=0 dummy bounds → trains scheduled at irrelevant stations
+
+  B3 (NOTED): Platform choice has no learning signal
+    - `is_legal_action()` doesn't check resource occupancy
+    - Policy can't distinguish occupied vs free platforms from observation
+    - Policy converged to "always pick p2" — arbitrary preference, no gradient
+
+== Fix (B1) ==
+  src/control/action_mask.py:
+    `requested_entry_time()` + bounds_override parameter
+    When bounds_override provided: use it for earliest_allowed (actual arrival),
+    compute "plan"/"plan+N" offsets relative to earliest_allowed instead of
+    planned_arr. This makes entry choices ALWAYS distinct:
+      "earliest" = earliest_allowed + 0
+      "plan"     = earliest_allowed + 0  (same — 2 heads express "earliest")
+      "plan+1"   = earliest_allowed + 60
+      "plan+2"   = earliest_allowed + 120  … etc
+    `derive_schedule()`: pass bounds_override to requested_entry_time()
+    `action_to_request()`: + bounds_override param, pass to derive_schedule()
+  src/env/five_station_env.py:
+    `_build_requests()`: pass bounds_override=bounds to action_to_request()
+
+== Verified ==
+  G1380 on-time: 6/6 unique entry times ✓ (was 6/6, preserved)
+  G1380 200s late with override: 5/6 unique ✓ (was 1/6!)
+  Full episode heuristic: success, 25 steps, OK ✓
+
+Status: B1 FIXED — B2, B3 remain for next iteration
+
+---
+[2026-06-08 18:00]
+Task: Batch scheduling window — enable multi-train competition at intermediate stations
+
+== Diagnosis ==
+  MDP transitions work mechanically (trains move station→station), but n_granted=1
+  in 100% of training steps. Root cause: _pending_trains() only returns trains with
+  t_now >= arrival_at_current. Time-jump logic processes each arrival individually,
+  so trains at the same station with overlapping platform windows never compete.
+  Plan shows real conflicts exist: G1380[137,167] vs G1487[126,156] = 19s overlap
+  at B station with all 3 platforms shared.
+
+== Changes ==
+  src/env/five_station_env.py:
+    + batch_window_sec=60.0 parameter in __init__
+    _pending_trains(lookahead=0.0) — includes trains arriving within t_now+lookahead
+    _build_requests(action_dict, lookahead=0.0) — forwards lookahead to _pending_trains
+    step() — passes batch_window_sec as lookahead for request building
+    All other _pending_trains() callers use default lookahead=0 (deadlock, info, etc.)
+  src/experiment/run_train.py:
+    FiveStationEnv receives batch_window_sec=60.0
+
+== Results (heuristic, 10 episodes) ==
+  Multi-grant (>=2) steps: 13% (was 0%)
+  n_granted=2: 59 steps, n_granted=3: 8 steps, n_granted=7: 10 steps
+  Zero-grant steps: 47% — held trains block time jumps, causing idle steps
+  All episodes 9/9 complete, no deadlock
+  Side effect: held trains (e.g., G2245, G7629 at D) persist across many steps,
+    preventing time-jump optimization. Separate investigation needed.
+
+Rationale: Without batch window, trains at the same station never compete.
+  The resolver and multi-agent coordination are irrelevant if only 1 train is
+  pending per step. Batching creates real platform conflicts the policy must learn.
+Status: DONE — ready to discuss action space simplification
+
+---
 [2026-06-04 23:00]
 Task: Port GPU_8_9 techniques — progressive delay penalty, LayerNorm critics, entropy schedule
 
@@ -560,3 +752,66 @@ Task: Compact actor observation (115->22 dims) + context-driven design
   - Reduces overfitting from sparse vector
 
 Status: DONE - ready to test training with compact obs
+
+---
+[2026-06-07 20:09]
+Task: Rollback to V4 three-layer design
+
+== Root cause ==
+  Previous iterations drifted from V4 spec: _force_policy=True (all trains
+  used policy), resolver auto-fallback removed, deadlock per-agent instead
+  of global, penalties too aggressive. Policy was being asked to learn
+  global coordination (resolver's job) instead of individual re-scheduling
+  decisions when disturbed. Result: 2000 episodes with minimal improvement.
+
+== V4 design (restored) ==
+  Per V4 spec section "Layer 2 - Local Competition":
+  - L2 activates ONLY when disturbances detected (NOMINAL path otherwise)
+  - Resolver handles conflicts with fallback degradation (2 attempts max)
+  - Deadlock = all pending trains NO_LEGAL_ACTION for 15 consecutive steps
+  - Reward: moderate coefficients (delay_coef=0.02, held=-3.0, ONTIME=2.0)
+
+== Changes ==
+  src/control/resource_manager.py:
+    Restored assign_fallback with 2-attempt degradation.
+    Conflicts: other platform first, delayed slot second, then hold.
+    (was: no fallback, direct hold)
+
+  src/env/five_station_env.py:
+    _force_policy: True -> False (restore NOMINAL path)
+    Deadlock: per-agent held_steps -> V4 global NO_LEGAL_ACTION count
+    Removed episode-level deadlock penalty (-500/agent)
+
+  src/env/reward.py:
+    held: -8.0 -> -3.0
+    delay_coef: 0.04 -> 0.02
+    ONTIME_BONUS: 3.0 -> 2.0
+    global coef: restored V4 values
+
+  src/env/disturbance.py:
+    DEADLOCK_THRESHOLD: 25 -> 15 (V4 spec)
+
+  src/experiment/run_train.py:
+    disturbance_prob: 0.08 -> 0.03 (V4 spec)
+    Kept initial_train_delays for systematic L2 activation
+    Kept action_dim=72 (+plan+3 entry choice)
+
+== Retained improvements ==
+  - Compact 22-dim observation (actor-focused)
+  - LayerNorm on MaskedActor
+  - 6 entry_choices (+plan+3 for finer timing control)
+  - Parked trains mechanism (moderate: prob=0.3, duration 120-360s)
+  - Real compressed timetable (9 trains, P1-P3 priority)
+  - Training analysis hook (scripts/analyze_training.py)
+
+== L3 preparation ==
+  Interface unchanged: ExecutionTarget + ExecutionController protocol.
+  RuleBasedExecutor kept as future RL-L3 baseline.
+  L2 produces GrantResult -> L3 consumes ExecutionTarget.
+
+== Verification ==
+  NOMINAL (dist=0): 64 steps, success
+  With dist (0.05): 64 steps, success, L2_ACTIVE in 49/64 steps (76%)
+  obs_dim=22, ENTRY_CHOICES=6, action_dim=72
+
+Status: DONE - ready to retrain with V4-compliant design

@@ -1,16 +1,21 @@
-"""Actor and critic networks for Layer 2 MAPPO."""
+"""Actor and critic networks for Layer 2 MAPPO with factored action space.
+
+FactoredActor: separate platform head (4 logits) and entry head (6 logits).
+Total logits: 10 (was 72). Dwell always 0 (min dwell, optimal).
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
 
-DEFAULT_OBS_DIM = 22  # fallback for backward compat
-DEFAULT_ACTION_DIM = 60
+DEFAULT_OBS_DIM = 22
+PLATFORM_DIM = 4  # max platforms per station
+ENTRY_DIM = 6      # 6 entry choices
 GLOBAL_STATE_DIM = 14
 
 
@@ -24,28 +29,54 @@ def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
     )
 
 
-class MaskedActor(nn.Module):
+class FactoredActor(nn.Module):
+    """Two-headed actor: platform choice + entry timing.
+    
+    4 platform logits + 6 entry logits = 10 total (was 72).
+    Dwell is always min_dwell (0 extra).
+    """
     def __init__(
         self,
         obs_dim: int = DEFAULT_OBS_DIM,
-        action_dim: int = DEFAULT_ACTION_DIM,
+        platform_dim: int = PLATFORM_DIM,
+        entry_dim: int = ENTRY_DIM,
         hidden_dim: int = 128,
     ):
         super().__init__()
-        self.action_dim = action_dim
+        self.platform_dim = platform_dim
+        self.entry_dim = entry_dim
+        self.action_dim = platform_dim + entry_dim  # 10 total
         self.norm = nn.LayerNorm(obs_dim)
-        self.net = _mlp(obs_dim, hidden_dim, action_dim)
+        self.shared = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+        )
+        self.platform_head = nn.Linear(hidden_dim, platform_dim)
+        self.entry_head = nn.Linear(hidden_dim, entry_dim)
 
-    def logits(self, obs: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
-        obs = self.norm(obs)
-        logits = self.net(obs)
-        if mask is None:
-            return logits
-        mask = mask.to(dtype=torch.bool, device=logits.device)
-        return logits.masked_fill(~mask, float("-inf"))
+    def logits(
+        self,
+        obs: torch.Tensor,
+        platform_mask: torch.Tensor | None = None,
+        entry_mask: torch.Tensor | None = None,
+    ):
+        h = self.norm(obs)
+        h = self.shared(h)
+        p_logits = self.platform_head(h)
+        e_logits = self.entry_head(h)
+        if platform_mask is not None:
+            platform_mask = platform_mask.to(dtype=torch.bool, device=p_logits.device)
+            p_logits = p_logits.masked_fill(~platform_mask, float("-inf"))
+        if entry_mask is not None:
+            entry_mask = entry_mask.to(dtype=torch.bool, device=e_logits.device)
+            e_logits = e_logits.masked_fill(~entry_mask, float("-inf"))
+        return p_logits, e_logits
 
-    def dist(self, obs: torch.Tensor, mask: torch.Tensor | None = None) -> Categorical:
-        return Categorical(logits=self.logits(obs, mask))
+    def dist(self, obs, platform_mask=None, entry_mask=None):
+        p_logits, e_logits = self.logits(obs, platform_mask, entry_mask)
+        return Categorical(logits=p_logits), Categorical(logits=e_logits)
 
 
 class LocalCritic(nn.Module):
@@ -80,7 +111,8 @@ class GlobalCritic(nn.Module):
 
 @dataclass
 class ActorCriticOutput:
-    action: torch.Tensor
+    platform: torch.Tensor
+    entry: torch.Tensor
     logprob: torch.Tensor
     entropy: torch.Tensor
     value_local: torch.Tensor
@@ -91,29 +123,35 @@ class Layer2ActorCritic(nn.Module):
     def __init__(
         self,
         obs_dim: int = DEFAULT_OBS_DIM,
-        action_dim: int = DEFAULT_ACTION_DIM,
+        platform_dim: int = PLATFORM_DIM,
+        entry_dim: int = ENTRY_DIM,
         k_local: int = 3,
         global_state_dim: int = GLOBAL_STATE_DIM,
         hidden_dim: int = 128,
     ):
         super().__init__()
-        self.actor = MaskedActor(obs_dim, action_dim, hidden_dim)
+        self.actor = FactoredActor(obs_dim, platform_dim, entry_dim, hidden_dim)
         self.local_critic = LocalCritic(obs_dim, k_local, hidden_dim)
         self.global_critic = GlobalCritic(global_state_dim, hidden_dim)
 
     def act(
         self,
         obs: torch.Tensor,
-        mask: torch.Tensor,
+        platform_mask: torch.Tensor,
+        entry_mask: torch.Tensor,
         local_group_obs: torch.Tensor,
         global_state: torch.Tensor,
     ) -> ActorCriticOutput:
-        dist = self.actor.dist(obs, mask)
-        action = dist.sample()
+        p_dist, e_dist = self.actor.dist(obs, platform_mask, entry_mask)
+        platform = p_dist.sample()
+        entry = e_dist.sample()
+        logprob = p_dist.log_prob(platform) + e_dist.log_prob(entry)
+        entropy = p_dist.entropy() + e_dist.entropy()
         return ActorCriticOutput(
-            action=action,
-            logprob=dist.log_prob(action),
-            entropy=dist.entropy(),
+            platform=platform,
+            entry=entry,
+            logprob=logprob,
+            entropy=entropy,
             value_local=self.local_critic(local_group_obs),
             value_global=self.global_critic(global_state),
         )
@@ -121,16 +159,21 @@ class Layer2ActorCritic(nn.Module):
     def evaluate_actions(
         self,
         obs: torch.Tensor,
-        mask: torch.Tensor,
-        actions: torch.Tensor,
+        platform_mask: torch.Tensor,
+        entry_mask: torch.Tensor,
+        platform: torch.Tensor,
+        entry: torch.Tensor,
         local_group_obs: torch.Tensor,
         global_state: torch.Tensor,
     ) -> ActorCriticOutput:
-        dist = self.actor.dist(obs, mask)
+        p_dist, e_dist = self.actor.dist(obs, platform_mask, entry_mask)
+        logprob = p_dist.log_prob(platform) + e_dist.log_prob(entry)
+        entropy = p_dist.entropy() + e_dist.entropy()
         return ActorCriticOutput(
-            action=actions,
-            logprob=dist.log_prob(actions),
-            entropy=dist.entropy(),
+            platform=platform,
+            entry=entry,
+            logprob=logprob,
+            entropy=entropy,
             value_local=self.local_critic(local_group_obs),
             value_global=self.global_critic(global_state),
         )
@@ -154,9 +197,3 @@ def compact_global_state(metrics: dict) -> List[float]:
         0.0,
         0.0,
     ]
-
-
-def pad_mask(mask: Sequence[bool], action_dim: int = DEFAULT_ACTION_DIM) -> List[bool]:
-    values = list(mask[:action_dim])
-    values.extend([False] * (action_dim - len(values)))
-    return values

@@ -26,7 +26,6 @@ from src.env.observation_builder import get_obs_dim, critic_input
 from src.marl.actor_critic import (
     Layer2ActorCritic,
     compact_global_state,
-    pad_mask,
 )
 from src.marl.mappo import MAPPOTrainer, AgentAction
 from src.marl.rollout_buffer import RolloutBuffer, AgentTransition
@@ -79,17 +78,15 @@ def _build_critic_inputs(
 # ---------------------------------------------------------------------------
 
 
-def train(env_factory: Callable[[int], BaseRailwayEnv], args, action_dim: int = 45, obs_dim: int = 74) -> Dict:
+def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 22) -> Dict:
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    HP["obs_dim"] = obs_dim
-    HP["action_dim"] = action_dim
     print(f"Device: {device}")
     print(f"Hyperparameters: {json.dumps(HP, indent=2)}")
 
     # Model
     ac = Layer2ActorCritic(
         obs_dim=obs_dim,
-        action_dim=action_dim,
+        
         k_local=HP["k_local"],
         hidden_dim=HP["hidden_dim"],
     )
@@ -156,7 +153,7 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, action_dim: int = 
                 obs, masks, group_obs, gs_vec, device=device)
 
             # Build action_dict
-            action_dict = {aid: a.index for aid, a in agent_actions.items()}
+            action_dict = {aid: (a.platform, a.entry) for aid, a in agent_actions.items()}
 
             # Step
             next_obs, reward, terminated, truncated, info = env.step(action_dict)
@@ -173,16 +170,25 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, action_dim: int = 
                 r_local = reward_breakdown.get(agent_id, {}).get("local", 0.0)
                 r_global = reward_breakdown.get(agent_id, {}).get("global_", 0.0)
 
-                mask_t = torch.tensor(
-                    pad_mask(masks.get(agent_id, []), HP["action_dim"]),
-                    dtype=torch.bool)
+                # Factored masks: platform_mask + entry_mask
+                m = masks.get(agent_id)
+                if m is not None:
+                    pm = list(m[0]) + [False] * (4 - len(m[0]))  # pad to 4
+                    em = list(m[1])  # already 6
+                    p_mask = torch.tensor(pm, dtype=torch.bool)
+                    e_mask = torch.tensor(em, dtype=torch.bool)
+                else:
+                    p_mask = torch.zeros(4, dtype=torch.bool)
+                    e_mask = torch.zeros(6, dtype=torch.bool)
 
                 step_transitions.append(AgentTransition(
                     agent_id=agent_id,
                     obs=torch.tensor(obs[agent_id], dtype=torch.float32),
-                    action=a.index,
+                    platform=a.platform,
+                    entry=a.entry,
                     logprob=a.logprob,
-                    mask=mask_t,
+                    platform_mask=p_mask,
+                    entry_mask=e_mask,
                     value_local=a.value_local,
                     value_global=a.value_global,
                     reward_local=r_local,
@@ -225,6 +231,12 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, action_dim: int = 
                 stats = {}
 
         # ---- end of episode ----
+        # V4: deadlock penalty applied to ALL agents at episode level
+        if info.get("episode_status") == "deadlock":
+            DL_PENALTY = 400.0
+            for tid in env.cfg.trains:
+                ep_reward[tid] += (-DL_PENALTY)
+        
         m = info.get("metrics", {})
         total_r = sum(ep_reward.values())
         mean_r = total_r / max(len(ep_reward), 1)
@@ -334,7 +346,6 @@ def main():
         cfg = load_scenario(scenario_name="two_station")
         from src.env.observation_builder import get_obs_dim
         obs_dim = get_obs_dim(cfg)
-        action_dim = 45  # 3 platforms × 5 entry × 3 dwell
 
         def env_factory(seed: int) -> TwoStationEnv:
             corridor = CorridorDisturbance(
@@ -355,22 +366,29 @@ def main():
         cfg = load_scenario(scenario_name="five_station")
         from src.env.observation_builder import get_obs_dim
         obs_dim = get_obs_dim(cfg)
-        action_dim = 60  # max 4 platforms (C station) × 5 entry × 3 dwell
 
         def env_factory(seed: int) -> FiveStationEnv:
+            import random as _random
             cfg = load_scenario(scenario_name="five_station")
             corridor = CorridorDisturbance(
                 corridor_id="A_B_up", start_time=200, end_time=600,
                 speed_ratio=0.5)
+            # Inject systematic delays to 2-3 random trains to create cascading conflicts
+            _rng = _random.Random(seed)
+            _candidates = list(cfg.trains.keys())
+            _rng.shuffle(_candidates)
+            _delayed = _candidates[:_rng.randint(2, 3)]
+            initial_train_delays = {tid: _rng.uniform(60, 300) for tid in _delayed}
             return FiveStationEnv(
                 cfg=cfg,
-                disturbance_prob=0.03,
+                disturbance_prob=0.05,  # V4: upper ablation range
                 corridor_disturbances=[corridor],
-                # initial_train_delays={"K999": 60.0},
+                initial_train_delays=initial_train_delays,
                 seed=seed,
+                batch_window_sec=60.0,
             )
 
-    train(env_factory, args, action_dim=action_dim, obs_dim=obs_dim)
+    train(env_factory, args,  obs_dim=obs_dim)
 
 
 if __name__ == "__main__":

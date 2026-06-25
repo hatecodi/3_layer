@@ -277,10 +277,14 @@ def resolve_all(
             _grant(req, calendar, results)
             continue
 
-        # Resolve: already-granted trains won on priority, current request loses.
+        # Resolve: fallback with degradation (V4 spec)
+        # First attempt: try other platforms. Second: delay on same platform.
+        # If both fail, hold the train. This limits resolver to 2 attempts,
+        # giving the policy room to learn while preventing cascading deadlocks.
         granted_fallback = False
+        attempts = 0
         for cid in conflicts:
-            if cid in results:
+            if cid in results and attempts < 2:
                 plat_list = candidate_platforms.get(req.train_id, [req.platform])
                 fallback = assign_fallback(
                     req, plat_list, rebuild_fn, calendar, min_gap)
@@ -289,10 +293,9 @@ def resolve_all(
                            winner=False, fallback_from=req.platform)
                     granted_fallback = True
                     break
+                attempts += 1
         if not granted_fallback:
-            # No bounded feasible fallback exists. The train is intentionally
-            # left ungranted so the caller can hold/replan it; granting the
-            # original request here would reintroduce a hard conflict.
+            # No feasible fallback within 2 attempts: held for policy retry
             continue
 
     return [results[r.train_id] for r in requests if r.train_id in results]

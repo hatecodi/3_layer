@@ -1,0 +1,351 @@
+# ===========================================================================
+# 五站时刻表 — 详细中文注释
+# ===========================================================================
+#
+# 路线: 上行 A→B→C→D→E, 下行 E→D→C→B→A
+# 走廊距离: A-B 90s, B-C 90s, C-D 180s, D-E 180s (模拟秒)
+# 时间压缩: 真实秒 / 25 = 模拟秒, 基准 15:00 = t=0
+# ===========================================================================
+
+# ------------------------------------------------------------------
+# 优先级映射
+# ------------------------------------------------------------------
+priority_map:
+  '1': 复兴号(G1380,G1616,G7629)    # P1 = Fuxing, 最高优先
+  '2': 和谐号(G230,G238,G2245,G1487) # P2 = Hexie, 中等优先
+  '3': 快速(K834,K1185)              # P3 = K-train, 最低优先
+
+# ------------------------------------------------------------------
+# 各站默认停站时间 (模拟秒)
+# ------------------------------------------------------------------
+station_dwell_defaults:
+  A: 60   # 始发/终到站, 停靠较长
+  B: 30   # 中间站, 30s
+  C: 60   # 大站, 停靠60s
+  D: 30   # 小站(仅2站台), 30s
+  E: 30   # 终到站
+
+# ------------------------------------------------------------------
+# 车站名称
+# ------------------------------------------------------------------
+station_names:
+  A: 北京站
+  B: 天津站
+  C: 济南站    # 大站, 4站台
+  D: 徐州站    # 小站, 仅2站台 — 瓶颈！
+  E: 上海站
+
+# ------------------------------------------------------------------
+# 时间生成参数
+# ------------------------------------------------------------------
+time_generation:
+  # 各走廊段运行时间 (模拟秒)
+  corridor_runtime_sec:
+    A_to_B: 90     # 北京→天津  90s  (真实 2250s / 25)
+    B_to_A: 90
+    B_to_C: 90     # 天津→济南  90s
+    C_to_B: 90
+    C_to_D: 180    # 济南→徐州 180s  (真实 4500s / 25) — 较远
+    D_to_C: 180
+    D_to_E: 180    # 徐州→上海 180s
+    E_to_D: 180
+
+  dep_max_slack_sec: 120  # 出发软约束: 最晚出发 = 计划出发 + 120s
+  headway_sec: 60         # 最小追踪间隔 60s
+
+# ------------------------------------------------------------------
+# 设计假设
+# ------------------------------------------------------------------
+assumptions:
+- '时间压缩: 真实秒 / 25 = 模拟秒, 基准 15:00 = t=0'
+- 'A:北京 B:天津 C:济南 D:徐州 E:上海'
+- 'P1:复兴号 P2:和谐号 P3:快速'
+- '通过站 dwell=0, 不停车直接过'
+- '部分列车: 始发前 arr=dep=0, 终到后立即结束'
+- 'G1616 E站为估计值, K834 D/E站为估计值, G1487 B站为估计值'
+
+# ===========================================================================
+# 列车时刻表 (9列)
+# ===========================================================================
+# 每个字段说明:
+#   id: 车次号
+#   direction: up(上行A→E) / down(下行E→A)
+#   train_class: G(高速) / K(普速)
+#   priority: 1(最高) / 2 / 3(最低) — 冲突时优先级高者胜
+#   pass_through: true=通过不停车 / false=停站
+#   route:
+#     origin_station: 实际发车站(部分列车非端点站)
+#     destination_station: 实际终到站
+#   planned:
+#     {站名}:
+#       arr: 计划到达时间 (模拟秒, 相对于t=0)
+#       dep: 计划出发时间 (模拟秒)
+#       → 注意: planned 不包含咽喉通过时间！arr=到达站台时刻, dep=离开站台时刻
+#       → 物理实际: arrival → approach(30s) → in_throat(20s) → dwell → out_throat(20s)
+#       → 计划与物理差: ~70s per 停站 (approach + in_throat + out_throat)
+#   bounds:
+#     {站名}:
+#       arr_min: L1硬边界 — 最早可以进站的时间 [= planned.arr - 120s]
+#       dep_max: L1硬边界 — 最晚必须离站的时间 [= planned.dep + 120s]
+#       dwell_min: L1硬边界 — 最少停站时间
+#       → 这三个值构成 Layer1 的"硬信封", 策略在此范围内选择 platform + entry
+#   candidate_platforms: 该站可用的候选站台列表
+
+trains:
+# ===========================================================================
+# G1380 — 复兴号, 全程上行 A→E, P1
+# 北京始发, 每站停靠
+# ===========================================================================
+- id: G1380
+  direction: up
+  train_class: G
+  priority: 1
+  pass_through: false
+  route:
+    origin_station: A       # 始发: 北京
+    destination_station: E  # 终到: 上海
+  # ---- planned: 计划站台到达/离开时刻 (不含咽喉!) ----
+  planned:
+    A: {arr: 0,   dep: 53}    # 北京: 停60s → dep=arr+dwell? 0+60=60≠53, timetable有微小调整
+    B: {arr: 137, dep: 167}   # 天津: A→B走90s + 北京离站53+throat+90 = 53+70+90 = 213 → 但arr=137,表示"到达站台时刻"排除咽喉
+    C: {arr: 233, dep: 293}   # 济南: B→C走90s, arr=167+90=257? 实际233, timetable有调整
+    D: {arr: 487, dep: 517}   # 徐州: C→D走180s
+    E: {arr: 703, dep: 703}   # 上海: 终到, dep=arr
+  # ---- bounds: Layer1 硬约束 (arr_min/dep_max/dwell_min) ----
+  bounds:
+    A: {arr_min: 0,   dep_max: 173, dwell_min: 60}   # 最晚离北京: 53+120=173
+    B: {arr_min: 17,  dep_max: 287, dwell_min: 30}   # 最早到天津: 137-120=17, 最晚离: 167+120=287
+    C: {arr_min: 113, dep_max: 413, dwell_min: 60}
+    D: {arr_min: 367, dep_max: 637, dwell_min: 30}
+    E: {arr_min: 583, dep_max: 823, dwell_min: 0}    # 终到站不要求停留
+  candidate_platforms: {A: [A_p1,A_p2,A_p3], B: [B_p1,B_p2,B_p3], C: [C_p1,C_p2,C_p3,C_p4], D: [D_p1,D_p2], E: [E_p1,E_p2,E_p3]}
+
+# ===========================================================================
+# G230 — 和谐号, 全程上行 A→E, P2, 通过济南(C站)
+# ===========================================================================
+- id: G230
+  direction: up
+  train_class: G
+  priority: 2
+  pass_through: false
+  route:
+    origin_station: A
+    destination_station: E
+  planned:
+    A: {arr: 0,   dep: 31}     # 北京出发比G1380早 (31 vs 53)
+    B: {arr: 108, dep: 138}    # 天津停30s
+    C: {arr: 228, dep: 228}    # 济南: arr=dep=228 → 通过不停车! dwell=0
+    D: {arr: 365, dep: 395}    # 徐州停30s
+    E: {arr: 514, dep: 514}    # 上海终到
+  bounds:
+    A: {arr_min: 0,   dep_max: 151, dwell_min: 60}
+    B: {arr_min: 0,   dep_max: 258, dwell_min: 30}
+    C: {arr_min: 108, dep_max: 348, dwell_min: 0}    # dwell_min=0 → 通过站
+    D: {arr_min: 245, dep_max: 515, dwell_min: 30}
+    E: {arr_min: 394, dep_max: 634, dwell_min: 0}
+  candidate_platforms: {A:[A_p1-p3], B:[B_p1-p3], C:[C_p1-p4], D:[D_p1,D_p2], E:[E_p1-p3]}
+
+# ===========================================================================
+# G1616 — 复兴号, 全程上行 A→E, P1
+# ===========================================================================
+- id: G1616
+  direction: up
+  train_class: G
+  priority: 1
+  pass_through: false
+  route:
+    origin_station: A
+    destination_station: E
+  planned:
+    A: {arr: 0,   dep: 65}     # 北京: 三列上行中最后出发 (65 > 53 > 31)
+    B: {arr: 173, dep: 203}    # 天津
+    C: {arr: 254, dep: 314}    # 济南停60s
+    D: {arr: 492, dep: 522}    # 徐州
+    E: {arr: 702, dep: 702}    # 上海
+  bounds:
+    A: {arr_min: 0,   dep_max: 185, dwell_min: 60}
+    B: {arr_min: 53,  dep_max: 323, dwell_min: 30}
+    C: {arr_min: 134, dep_max: 434, dwell_min: 60}
+    D: {arr_min: 372, dep_max: 642, dwell_min: 30}
+    E: {arr_min: 582, dep_max: 822, dwell_min: 0}
+  candidate_platforms: {A:[p1-p3], B:[p1-p3], C:[p1-p4], D:[p1,p2], E:[p1-p3]}
+
+# ===========================================================================
+# G238 — 和谐号, 部分上行 A→D, P2, 通过B和C
+# ===========================================================================
+- id: G238
+  direction: up
+  train_class: G
+  priority: 2
+  pass_through: false
+  route:
+    origin_station: A
+    destination_station: D     # 只到徐州!
+  planned:
+    A: {arr: 0,   dep: 79}
+    B: {arr: 169, dep: 169}    # arr=dep → 通过天津!
+    C: {arr: 259, dep: 259}    # arr=dep → 通过济南!
+    D: {arr: 372, dep: 377}    # 徐州终到, 只停5s
+    E: {arr: 377, dep: 377}    # 上海: arr=dep → 不到上海, 占位数据
+  bounds:
+    A: {arr_min: 0,   dep_max: 199, dwell_min: 60}
+    B: {arr_min: 49,  dep_max: 289, dwell_min: 0}     # dwell=0 → 通过
+    C: {arr_min: 139, dep_max: 379, dwell_min: 0}
+    D: {arr_min: 252, dep_max: 497, dwell_min: 5}     # 终到, 仅需5s
+    E: {arr_min: 257, dep_max: 497, dwell_min: 0}     # 不到E
+  candidate_platforms: {A:[p1-p3], B:[p1-p3], C:[p1-p4], D:[p1,p2], E:[p1-p3]}
+
+# ===========================================================================
+# K834 — 快速, 部分上行 C→E, P3, 济南始发
+# ===========================================================================
+- id: K834
+  direction: up
+  train_class: K
+  priority: 3
+  pass_through: false
+  route:
+    origin_station: C          # ★ 济南始发 — 不是A!
+    destination_station: E
+  planned:
+    A: {arr: 0, dep: 0}       # 不到北京 → arr=dep=0 (占位)
+    B: {arr: 0, dep: 0}       # 不到天津 → arr=dep=0
+    C: {arr: 0, dep: 298}     # 济南始发, arr=0 表示"从t=0起在此待发"
+    D: {arr: 478, dep: 508}   # 徐州停30s
+    E: {arr: 688, dep: 688}   # 上海终到
+  bounds:
+    A: {arr_min: 0, dep_max: 120, dwell_min: 0}   # 未到站: 宽松默认值
+    B: {arr_min: 0, dep_max: 120, dwell_min: 0}   # 未到站
+    C: {arr_min: 0, dep_max: 418, dwell_min: 60}
+    D: {arr_min: 358, dep_max: 628, dwell_min: 30}
+    E: {arr_min: 568, dep_max: 808, dwell_min: 0}
+  candidate_platforms: {A:[p1-p3], B:[p1-p3], C:[p1-p4], D:[p1,p2], E:[p1-p3]}
+
+# ===========================================================================
+# G7629 — 复兴号, 部分下行 E→D, P1, 上海始发徐州终到
+# ===========================================================================
+- id: G7629
+  direction: down
+  train_class: G
+  priority: 1
+  pass_through: false
+  route:
+    origin_station: E          # 上海始发
+    destination_station: D     # 只到徐州
+  planned:
+    E: {arr: 0,   dep: 706}    # 上海: 很晚才出发 (t=706)
+    D: {arr: 888, dep: 893}    # 徐州终到
+    C: {arr: 893, dep: 893}    # 不到济南
+    B: {arr: 893, dep: 893}    # 不到天津
+    A: {arr: 893, dep: 893}    # 不到北京
+  bounds:
+    E: {arr_min: 0,   dep_max: 826, dwell_min: 30}
+    D: {arr_min: 768, dep_max: 1013, dwell_min: 5}
+    C: {arr_min: 773, dep_max: 1013, dwell_min: 0}
+    B: {arr_min: 773, dep_max: 1013, dwell_min: 0}
+    A: {arr_min: 773, dep_max: 1013, dwell_min: 0}
+  candidate_platforms: {E:[p1-p3], D:[p1,p2], C:[p1-p4], B:[p1-p3], A:[p1-p3]}
+
+# ===========================================================================
+# G2245 — 和谐号, 部分下行 E→D, P2, 上海始发徐州终到
+# ===========================================================================
+- id: G2245
+  direction: down
+  train_class: G
+  priority: 2
+  pass_through: false
+  route:
+    origin_station: E
+    destination_station: D
+  planned:
+    E: {arr: 0,   dep: 540}    # 比G7629早出发
+    D: {arr: 773, dep: 773}    # 徐州通过 (arr=dep)
+    C: {arr: 773, dep: 773}
+    B: {arr: 773, dep: 773}
+    A: {arr: 773, dep: 773}
+  bounds:
+    E: {arr_min: 0,   dep_max: 660, dwell_min: 30}
+    D: {arr_min: 653, dep_max: 893, dwell_min: 0}
+    C: {arr_min: 653, dep_max: 893, dwell_min: 0}
+    B: {arr_min: 653, dep_max: 893, dwell_min: 0}
+    A: {arr_min: 653, dep_max: 893, dwell_min: 0}
+  candidate_platforms: {E:[p1-p3], D:[p1,p2], C:[p1-p4], B:[p1-p3], A:[p1-p3]}
+
+# ===========================================================================
+# G1487 — 和谐号, 部分下行 C→A, P2, 济南始发北京终到
+# ===========================================================================
+- id: G1487
+  direction: down
+  train_class: G
+  priority: 2
+  pass_through: false
+  route:
+    origin_station: C          # ★ 济南始发 — 不是E!
+    destination_station: A
+  planned:
+    E: {arr: 0, dep: 0}       # 不到上海
+    D: {arr: 0, dep: 0}       # 不到徐州
+    C: {arr: 0, dep: 36}      # 济南始发
+    B: {arr: 126, dep: 156}   # 天津停30s
+    A: {arr: 228, dep: 238}   # 北京终到, 停10s
+  bounds:
+    E: {arr_min: 0, dep_max: 120, dwell_min: 0}   # 未到站
+    D: {arr_min: 0, dep_max: 120, dwell_min: 0}   # 未到站
+    C: {arr_min: 0, dep_max: 156, dwell_min: 60}
+    B: {arr_min: 6, dep_max: 276, dwell_min: 30}
+    A: {arr_min: 108, dep_max: 358, dwell_min: 10}
+  candidate_platforms: {E:[p1-p3], D:[p1,p2], C:[p1-p4], B:[p1-p3], A:[p1-p3]}
+
+# ===========================================================================
+# K1185 — 快速, 部分下行 B→A, P3, 天津始发北京终到
+# ===========================================================================
+- id: K1185
+  direction: down
+  train_class: K
+  priority: 3
+  pass_through: false
+  route:
+    origin_station: B          # ★ 天津始发!
+    destination_station: A
+  planned:
+    E: {arr: 0, dep: 0}
+    D: {arr: 0, dep: 0}
+    C: {arr: 0, dep: 0}
+    B: {arr: 0, dep: 96}      # 天津始发
+    A: {arr: 362, dep: 406}   # 北京终到  B→A走廊 90s + 天津离站96+70=166 → 262 ≠ 362
+                               # 差值来自: K车速度慢, 走廊时间更长
+  bounds:
+    E: {arr_min: 0, dep_max: 120, dwell_min: 0}
+    D: {arr_min: 0, dep_max: 120, dwell_min: 0}
+    C: {arr_min: 0, dep_max: 120, dwell_min: 0}
+    B: {arr_min: 0, dep_max: 216, dwell_min: 30}
+    A: {arr_min: 242, dep_max: 526, dwell_min: 44}
+  candidate_platforms: {E:[p1-p3], D:[p1,p2], C:[p1-p4], B:[p1-p3], A:[p1-p3]}
+
+# ===========================================================================
+# 关键观察:
+# ===========================================================================
+# 1. 始发站 A 出发间隔: G230@31, G1380@53, G1616@65, G238@79
+#    → 间距仅 12-14s, 非常紧凑, 容易在A站产生始发冲突
+#
+# 2. 上位列车冲突 (B站):
+#    G230 [108,138] ∩ G1380 [137,167] → 重叠1s
+#    G1487 [126,156] ∩ G1380 [137,167] → 重叠19s
+#    → B站存在真实的站台时间窗冲突
+#
+# 3. 部分列车 (partial trains):
+#    K834:  C始发 → 前两站(A,B) arr=dep=0, 但route仍过全5站
+#    G1487: C始发 → 前两站(E,D) arr=dep=0
+#    K1185: B始发 → 前三站(E,D,C) arr=dep=0
+#    G7629: E始发D终到 → 后三站(C,B,A) arr=dep相同(即时过)
+#    G2245: E始发D终到 → 后三站同
+#    G238:  A始发D终到 → E站 arr=dep=377
+#    → 这些列车仍经过全5站路由, 在幽灵站浪费调度步 (B2 bug)
+#
+# 4. 咽喉时间未计入 (关键!) :
+#    planned.arr/dep 表示"站台到达/离开", 不含物理咽喉通过时间
+#    物理实际: arrival → approach(30s) → in_throat(20s) → platform → out_throat(20s)
+#    每站合计 ~70s 咽喉开销未体现在时刻表中
+#    → 即使零扰动, heuristic 每站晚 ~70s
+#    → 337s 延迟 = 5站 × 70s ≈ 350s ✓
+#
+# 5. 瓶颈站: D(徐州)仅2站台, C(济南)4站台但多车停靠

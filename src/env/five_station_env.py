@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..common.base_env import BaseRailwayEnv
 from ..control.action_mask import (
+    ENTRY_CHOICES,
     THROAT_CLEARANCE_TIME,
     ActionSpec,
     action_to_request,
@@ -118,6 +119,7 @@ class FiveStationEnv(BaseRailwayEnv):
         corridor_disturbances: Optional[List[CorridorDisturbance]] = None,
         initial_train_delays: Optional[Dict[str, float]] = None,
         seed: Optional[int] = None,
+        batch_window_sec: float = 60.0,
     ):
         self.cfg = cfg
         self.layer1 = DispatchBounds(cfg)
@@ -127,7 +129,8 @@ class FiveStationEnv(BaseRailwayEnv):
             prob_per_step=disturbance_prob, rng=self.rng)
         self.corridor_disturbances = corridor_disturbances or []
         self.initial_train_delays = initial_train_delays or {}
-        self._force_policy = True  # training: all trains use policy
+        self._force_policy = True   # training: all trains use policy for learning signal
+        self.batch_window_sec = batch_window_sec
         # Parked trains: K-type occupying platforms at B, C to create bottlenecks
         self._parked_trains_enabled = True
         self._parked_prob = 0.3  # probability per station B,C
@@ -155,12 +158,18 @@ class FiveStationEnv(BaseRailwayEnv):
         self._completed_ids: List[str] = []
 
     def _get_train_route(self, train) -> List[str]:
-        """Extract ordered station list for a train."""
-        # Route is derived from direction: up = A→E, down = E→A
-        if train.direction == "up":
-            return ["A", "B", "C", "D", "E"]
-        else:
-            return ["E", "D", "C", "B", "A"]
+        """Extract ordered station list for a train, from origin to destination only."""
+        full_up = ["A", "B", "C", "D", "E"]
+        full_down = ["E", "D", "C", "B", "A"]
+        route = full_up if train.direction == "up" else full_down
+        origin = train.origin_station
+        dest = train.destination_station
+        try:
+            start = route.index(origin)
+            end = route.index(dest)
+            return route[start:end + 1]
+        except (ValueError, IndexError):
+            return route
 
     # ------------------------------------------------------------------
     # Gym interface
@@ -230,8 +239,9 @@ class FiveStationEnv(BaseRailwayEnv):
             [tid for tid in self._journeys if not self._journeys[tid].is_done],
             self._states)
 
-        # 1. Build requests for all pending trains
-        requests, held, infeasible = self._build_requests(action_dict)
+        # 1. Build requests for all pending trains (within batch window)
+        requests, held, infeasible = self._build_requests(
+            action_dict, lookahead=self.batch_window_sec)
         conflict_graph = build_conflict_graph(requests)
 
         # 2. Resolve
@@ -296,12 +306,20 @@ class FiveStationEnv(BaseRailwayEnv):
         else:
             self._t_now += self.decision_interval_sec
 
-        # 8. Deadlock detection (based on state after time advance)
-        self._deadlock_counter = (
-            self._deadlock_counter + 1
-            if len(pending) > 0 and len(granted_ids) == 0
-            else 0
-        )
+        # 8. Deadlock detection (V4 spec: global NO_LEGAL_ACTION count)
+        # Deadlock = no pending train has any legal action for consecutive steps.
+        # With resolver fallback, NO_LEGAL_ACTION should be rare.
+        masks = self._action_masks(self._pending_trains())
+        no_legal = all(
+            not any(masks.get(tid, [False]))
+            for tid in self._pending_trains()
+        ) if self._pending_trains() else False
+        
+        if no_legal:
+            self._deadlock_counter += 1
+        else:
+            self._deadlock_counter = 0
+        
         if self._deadlock_counter >= DEADLOCK_THRESHOLD:
             self._episode_status = EpisodeStatus.DEADLOCK
         elif all(j.is_done for j in self._journeys.values()):
@@ -387,17 +405,23 @@ class FiveStationEnv(BaseRailwayEnv):
                         for tid, j in self._journeys.items() if not j.is_done},
         }
 
-    def _pending_trains(self) -> List[str]:
-        """Trains that have arrived at current station and need scheduling."""
+    def _pending_trains(self, lookahead: float = 0.0) -> List[str]:
+        """Trains that have arrived (or will arrive within lookahead) and need scheduling.
+
+        Args:
+            lookahead: Include trains with arrival_at_current <= t_now + lookahead.
+                       Used for batch scheduling at intermediate stations.
+        """
+        horizon = self._t_now + lookahead
         pending = []
         for tid, j in self._journeys.items():
             if j.is_done:
                 continue
-            if self._t_now >= j.arrival_at_current:
+            if horizon >= j.arrival_at_current:
                 pending.append(tid)
         return pending
 
-    def _build_requests(self, action_dict: Dict[str, int]) -> Tuple[
+    def _build_requests(self, action_dict: Dict[str, int], lookahead: float = 0.0) -> Tuple[
         List[WindowRequest], List[str], int
     ]:
         requests: List[WindowRequest] = []
@@ -405,7 +429,7 @@ class FiveStationEnv(BaseRailwayEnv):
         infeasible = 0
         empty_conflicts: Dict[str, set] = {}
 
-        for train_id in self._pending_trains():
+        for train_id in self._pending_trains(lookahead=lookahead):
             if self._journeys[train_id].is_done:
                 continue
 
@@ -416,6 +440,7 @@ class FiveStationEnv(BaseRailwayEnv):
                 self._states[train_id], bounds, empty_conflicts.get(train_id))
 
             try:
+                # V4: NOMINAL path for on-time trains, L2_ACTIVE for disturbed
                 if self._force_policy or status == ControlStatus.LAYER2_ACTIVE:
                     action = self._policy_action(train_id, station_id, bounds, action_dict)
                 else:
@@ -432,6 +457,7 @@ class FiveStationEnv(BaseRailwayEnv):
                 TRAVEL_TIME_TO_THROAT,
                 current_delay=self._states[train_id].delay_sec,
                 cfg=self.cfg,
+                bounds_override=bounds,
             )
             if request.W_in[0] < bounds.arr_min - 1e-6 or request.W_out[0] > bounds.dep_max + 1e-6:
                 held.append(train_id)
@@ -442,7 +468,7 @@ class FiveStationEnv(BaseRailwayEnv):
         return requests, held, infeasible
 
     def _policy_action(self, train_id: str, station_id: str, bounds,
-                       action_dict: Dict[str, int]) -> Tuple:
+                       action_dict) -> Tuple:
         train = self.cfg.trains[train_id]
         mask_set = compute_joint_action_mask(
             train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT, self.cfg,
@@ -450,16 +476,23 @@ class FiveStationEnv(BaseRailwayEnv):
         if mask_set.status == "NO_LEGAL_ACTION":
             raise ValueError(f"No legal action for {train_id}")
 
-        idx = action_dict.get(train_id)
-        if idx is None:
+        action = action_dict.get(train_id)
+        if action is None:
             return heuristic_action(
                 train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT,
                 self.cfg, bounds_override=bounds)
-        if idx < 0 or idx >= len(mask_set.actions) or not mask_set.mask[idx]:
-            raise ValueError(f"Invalid action for {train_id}")
-
-        spec: ActionSpec = mask_set.actions[idx]
-        return spec.platform, spec.entry_choice, spec.dwell_extend
+        
+        # Factored action: (platform_idx, entry_idx), dwell always 0
+        platform_idx, entry_idx = action
+        platforms = train.candidate_platforms.get(station_id, [])
+        if platform_idx < 0 or platform_idx >= len(platforms):
+            raise ValueError(f"Invalid platform index for {train_id}")
+        if entry_idx < 0 or entry_idx >= len(ENTRY_CHOICES):
+            raise ValueError(f"Invalid entry index for {train_id}")
+        
+        platform = platforms[platform_idx]
+        entry_choice = ENTRY_CHOICES[entry_idx]
+        return platform, entry_choice, 0  # min dwell always
 
     # ------------------------------------------------------------------
     # resolver + corridor
@@ -604,7 +637,13 @@ class FiveStationEnv(BaseRailwayEnv):
                     self._states[tid], bounds, conflict_graph.get(tid)).value
         return snap
 
-    def _action_masks(self, pending_ids: List[str]) -> Dict[str, List[bool]]:
+    def _action_masks(self, pending_ids: List[str]):
+        """Return factored masks: {tid: (platform_mask, entry_mask)}.
+        
+        platform_mask: list of bool, length = candidate_platforms count (<= 4)
+        entry_mask: list of bool, length = ENTRY_CHOICES count (6)
+        Dwell is always 0 (min dwell).
+        """
         masks = {}
         for tid in pending_ids:
             train = self.cfg.trains[tid]
@@ -614,7 +653,25 @@ class FiveStationEnv(BaseRailwayEnv):
                 train, st, t_now=self._t_now,
                 travel_time_to_throat=TRAVEL_TIME_TO_THROAT, cfg=self.cfg,
                 bounds_override=bounds)
-            masks[tid] = mask_set.mask
+            
+            # Compute factored masks: platform + entry, dwell=0 always
+            platforms = train.candidate_platforms.get(st, [])
+            n_plat = len(platforms)
+            n_entry = len(ENTRY_CHOICES)
+            p_mask = [False] * n_plat
+            e_mask = [False] * n_entry
+            
+            for i, a in enumerate(mask_set.actions):
+                if mask_set.mask[i]:
+                    if a.dwell_extend == 0:  # only consider min dwell
+                        plat_idx = platforms.index(a.platform) if a.platform in platforms else -1
+                        entry_idx = ENTRY_CHOICES.index(a.entry_choice) if a.entry_choice in ENTRY_CHOICES else -1
+                        if plat_idx >= 0:
+                            p_mask[plat_idx] = True
+                        if entry_idx >= 0:
+                            e_mask[entry_idx] = True
+            
+            masks[tid] = (p_mask, e_mask)
         return masks
 
     # ------------------------------------------------------------------
