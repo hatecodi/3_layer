@@ -1,3 +1,84 @@
+[2026-06-25 19:30]
+Task: Simplify Layer 2 — remove delay injection, fix timetable adherence, fix B4
+
+== Today's accomplishments ==
+
+P1: Remove all disturbance injection from Layer 2 (no-delay branch)
+  - Removed DisturbanceInjector, CorridorDisturbance, compute_corridor_delay
+  - Removed layer2_control_status, ControlStatus enum, TrainRuntimeState
+  - Removed initial_train_delays, corridor_disturbances, disturbance_prob
+  - All trains use policy (no NOMINAL/heuristic branch)
+  - disturbance.py reduced to just DEADLOCK_THRESHOLD=15
+  - two_station_env.py simplified to match
+  - Net: -446 lines
+
+  A/B test: main vs no-delay (500 episodes each)
+    main:      reward=-94.9→-86.2  delay=569→536s  ontime=0%
+    no-delay:  reward=-65.7→-56.9  delay=464→432s  ontime=0%
+    Conclusion: random delays are pure noise, no learning signal from them.
+
+P2: Fix timetable adherence — entry times + reward + heuristic
+  Root cause: all 9 trains picked entry=earliest (t=30s) regardless of plan.
+  G2245 (plan_dep=540s) departed at t=70s (470s early). Reward only penalised
+  late departures with max(0, actual-plan), so early = zero penalty.
+
+  Fix 1 — requested_entry_time(): "plan" entry now targets planned departure
+    entry = max(earliest_allowed, planned_dep - dwell - THROAT_CLEARANCE)
+    plan+1/2/3/4 offsets from plan_entry instead of earliest_allowed
+    Result: G2245@E dep=540s ONTIME, G7629@E dep=706s ONTIME
+
+  Fix 2 — heuristic_action(): search plan entries first, earliest as fallback
+
+  Fix 3 — compute_metrics/compute_layered_rewards: abs(deviation) instead of
+    max(0, actual-plan). Early departures now penalised.
+    ONTIME_THRESHOLD: 30s → 15s
+
+  Training result: delay 432→407s, reward start -65.7→-76.3 (early penalty kicks in)
+
+P3: Fix B4 — align throat/approach constants to time compression
+  TRAVEL_TIME_TO_THROAT: 30.0 → 5.0
+  THROAT_CLEARANCE_TIME: 20.0 → 5.0
+  Physical overhead per station: 70s → 15s
+
+  Training result (300 episodes):
+    BEFORE B4:  reward=-72.2  delay=403s  ontime=0%   steps=14
+    AFTER B4:   reward=-50.6  delay=162s  ontime=12%  steps=11
+    First 100% ontime episode (ep 44, dep_dly=13s)
+    Best reward: -29.5
+
+  Full evolution no-delay branch:
+    main       → reward=-86  delay=536s  ontime=0%
+    no-delay   → reward=-57  delay=432s  ontime=0%
+    + plan fix → reward=-72  delay=403s  ontime=0%
+    + B4 fix   → reward=-51  delay=162s  ontime=12%  (first 100% episode!)
+
+== Remaining issues ==
+  B3: Platform choice has no learning signal — observation doesn't show which
+      platforms are occupied. Policy can't learn "pick free platform, avoid blocked".
+      Visitor trains plan (.claude/plans/visitor_trains.md) designed but not yet
+      implemented.
+
+  Parked trains: B/C station random occupiers. They create conflicts but
+      aren't visible in observation (only a scalar parked_flag, not per-platform).
+
+  Learning delta: only +2.2 after B4 fix — policy barely improves over heuristic
+      because heuristic is now strong (targets plan, min dwell, first platform).
+      Visitor trains should create richer conflict patterns that heuristic can't
+      handle → more room for policy to improve.
+
+== Files changed ==
+  src/env/disturbance.py — reduced to just DEADLOCK_THRESHOLD
+  src/env/five_station_env.py — removed all delay/disturbance, B4 constants
+  src/env/two_station_env.py — simplified to match
+  src/env/reward.py — abs(deviation) penalty, tighter ontime threshold
+  src/control/action_mask.py — plan entry targets timetable, heuristic order
+  src/experiment/run_train.py — removed disturbance params from env_factory
+
+== Branches ==
+  main (1fca365): with delay injection
+  no-delay (bd78c31): pure platform/throat competition + plan adherence + B4 fix
+    recommended for all future development
+
 [2026-06-08 21:30]
 Task: Session summary — B1 fixed, B2/B3/B4 identified, visitor train design started
 
