@@ -2,8 +2,10 @@
 
 Each train visits 5 stations (A→B→C→D→E or reverse). At each station,
 the train competes for platform and throat resources. After being granted,
-it transits to the next station via a corridor. Corridor disturbances may
-delay this transit, causing cascading conflicts downstream.
+it transits to the next station via a corridor.
+
+No delay injection — conflicts arise from natural timetable overlaps
+(tight departure spacing at A, cross-direction at C, 2-platform bottleneck at D).
 
 Key difference from two-station: trains have state transitions between
 stations, creating a proper MDP where decisions at station N affect the
@@ -36,15 +38,7 @@ from ..control.resource_manager import (
 )
 from ..experiment.heuristic_planner import make_rebuild_fn
 from ..experiment.scenario_loader import ScenarioConfig, TrainBound
-from .disturbance import (
-    DEADLOCK_THRESHOLD,
-    ControlStatus,
-    CorridorDisturbance,
-    DisturbanceInjector,
-    TrainRuntimeState,
-    compute_corridor_delay,
-    layer2_control_status,
-)
+from .disturbance import DEADLOCK_THRESHOLD
 from .observation_builder import build_observations
 from .reward import compute_layered_rewards, compute_metrics
 
@@ -115,9 +109,6 @@ class FiveStationEnv(BaseRailwayEnv):
         self,
         cfg: ScenarioConfig,
         decision_interval_sec: float = 10.0,
-        disturbance_prob: float = 0.03,
-        corridor_disturbances: Optional[List[CorridorDisturbance]] = None,
-        initial_train_delays: Optional[Dict[str, float]] = None,
         seed: Optional[int] = None,
         batch_window_sec: float = 60.0,
     ):
@@ -125,11 +116,6 @@ class FiveStationEnv(BaseRailwayEnv):
         self.layer1 = DispatchBounds(cfg)
         self.decision_interval_sec = decision_interval_sec
         self.rng = random.Random(seed)
-        self.disturbance = DisturbanceInjector(
-            prob_per_step=disturbance_prob, rng=self.rng)
-        self.corridor_disturbances = corridor_disturbances or []
-        self.initial_train_delays = initial_train_delays or {}
-        self._force_policy = True   # training: all trains use policy for learning signal
         self.batch_window_sec = batch_window_sec
         # Parked trains: K-type occupying platforms at B, C to create bottlenecks
         self._parked_trains_enabled = True
@@ -148,13 +134,12 @@ class FiveStationEnv(BaseRailwayEnv):
         self._t_now = 0.0
         self._step_idx = 0
         self._journeys: Dict[str, TrainJourney] = {}
-        self._states: Dict[str, TrainRuntimeState] = {}
+        self._held_steps: Dict[str, int] = {}
         self._deadlock_counter = 0
         self._episode_status = EpisodeStatus.RUNNING
         self._last_requests: List[WindowRequest] = []
         self._last_grants: List[GrantResult] = []
         self._last_held: List[str] = []
-        self._last_corridor_delays: Dict[str, float] = {}
         self._completed_ids: List[str] = []
 
     def _get_train_route(self, train) -> List[str]:
@@ -181,15 +166,9 @@ class FiveStationEnv(BaseRailwayEnv):
         self._deadlock_counter = 0
         self._episode_status = EpisodeStatus.RUNNING
         self._completed_ids = []
+        self._held_steps = {}
 
         all_ids = sorted(self.cfg.trains.keys())
-        self._states = {
-            tid: TrainRuntimeState(
-                train_id=tid,
-                delay_sec=self.initial_train_delays.get(tid, 0.0),
-            )
-            for tid in all_ids
-        }
         self._journeys = {
             tid: TrainJourney(train_id=tid, route=list(self._routes[tid]))
             for tid in all_ids
@@ -198,12 +177,9 @@ class FiveStationEnv(BaseRailwayEnv):
         self._last_requests = []
         self._last_grants = []
         self._last_held = []
-        self._last_corridor_delays = {}
         # Generate parked trains for this episode (K-type at B, C)
         self._parked_windows = self._generate_parked_trains()
 
-        # Inject initial disturbances
-        injected = self.disturbance.step(all_ids, self._states)
         ctx = self._obs_context()
         obs = build_observations(self.cfg, [], [], self._t_now,
                                  station_map=self._journey_station_map(),
@@ -215,10 +191,8 @@ class FiveStationEnv(BaseRailwayEnv):
             "pending": pending,
             "completed": self._completed_ids,
             "active_train_ids": pending,
-            "active_l2": self._active_l2_ids({}),
-            "control_status": self._control_status_snapshot({}),
+            "active_l2": pending,
             "requests": self._last_requests,
-            "disturbances": injected,
             "episode_status": self._episode_status.value,
             "t_now": self._t_now,
             "metrics": {
@@ -235,9 +209,6 @@ class FiveStationEnv(BaseRailwayEnv):
             raise RuntimeError("Episode terminated; call reset().")
 
         action_dict = action_dict or {}
-        injected = self.disturbance.step(
-            [tid for tid in self._journeys if not self._journeys[tid].is_done],
-            self._states)
 
         # 1. Build requests for all pending trains (within batch window)
         requests, held, infeasible = self._build_requests(
@@ -256,43 +227,40 @@ class FiveStationEnv(BaseRailwayEnv):
             for g in grants if not self._journeys[g.train_id].is_done
         }
 
-        # 4. Compute corridor delays & advance trains
-        corridor_delays = self._apply_corridor_delays(grants)
-        newly_advanced = self._advance_trains(grants, corridor_delays)
+        # 4. Advance trains (no corridor delays)
+        newly_advanced = self._advance_trains(grants)
 
-        # 5. Update states
+        # 5. Update held_steps for deadlock tracking
         for tid in granted_ids:
-            self._states[tid].pending_layer2_target = False
-            self._states[tid].held_steps = 0
+            self._held_steps[tid] = 0
         for tid in held:
-            self._states[tid].held_steps += 1
+            self._held_steps[tid] = self._held_steps.get(tid, 0) + 1
 
-        # 5. Check completion
+        # 6. Check completion
         self._completed_ids = [
             tid for tid, j in self._journeys.items() if j.is_done
         ]
 
-        # 6. Rewards & metrics (based on this decision's outcome)
-        active_ids = self._active_l2_ids(conflict_graph)
+        # 7. Rewards & metrics (based on this decision's outcome)
+        pending = self._pending_trains()
         unresolved = sum(len(v) for v in conflict_graph.values()) // 2
         rewards = compute_layered_rewards(
             self.cfg, grants, held,
-            active_train_ids=active_ids,
+            active_train_ids=pending,
             unresolved_conflicts=unresolved,
             hard_bound_infeasible_count=infeasible,
             station_map=grant_station,
         )
         metrics = compute_metrics(
             self.cfg, grants, held,
-            active_train_ids=active_ids,
+            active_train_ids=pending,
             unresolved_conflicts=unresolved,
             hard_bound_infeasible_count=infeasible,
             station_map=grant_station,
         )
 
-        # 7. Advance time (single unified block)
+        # 8. Advance time (single unified block)
         self._step_idx += 1
-        pending = self._pending_trains()
         if len(pending) == 0 and not all(j.is_done for j in self._journeys.values()):
             # All trains in transit — jump to next arrival
             future_arrivals = [
@@ -306,20 +274,18 @@ class FiveStationEnv(BaseRailwayEnv):
         else:
             self._t_now += self.decision_interval_sec
 
-        # 8. Deadlock detection (V4 spec: global NO_LEGAL_ACTION count)
-        # Deadlock = no pending train has any legal action for consecutive steps.
-        # With resolver fallback, NO_LEGAL_ACTION should be rare.
+        # 9. Deadlock detection (global NO_LEGAL_ACTION count)
         masks = self._action_masks(self._pending_trains())
         no_legal = all(
             not any(masks.get(tid, [False]))
             for tid in self._pending_trains()
         ) if self._pending_trains() else False
-        
+
         if no_legal:
             self._deadlock_counter += 1
         else:
             self._deadlock_counter = 0
-        
+
         if self._deadlock_counter >= DEADLOCK_THRESHOLD:
             self._episode_status = EpisodeStatus.DEADLOCK
         elif all(j.is_done for j in self._journeys.values()):
@@ -327,7 +293,7 @@ class FiveStationEnv(BaseRailwayEnv):
         elif self._t_now >= MAX_EPISODE_TIME:
             self._episode_status = EpisodeStatus.TRUNCATED
 
-        # 9. Observation (reflects state at new t_now for next decision)
+        # 10. Observation (reflects state at new t_now for next decision)
         ctx = self._obs_context()
         obs = build_observations(self.cfg, requests, grants, self._t_now,
                                  station_map=self._journey_station_map(),
@@ -336,7 +302,6 @@ class FiveStationEnv(BaseRailwayEnv):
         self._last_requests = requests
         self._last_grants = grants
         self._last_held = held
-        self._last_corridor_delays = corridor_delays
 
         terminated = self._episode_status in (EpisodeStatus.SUCCESS, EpisodeStatus.DEADLOCK)
         truncated = self._episode_status == EpisodeStatus.TRUNCATED
@@ -347,12 +312,9 @@ class FiveStationEnv(BaseRailwayEnv):
             "active_train_ids": self._pending_trains(),
             "pending": self._pending_trains(),
             "completed": self._completed_ids,
-            "active_l2": self._active_l2_ids(conflict_graph),
-            "control_status": self._control_status_snapshot(conflict_graph),
+            "active_l2": pending,
             "granted_windows": grants,
             "held_train_ids": held,
-            "corridor_delays": corridor_delays,
-            "disturbances": injected,
             "reward_breakdown": {tid: asdict(r) for tid, r in rewards.items()},
             "metrics": asdict(metrics),
             "episode_status": self._episode_status.value,
@@ -399,8 +361,8 @@ class FiveStationEnv(BaseRailwayEnv):
         """Build context dict for observation builder."""
         return {
             "parked_windows": self._parked_windows if self._parked_trains_enabled else {},
-            "cumulative_delays": {tid: s.delay_sec for tid, s in self._states.items()},
-            "corridor_delays": self._last_corridor_delays,
+            "cumulative_delays": {},
+            "corridor_delays": {},
             "journeys": {tid: {"current": j.current_station, "next": j.next_station}
                         for tid, j in self._journeys.items() if not j.is_done},
         }
@@ -427,7 +389,6 @@ class FiveStationEnv(BaseRailwayEnv):
         requests: List[WindowRequest] = []
         held: List[str] = []
         infeasible = 0
-        empty_conflicts: Dict[str, set] = {}
 
         for train_id in self._pending_trains(lookahead=lookahead):
             if self._journeys[train_id].is_done:
@@ -436,17 +397,10 @@ class FiveStationEnv(BaseRailwayEnv):
             train = self.cfg.trains[train_id]
             station_id = self._journeys[train_id].current_station
             bounds = self._get_effective_bounds(train_id, station_id, self._t_now)
-            status = layer2_control_status(
-                self._states[train_id], bounds, empty_conflicts.get(train_id))
 
             try:
-                # V4: NOMINAL path for on-time trains, L2_ACTIVE for disturbed
-                if self._force_policy or status == ControlStatus.LAYER2_ACTIVE:
-                    action = self._policy_action(train_id, station_id, bounds, action_dict)
-                else:
-                    action = heuristic_action(
-                        train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT,
-                        self.cfg, bounds_override=bounds)
+                # All trains use policy (no NOMINAL/heuristic branch)
+                action = self._policy_action(train_id, station_id, bounds, action_dict)
             except ValueError:
                 held.append(train_id)
                 infeasible += 1
@@ -455,7 +409,7 @@ class FiveStationEnv(BaseRailwayEnv):
             request = action_to_request(
                 train, station_id, action, self._t_now,
                 TRAVEL_TIME_TO_THROAT,
-                current_delay=self._states[train_id].delay_sec,
+                current_delay=0.0,
                 cfg=self.cfg,
                 bounds_override=bounds,
             )
@@ -515,36 +469,7 @@ class FiveStationEnv(BaseRailwayEnv):
                     parked_windows=self._parked_windows if self._parked_trains_enabled else None))
         return grants
 
-    def _apply_corridor_delays(self, grants: List[GrantResult]) -> Dict[str, float]:
-        """Apply corridor disturbance delays to granted trains."""
-        delays: Dict[str, float] = {}
-        if not self.corridor_disturbances:
-            return delays
-
-        for g in grants:
-            train = self.cfg.trains[g.train_id]
-            journey = self._journeys[g.train_id]
-            if journey.next_station is None:
-                continue  # final station, no corridor
-
-            # Determine corridor for this leg
-            cur = journey.current_station
-            nxt = journey.next_station
-            corridor_id = f"{cur}_{nxt}_{train.direction}"
-            corridor_runtime = self._corridor_runtime(cur, nxt, train.direction)
-
-            t_corridor_entry = g.W_out[1]  # t_out_end
-            extra = compute_corridor_delay(
-                g.train_id, corridor_id, t_corridor_entry,
-                corridor_runtime, self.corridor_disturbances)
-            if extra > 0:
-                delays[g.train_id] = extra
-                self._states[g.train_id].delay_sec += extra
-        return delays
-
-    def _advance_trains(
-        self, grants: List[GrantResult], corridor_delays: Dict[str, float]
-    ) -> int:
+    def _advance_trains(self, grants: List[GrantResult]) -> int:
         """Move granted trains to their next station, setting arrival time."""
         advanced = 0
         for g in grants:
@@ -559,8 +484,7 @@ class FiveStationEnv(BaseRailwayEnv):
             cur = journey.current_station
             nxt = journey.next_station
             runtime = self._corridor_runtime(cur, nxt, self.cfg.trains[g.train_id].direction)
-            extra = corridor_delays.get(g.train_id, 0.0)
-            t_corridor_exit = g.W_out[1] + runtime + extra  # outbound throat end + transit
+            t_corridor_exit = g.W_out[1] + runtime  # outbound throat end + transit
 
             journey.advance()
             journey.set_arrival(t_corridor_exit)
@@ -611,31 +535,6 @@ class FiveStationEnv(BaseRailwayEnv):
             for tid, j in self._journeys.items()
             if not j.is_done and j.current_station
         }
-
-    def _active_l2_ids(self, conflict_graph: Dict[str, set]) -> List[str]:
-        active = []
-        for train_id in self._pending_trains():
-            train = self.cfg.trains[train_id]
-            station_id = self._journeys[train_id].current_station
-            bounds = self.layer1.for_train(train_id, station_id)
-            if bounds is None:
-                continue
-            status = layer2_control_status(
-                self._states[train_id], bounds, conflict_graph.get(train_id))
-            if status == ControlStatus.LAYER2_ACTIVE:
-                active.append(train_id)
-        return active
-
-    def _control_status_snapshot(self, conflict_graph: Dict[str, set]) -> Dict[str, str]:
-        snap = {}
-        for tid in self._pending_trains():
-            train = self.cfg.trains[tid]
-            st = self._journeys[tid].current_station
-            bounds = self.layer1.for_train(tid, st)
-            if bounds:
-                snap[tid] = layer2_control_status(
-                    self._states[tid], bounds, conflict_graph.get(tid)).value
-        return snap
 
     def _action_masks(self, pending_ids: List[str]):
         """Return factored masks: {tid: (platform_mask, entry_mask)}.

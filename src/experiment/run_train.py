@@ -339,7 +339,6 @@ def main():
     torch.manual_seed(args.seed)
 
     if args.env == "two_station":
-        from src.env.disturbance import CorridorDisturbance
         from src.env.two_station_env import TwoStationEnv
         from src.experiment.scenario_loader import load_scenario
 
@@ -348,18 +347,9 @@ def main():
         obs_dim = get_obs_dim(cfg)
 
         def env_factory(seed: int) -> TwoStationEnv:
-            corridor = CorridorDisturbance(
-                corridor_id="A_B_up", start_time=120, end_time=400,
-                speed_ratio=0.3)
-            return TwoStationEnv(
-                disturbance_prob=0.03,
-                corridor_disturbances=[corridor],
-                initial_train_delays={"K999": 60.0},
-                seed=seed,
-            )
+            return TwoStationEnv(seed=seed)
 
     elif args.env == "five_station":
-        from src.env.disturbance import CorridorDisturbance
         from src.env.five_station_env import FiveStationEnv
         from src.experiment.scenario_loader import load_scenario
 
@@ -368,22 +358,8 @@ def main():
         obs_dim = get_obs_dim(cfg)
 
         def env_factory(seed: int) -> FiveStationEnv:
-            import random as _random
-            cfg = load_scenario(scenario_name="five_station")
-            corridor = CorridorDisturbance(
-                corridor_id="A_B_up", start_time=200, end_time=600,
-                speed_ratio=0.5)
-            # Inject systematic delays to 2-3 random trains to create cascading conflicts
-            _rng = _random.Random(seed)
-            _candidates = list(cfg.trains.keys())
-            _rng.shuffle(_candidates)
-            _delayed = _candidates[:_rng.randint(2, 3)]
-            initial_train_delays = {tid: _rng.uniform(60, 300) for tid in _delayed}
             return FiveStationEnv(
                 cfg=cfg,
-                disturbance_prob=0.05,  # V4: upper ablation range
-                corridor_disturbances=[corridor],
-                initial_train_delays=initial_train_delays,
                 seed=seed,
                 batch_window_sec=60.0,
             )
