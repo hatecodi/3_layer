@@ -3,6 +3,7 @@
     "PreToolUse": [
       {
         "matcher": "^(Edit|Write)$",
+        "type": "command",
         "command": "python .claude/hooks/check_plan.py",
         "description": "Remind to write a plan before editing code files"
       }
@@ -10,6 +11,7 @@
     "PostToolUse": [
       {
         "matcher": "^(Edit|Write)$",
+        "type": "command",
         "command": "python .claude/hooks/log_reminder.py",
         "description": "Remind to append to coding_log after editing files"
       }

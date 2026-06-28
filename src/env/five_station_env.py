@@ -110,7 +110,7 @@ class FiveStationEnv(BaseRailwayEnv):
         cfg: ScenarioConfig,
         decision_interval_sec: float = 10.0,
         seed: Optional[int] = None,
-        batch_window_sec: float = 60.0,
+        batch_window_sec: float = 120.0,
     ):
         self.cfg = cfg
         self.layer1 = DispatchBounds(cfg)
