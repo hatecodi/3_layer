@@ -36,7 +36,7 @@ from src.marl.rollout_buffer import RolloutBuffer, AgentTransition
 # ---------------------------------------------------------------------------
 
 HP = {
-    "obs_dim": 74,                       # overridden per env
+    "obs_dim": 25,                       # overridden per env
     "action_dim": 45,                    # overridden per env
     "k_local": 1,                       # LocalCritic: agent + 1 neighbour
     "hidden_dim": 128,
@@ -78,7 +78,7 @@ def _build_critic_inputs(
 # ---------------------------------------------------------------------------
 
 
-def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 22) -> Dict:
+def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25) -> Dict:
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Device: {device}")
     print(f"Hyperparameters: {json.dumps(HP, indent=2)}")

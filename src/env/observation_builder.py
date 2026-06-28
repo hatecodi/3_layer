@@ -1,9 +1,9 @@
-"""Compact actor observation builder (~22 dims).
+"""Compact actor observation builder (config-driven dimension).
 
 Actor sees only what it needs for decision-making:
   Self (14 dims): time, delay, plan, bounds, priority, class one-hot
   Next station (5 dims): platforms, congestion, est arrival, dwell
-  Resource (3 dims): current platforms, corridor delay, parked blocking
+  Resource (2 + max_platforms dims): avail, corridor, per-platform blocked flags
 
 Critic gets broader context via critic_input().
 """
@@ -20,27 +20,39 @@ MAX_EPISODE_TIME = 1500.0
 
 ACTOR_SELF_DIM = 14
 ACTOR_NEXT_DIM = 5
-ACTOR_RES_DIM = 3
-ACTOR_OBS_DIM = ACTOR_SELF_DIM + ACTOR_NEXT_DIM + ACTOR_RES_DIM  # 22
+_ACTOR_FIXED_RES_DIM = 2  # avail_now, corridor_delay (per-platform bits added dynamically)
 
 TRAIN_CLASS_MAP = {"G": 0, "D": 1, "Z": 2, "K": 3}
 
 
 # ---------------------------------------------------------------------------
-# config-driven dimension computation (kept for backward compatibility)
+# config-driven dimension computation
 # ---------------------------------------------------------------------------
 
+def _max_platforms(cfg: Optional[ScenarioConfig]) -> int:
+    """Maximum number of platforms across all stations."""
+    if cfg is None:
+        return 4
+    return max((len(s.platforms) for s in cfg.stations.values()), default=4)
+
+
 def compute_obs_dim(cfg: Optional[ScenarioConfig] = None) -> int:
-    return ACTOR_OBS_DIM
+    """Compute observation dimension from config.
+
+    OBS_DIM = SELF(14) + NEXT(5) + avail(1) + corridor(1) + per_platform_blocked(max_platforms)
+    """
+    max_plat = _max_platforms(cfg)
+    return ACTOR_SELF_DIM + ACTOR_NEXT_DIM + _ACTOR_FIXED_RES_DIM + max_plat
+
 
 _OBS_DIM_CACHE: Optional[int] = None
 
 def get_obs_dim(cfg: Optional[ScenarioConfig] = None) -> int:
     global _OBS_DIM_CACHE
     if cfg is not None:
-        _OBS_DIM_CACHE = ACTOR_OBS_DIM
+        _OBS_DIM_CACHE = compute_obs_dim(cfg)
     if _OBS_DIM_CACHE is None:
-        return ACTOR_OBS_DIM
+        return compute_obs_dim(cfg)
     return _OBS_DIM_CACHE
 
 
@@ -53,18 +65,21 @@ def _station_for(train, station_map):
 
 def _next_station(train_id, direction, station_map):
     st_list = ["A","B","C","D","E"] if direction == "up" else ["E","D","C","B","A"]
-    current = station_map.get(train_id, st_list[0])
+    if station_map:
+        current = station_map.get(train_id, st_list[0])
+    else:
+        current = st_list[0]
     try:
         idx = st_list.index(current)
         return st_list[idx+1] if idx+1 < len(st_list) else None
     except ValueError:
         return None
 
-def _available_platforms(station_id, cfg, parked_windows):
+def _available_platforms(station_id, cfg, visitor_windows):
     station = cfg.stations[station_id]
     total = len(station.platforms)
     occupied = sum(1 for p in station.platforms
-                   if f"{station_id}/{p.id}" in (parked_windows or {}))
+                   if f"{station_id}/{p.id}" in (visitor_windows or {}))
     return total - occupied
 
 def _one_hot(cls_val):
@@ -88,7 +103,8 @@ def build_observations(
 
     Args:
         context: optional dict with keys:
-            - parked_windows: {resource_id: (start, end)} from env
+            - visitor_windows: {resource_id: (start, end)} visitor pre-bookings
+            - visitors: {station_id: [(platform, start, end, priority), ...]} visitor notification
             - cumulative_delays: {train_id: delay_sec} from TrainRuntimeState
             - corridor_delays: {train_id: extra_sec} from last step
             - journeys: {train_id: {current, next, etc.}} from env
@@ -96,10 +112,12 @@ def build_observations(
     context = context or {}
     layer1 = DispatchBounds(cfg)
     grants_by_train = {g.train_id: g for g in grants}
-    parked_windows = context.get("parked_windows", {})
+    visitor_windows = context.get("visitor_windows", {})
+    visitors = context.get("visitors", {})  # {station_id: [(platform, start, end, priority), ...]}
     cum_delays = context.get("cumulative_delays", {})
     corridor_delays = context.get("corridor_delays", {})
     journeys = context.get("journeys", {})
+    max_plat = _max_platforms(cfg)
 
     observations: Dict[str, List[float]] = {}
 
@@ -130,7 +148,7 @@ def build_observations(
         next_st = _next_station(train_id, train.direction, station_map)
         if next_st and next_st in cfg.stations:
             max_plat_nxt = len(cfg.stations[next_st].platforms)
-            avail_nxt = _available_platforms(next_st, cfg, parked_windows)
+            avail_nxt = _available_platforms(next_st, cfg, visitor_windows)
 
             n_heading = 0
             for tid2 in cfg.trains:
@@ -154,20 +172,30 @@ def build_observations(
         else:
             next_info = [0.0] * ACTOR_NEXT_DIM
 
-        # ?? Resource + corridor (3 dims) ??
-        avail_now = _available_platforms(station_id, cfg, parked_windows)
+        # ?? Resource (2 + max_platforms dims) ??
+        avail_now = _available_platforms(station_id, cfg, visitor_windows)
         max_plat_now = len(cfg.stations[station_id].platforms)
         corr_delay = corridor_delays.get(train_id, 0.0)
-        parked_flag = 1.0 if any(
-            f"{station_id}/{p.id}" in (parked_windows or {})
-            for p in cfg.stations[station_id].platforms
-        ) else 0.0
+
+        # Per-platform blocked flags from visitor advance notification
+        station_visitors = visitors.get(station_id, [])
+        platform_blocked = []
+        for p in cfg.stations[station_id].platforms:
+            blocked = any(
+                v_start <= t_now + 600 and v_end >= t_now
+                for v_plat, v_start, v_end, _ in station_visitors
+                if v_plat == p.id
+            )
+            platform_blocked.append(1.0 if blocked else 0.0)
+
+        # Pad to max_plat
+        while len(platform_blocked) < max_plat:
+            platform_blocked.append(0.0)
 
         res_info = [
             avail_now / max(max_plat_now, 1),
             min(corr_delay / 180.0, 1.0) if corr_delay > 0 else 0.0,
-            parked_flag,
-        ]
+        ] + platform_blocked
 
         obs = self_state + next_info + res_info
         observations[train_id] = obs
@@ -186,7 +214,7 @@ def critic_input(
     k_max: int = K_MAX,
 ) -> List[float]:
     """Build critic input: self obs + k_max neighbor obs + padding."""
-    obs_dim = len(next(iter(observations.values()))) if observations else ACTOR_OBS_DIM
+    obs_dim = len(next(iter(observations.values()))) if observations else compute_obs_dim()
     group = [train_id] + sorted(conflict_graph.get(train_id, []))[:k_max]
     chunks = [observations.get(tid, [0.0] * obs_dim) for tid in group]
     while len(chunks) < k_max + 1:

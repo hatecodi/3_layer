@@ -117,12 +117,12 @@ class FiveStationEnv(BaseRailwayEnv):
         self.decision_interval_sec = decision_interval_sec
         self.rng = random.Random(seed)
         self.batch_window_sec = batch_window_sec
-        # Parked trains: K-type occupying platforms at B, C to create bottlenecks
-        self._parked_trains_enabled = True
-        self._parked_prob = 0.3  # probability per station B,C
-        self._parked_duration_min = 120
-        self._parked_duration_max = 360
-        self._parked_windows: Dict[str, Tuple[float, float]] = {}
+        # Visitor trains: pre-booked trains occupying platforms at intermediate stations.
+        # Config-driven: read from timetable.yaml time_generation.visitors, with fallback defaults.
+        self._visitor_config = cfg.time_generation.get("visitors", {})
+        self._visitor_enabled = self._visitor_config.get("enabled", True)
+        self._visitor_windows: Dict[str, Tuple[float, float]] = {}
+        self._visitor_list: Dict[str, list] = {}  # {station_id: [(plat, start, end, prio), ...]}
 
         # Build routes for each train
         self._routes: Dict[str, List[str]] = {}
@@ -177,8 +177,8 @@ class FiveStationEnv(BaseRailwayEnv):
         self._last_requests = []
         self._last_grants = []
         self._last_held = []
-        # Generate parked trains for this episode (K-type at B, C)
-        self._parked_windows = self._generate_parked_trains()
+        # Generate visitor trains for this episode
+        self._visitor_list, self._visitor_windows = self._generate_visitors()
 
         ctx = self._obs_context()
         obs = build_observations(self.cfg, [], [], self._t_now,
@@ -334,33 +334,58 @@ class FiveStationEnv(BaseRailwayEnv):
     # ------------------------------------------------------------------
 
 
-    def _generate_parked_trains(self) -> Dict[str, Tuple[float, float]]:
-        """Generate parked K-type trains at stations B and C.
-        
-        Returns a dict of {resource_id: (start_time, end_time)} windows
-        that pre-occupy platforms in the resource calendar.
+    def _generate_visitors(self) -> tuple:
+        """Generate visitor trains at intermediate stations.
+
+        Visitor info is visible in observation as advance notification,
+        allowing the policy to learn to avoid blocked platforms.
+
+        Returns:
+            visitors: {station_id: [(platform_id, start, end, priority), ...]}  for observation
+            windows: {resource_id: (start, end)}  for resource calendar pre-booking
         """
-        parked: Dict[str, Tuple[float, float]] = {}
-        target_stations = ["B", "C"]
+        visitors: Dict[str, list] = {}
+        windows: Dict[str, Tuple[float, float]] = {}
+        if not self._visitor_enabled:
+            return visitors, windows
+
+        target_stations = self._visitor_config.get("target_stations", ["B", "C", "D"])
+        prob_per_slot = self._visitor_config.get("prob_per_slot", 0.5)
+        slots_range = self._visitor_config.get("slots_per_station", [1, 2])
+        k_ratio = self._visitor_config.get("k_ratio", 0.6)
+        k_dwell = self._visitor_config.get("k_dwell", [300, 900])
+        g_dwell = self._visitor_config.get("g_dwell", [120, 300])
+
         for st in target_stations:
-            if self.rng.random() >= self._parked_prob:
+            if st not in self.cfg.stations:
                 continue
             station = self.cfg.stations[st]
-            # Pick a random platform
-            plat = self.rng.choice(station.platforms)
-            # Random duration within configured range
-            duration = self.rng.uniform(self._parked_duration_min, self._parked_duration_max)
-            start = self.rng.uniform(0, max(0, MAX_EPISODE_TIME - duration))
-            end = start + duration
-            resource_id = f"{st}/{plat.id}"
-            parked[resource_id] = (start, end)
-        return parked
+            if len(slots_range) == 1:
+                n_slots = slots_range[0]
+            else:
+                n_slots = self.rng.randint(slots_range[0], slots_range[1])
+            for _ in range(n_slots):
+                if self.rng.random() >= prob_per_slot:
+                    continue
+                is_k = self.rng.random() < k_ratio
+                prio = 3 if is_k else 2
+                dwell = self.rng.uniform(k_dwell[0], k_dwell[1]) if is_k \
+                    else self.rng.uniform(g_dwell[0], g_dwell[1])
+                plat = self.rng.choice(station.platforms)
+                start = self.rng.uniform(0, max(0, MAX_EPISODE_TIME - dwell))
+                end = start + dwell
+
+                visitors.setdefault(st, []).append((plat.id, start, end, prio))
+                windows[f"{st}/{plat.id}"] = (start, end)
+
+        return visitors, windows
 
 
     def _obs_context(self) -> Dict:
         """Build context dict for observation builder."""
         return {
-            "parked_windows": self._parked_windows if self._parked_trains_enabled else {},
+            "visitor_windows": self._visitor_windows if self._visitor_enabled else {},
+            "visitors": self._visitor_list if self._visitor_enabled else {},
             "cumulative_delays": {},
             "corridor_delays": {},
             "journeys": {tid: {"current": j.current_station, "next": j.next_station}
@@ -466,7 +491,7 @@ class FiveStationEnv(BaseRailwayEnv):
                 grants.extend(resolve_all(
                     st_reqs, candidate_platforms,
                     make_rebuild_fn(self.layer1, station_id),
-                    parked_windows=self._parked_windows if self._parked_trains_enabled else None))
+                    parked_windows=self._visitor_windows if self._visitor_enabled else None))
         return grants
 
     def _advance_trains(self, grants: List[GrantResult]) -> int:
@@ -481,10 +506,17 @@ class FiveStationEnv(BaseRailwayEnv):
                 continue
 
             # Compute arrival time at next station
+            # corridor = planned transit time from timetable (platform-to-platform).
+            # Micro physics (throat traversal, speed profiles) deferred to L3.
             cur = journey.current_station
             nxt = journey.next_station
-            runtime = self._corridor_runtime(cur, nxt, self.cfg.trains[g.train_id].direction)
-            t_corridor_exit = g.W_out[1] + runtime  # outbound throat end + transit
+            train_plan = self.cfg.trains[g.train_id].planned
+            if nxt in train_plan and cur in train_plan:
+                planned_transit = train_plan[nxt].arr - train_plan[cur].dep
+                runtime = max(planned_transit, 1.0)
+            else:
+                runtime = self._corridor_runtime(cur, nxt, self.cfg.trains[g.train_id].direction)
+            t_corridor_exit = g.W_out[0] + runtime  # departure + platform-to-platform transit
 
             journey.advance()
             journey.set_arrival(t_corridor_exit)

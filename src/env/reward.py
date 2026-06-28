@@ -121,10 +121,7 @@ def compute_layered_rewards(
 
     global_reward = (
         -0.02 * (metrics.total_dep_delay / max(metrics.n_active, 1))
-        -0.01 * (metrics.total_arr_delay / max(metrics.n_active, 1))
         -20.0 * metrics.deadlock_flag
-        -0.5 * unresolved_conflicts
-        -1.0 * hard_bound_infeasible_count
         +2.0 * metrics.ontime_rate
     )
 
@@ -138,30 +135,15 @@ def compute_layered_rewards(
             local = -3.0
         else:
             dep_delay = abs(grant.W_out[0] - bounds.t_dep_plan)
-            arr_delay = abs(grant.W_in[0] - bounds.t_arr_plan)
             prio_weight = {1: 2.0, 2: 1.0, 3: 0.5}.get(bounds.prio_i, 1.0)
-            wait = max(0.0, grant.W_in[0] - bounds.t_arr_plan)
-            dwell = max(0.0, grant.W_out[0] - grant.W_plat[0])
-            excessive_hold = max(0.0, dwell - bounds.dwell_min - 60.0)
-            slack_span = max(bounds.t_dep_max - bounds.t_arr_min, 1.0)
-            bound_slack = (bounds.t_dep_max - grant.W_out[0]) / slack_span
-            # Continuous improvement bonus: reward ANY delay reduction, not just
-            # binary on-time (<30s).  Uses exponential decay so every second of
-            # improvement gives measurable gradient, even for heavily delayed trains.
-            dep_improve = math.exp(-dep_delay / 60.0)
-            arr_improve = math.exp(-arr_delay / 60.0)
             # Progressive penalty: every 300s of delay doubles the marginal cost
             dep_mult = 1.0 + dep_delay // 300.0
-            arr_mult = 1.0 + arr_delay // 300.0
+            # Continuous improvement: exponential decay so every second of
+            # delay reduction gives measurable gradient
+            dep_improve = math.exp(-dep_delay / 60.0)
             local = (
-                2.0
-                -0.01 * wait
                 -0.02 * dep_delay * prio_weight * dep_mult
-                -0.02 * arr_delay * prio_weight * arr_mult
-                -0.01 * excessive_hold
-                +0.05 * bound_slack
-                +ONTIME_BONUS * dep_improve * prio_weight
-                +ONTIME_BONUS * arr_improve * prio_weight
+                + ONTIME_BONUS * dep_improve * prio_weight
             )
         total = local + lambda_team * global_reward
         rewards[train_id] = RewardBreakdown(local, global_reward, total)

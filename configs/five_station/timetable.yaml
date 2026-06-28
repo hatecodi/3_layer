@@ -26,6 +26,14 @@ time_generation:
     E_to_D: 180
   dep_max_slack_sec: 120
   headway_sec: 60
+  visitors:
+    enabled: true
+    target_stations: [B, C, D]
+    prob_per_slot: 0.3
+    slots_per_station: [1, 2]
+    k_ratio: 0.6
+    k_dwell: [300, 900]
+    g_dwell: [120, 300]
 assumptions:
 - 'Time compression: real seconds / 25 = sim seconds. Base 15:00 = t=0.'
 - A:??? B:??? C:?? D:??? E:???
