@@ -1,4 +1,40 @@
 [2026-06-28]
+Task: batch_window_sec sweep — bws=60/90/120 at 2000/5000 episodes
+
+== Results ==
+  bws=60,  2000ep: MAPPO 14s/92%, heuristic 75s/80%, n_granted=1.0 (no competition)
+  bws=90,  5000ep: MAPPO 14s/94%, heuristic —,     n_granted=1.1 (policy learned to avoid competition)
+  bws=120, 5000ep: MAPPO 29s/78%, heuristic 108s/43%, n_granted=1.8 (true multi-agent)
+
+  Key finding: bws=120 is the only setting that forces genuine multi-agent
+  competition. Policy can't avoid it — 72% of steps have >=2 trains competing.
+
+  bws=90 revealed a strategy collapse: n_granted decreased from 1.36→1.08
+  during training as policy learned to space trains apart to avoid competition.
+
+  Best result (bws=120, ep3000-3999): 29s delay, 78% ontime, n_granted=1.8
+  Best single episode (bws=120, ep4361): 8s delay, 100% ontime, n_granted=2
+  → Proof MAPPO can learn multi-agent coordination, just not consistently yet.
+
+== Comparison vs heuristic (bws=120) ==
+                  delay  ontime  n_granted>=2
+  Heuristic:      108s   43%     72%
+  MAPPO best win:  29s   78%     80%
+  Delta:          -79s  +35pt
+
+== Branches ==
+  no-delay (c0e4ef0): corridor fix + reward simplification + visitor tune
+  bws=120 locked as final config for multi-agent experiments.
+
+== Outputs ==
+  output/five_station/20260628_214123/ — bws=120, 5000ep (best window ep3000-3999)
+  output/five_station/20260628_213235/ — bws=90, 5000ep
+  output/five_station/20260628_212513/ — bws=120, 2000ep
+  output/five_station/20260628_211614/ — prob=0.3 slots=[1,2], 2000ep
+  output/five_station/20260628_210808/ — prob=0.5 slots=[1], 2000ep
+  output/five_station/20260628_205519/ — prob=0.5 slots=[1,2], 2000ep (first clean run)
+
+[2026-06-28]
 Task: Tune visitor train density — compare 3 settings
 
 == Three configs tested ==
