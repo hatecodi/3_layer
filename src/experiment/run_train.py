@@ -47,7 +47,7 @@ HP = {
     "ppo_epochs": 5,
     "minibatch_size": 256,
     "entropy_coef_start": 0.01,          # early exploration
-    "entropy_coef_end": 0.001,            # late exploitation
+    "entropy_coef_end": 0.003,            # multi-agent stability + convergence balance
     "value_coef": 0.5,
     "max_grad_norm": 1.0,
     "rollout_steps": 512,
@@ -361,7 +361,7 @@ def main():
             return FiveStationEnv(
                 cfg=cfg,
                 seed=seed,
-                batch_window_sec=60.0,
+                batch_window_sec=120.0,
             )
 
     train(env_factory, args,  obs_dim=obs_dim)
