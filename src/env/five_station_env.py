@@ -90,7 +90,7 @@ class TrainJourney:
 # ---------------------------------------------------------------------------
 
 MAX_EPISODE_TIME = 1500.0
-TRAVEL_TIME_TO_THROAT = 5.0   # approach time, aligned to time compression
+TRAVEL_TIME_TO_THROAT = 0.0   # zero — compressed timetable includes overhead
 
 
 class EpisodeStatus(Enum):
@@ -395,16 +395,19 @@ class FiveStationEnv(BaseRailwayEnv):
 
     def _obs_context(self) -> Dict:
         """Build context dict for observation builder."""
-        # Count pending trains at each station for competitor awareness
         pending = self._pending_trains(lookahead=self.batch_window_sec)
+        # Count pending trains at each station for competitor awareness
         station_counts: Dict[str, int] = {}
+        station_pending: Dict[str, List[Tuple[str, float]]] = {}
         for tid in pending:
             st = self._journeys[tid].current_station
             station_counts[st] = station_counts.get(st, 0) + 1
+            planned_dep = self.cfg.trains[tid].planned[st].dep
+            station_pending.setdefault(st, []).append((tid, planned_dep))
         pending_at_station = {}
         for tid in pending:
             st = self._journeys[tid].current_station
-            pending_at_station[tid] = station_counts.get(st, 0) - 1  # exclude self
+            pending_at_station[tid] = station_counts.get(st, 0) - 1
 
         return {
             "visitor_windows": self._visitor_windows if self._visitor_enabled else {},
@@ -414,6 +417,7 @@ class FiveStationEnv(BaseRailwayEnv):
             "journeys": {tid: {"current": j.current_station, "next": j.next_station}
                         for tid, j in self._journeys.items() if not j.is_done},
             "pending_at_station": pending_at_station,
+            "station_pending": station_pending,  # {st: [(tid, planned_dep), ...]}
         }
 
     def _pending_trains(self, lookahead: float = 0.0) -> List[str]:
