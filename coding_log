@@ -1,3 +1,33 @@
+[2026-07-01 01:00]
+Task: Platform contention table — breakthrough result
+
+== Key insight ==
+  Top-K options + calendar pre-solving made the problem trivial (heuristic=0s,
+  MAPPO had nothing to learn).  Reverted to factored action + resolver.
+
+  Replaced single n_at_station (1 dim) with per-platform contention
+  (max_plat dims).  Each dim shows fraction of other pending trains whose
+  planned departure window overlaps with the train — tells the policy
+  "p1 has 3 competitors, p2 has 0".
+
+== 5000ep results ==
+  dep_dly:  3.1s (vs old 14.1s, -78%)
+  ontime:   98%  (vs old 70.5%)
+  best ep:  0.2s delay, 100% ontime
+  reward:   steep positive slope (vs flat before)
+
+  Full convergence by ~ep 1500.  Consistent 0.2-5s delay, 94-100% ontime.
+
+== Architecture ==
+  FactoredActor (4+6) + resolver (restored from revert)
+  obs_dim=29: self(14) + next(5) + res(2) + platform_blocked(4) + platform_contention(4)
+  TRAVEL_TIME_TO_THROAT=0, THROAT_CLEARANCE_TIME=0
+
+== Comparison ==
+                         dep_dly   ontime   reward_slope
+  n_at_station (old)      14.1s    70.5%    flat (+0.9)
+  platform_contention      3.1s    98%      steep (+12.6)
+
 [2026-07-01 00:30]
 Task: Fix physical constants + per-option delay observation
 
