@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 
-DEFAULT_OBS_DIM = 25
+DEFAULT_OBS_DIM = 26
 PLATFORM_DIM = 4  # max platforms per station
 ENTRY_DIM = 6      # 6 entry choices
 GLOBAL_STATE_DIM = 14

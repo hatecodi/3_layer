@@ -169,10 +169,22 @@ class FiveStationEnv(BaseRailwayEnv):
         self._held_steps = {}
 
         all_ids = sorted(self.cfg.trains.keys())
-        self._journeys = {
-            tid: TrainJourney(train_id=tid, route=list(self._routes[tid]))
-            for tid in all_ids
-        }
+        self._journeys = {}
+        for tid in all_ids:
+            j = TrainJourney(train_id=tid, route=list(self._routes[tid]))
+            # Trains enter the line at their planned departure from origin.
+            # Setting arrival_at_current = planned_dep prevents early polling.
+            # Exception: single-station trains (origin==dest) use planned_arr
+            # so they occupy the platform from arrival time (fixed visitors).
+            origin = self.cfg.trains[tid].origin_station
+            dest = self.cfg.trains[tid].destination_station
+            if origin == dest:
+                plan_arr = self.cfg.trains[tid].planned[origin].arr
+                j.arrival_at_current = float(plan_arr)
+            else:
+                plan_dep = self.cfg.trains[tid].planned[origin].dep
+                j.arrival_at_current = float(plan_dep)
+            self._journeys[tid] = j
 
         self._last_requests = []
         self._last_grants = []
@@ -383,6 +395,17 @@ class FiveStationEnv(BaseRailwayEnv):
 
     def _obs_context(self) -> Dict:
         """Build context dict for observation builder."""
+        # Count pending trains at each station for competitor awareness
+        pending = self._pending_trains(lookahead=self.batch_window_sec)
+        station_counts: Dict[str, int] = {}
+        for tid in pending:
+            st = self._journeys[tid].current_station
+            station_counts[st] = station_counts.get(st, 0) + 1
+        pending_at_station = {}
+        for tid in pending:
+            st = self._journeys[tid].current_station
+            pending_at_station[tid] = station_counts.get(st, 0) - 1  # exclude self
+
         return {
             "visitor_windows": self._visitor_windows if self._visitor_enabled else {},
             "visitors": self._visitor_list if self._visitor_enabled else {},
@@ -390,6 +413,7 @@ class FiveStationEnv(BaseRailwayEnv):
             "corridor_delays": {},
             "journeys": {tid: {"current": j.current_station, "next": j.next_station}
                         for tid, j in self._journeys.items() if not j.is_done},
+            "pending_at_station": pending_at_station,
         }
 
     def _pending_trains(self, lookahead: float = 0.0) -> List[str]:

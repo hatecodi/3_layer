@@ -36,7 +36,7 @@ from src.marl.rollout_buffer import RolloutBuffer, AgentTransition
 # ---------------------------------------------------------------------------
 
 HP = {
-    "obs_dim": 25,                       # overridden per env
+    "obs_dim": 26,                       # overridden per env
     "action_dim": 45,                    # overridden per env
     "k_local": 1,                       # LocalCritic: agent + 1 neighbour
     "hidden_dim": 128,
@@ -137,6 +137,13 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
         ep_reward: Dict[str, float] = defaultdict(float)
         ep_steps = 0
         ep_done = False
+        # Accumulate metrics across all steps (not just final step snapshot)
+        ep_total_granted = 0
+        ep_total_ontime_dep = 0
+        ep_total_ontime_arr = 0
+        ep_total_dep_delay = 0.0
+        ep_total_arr_delay = 0.0
+        ep_total_held = 0
 
         while not ep_done:
             # ---- collect step ----
@@ -159,6 +166,13 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
             next_obs, reward, terminated, truncated, info = env.step(action_dict)
             ep_done = terminated or truncated
             metrics = info.get("metrics", {})
+            # Accumulate episode-level metrics
+            ep_total_granted += metrics.get("n_granted", 0)
+            ep_total_ontime_dep += metrics.get("n_ontime_dep", 0)
+            ep_total_ontime_arr += metrics.get("n_ontime_arr", 0)
+            ep_total_dep_delay += metrics.get("total_dep_delay", 0.0)
+            ep_total_arr_delay += metrics.get("total_arr_delay", 0.0)
+            ep_total_held += metrics.get("n_held", 0)
             reward_breakdown = info.get("reward_breakdown", {})
 
             # Record transitions
@@ -236,10 +250,14 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
             DL_PENALTY = 400.0
             for tid in env.cfg.trains:
                 ep_reward[tid] += (-DL_PENALTY)
-        
-        m = info.get("metrics", {})
+
         total_r = sum(ep_reward.values())
         mean_r = total_r / max(len(ep_reward), 1)
+
+        # Episode-level aggregates (not final-step snapshot)
+        ep_mean_dep = ep_total_dep_delay / max(ep_total_granted, 1)
+        ep_mean_arr = ep_total_arr_delay / max(ep_total_granted, 1)
+        ep_ontime = ep_total_ontime_dep / max(ep_total_granted, 1)
 
         ep_summary = {
             "episode": ep,
@@ -247,12 +265,12 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
             "status": info.get("episode_status", "?"),
             "total_reward": total_r,
             "mean_reward": mean_r,
-            "mean_dep_delay": m.get("mean_dep_delay", 0),
-            "mean_arr_delay": m.get("mean_arr_delay", 0),
-            "ontime_rate": m.get("ontime_rate", 0),
-            "n_ontime_dep": m.get("n_ontime_dep", 0),
-            "n_granted": m.get("n_granted", 0),
-            "n_held": m.get("n_held", 0),
+            "mean_dep_delay": ep_mean_dep,
+            "mean_arr_delay": ep_mean_arr,
+            "ontime_rate": ep_ontime,
+            "n_ontime_dep": ep_total_ontime_dep,
+            "n_granted": ep_total_granted,
+            "n_held": ep_total_held,
             "lam_team": trainer.lam_team,
             "illegal_actions": 0,
         }
@@ -262,9 +280,9 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
         if (ep + 1) % max(1, args.episodes // 20) == 0 or ep < 5:
             print(
                 f"  ep {ep:>5} | reward={mean_r:>7.2f} | "
-                f"dep_dly={m.get('mean_dep_delay', 0):>6.1f}s | "
-                f"arr_dly={m.get('mean_arr_delay', 0):>6.1f}s | "
-                f"ontime={m.get('ontime_rate', 0):.2f} | "
+                f"dep_dly={ep_mean_dep:>6.1f}s | "
+                f"arr_dly={ep_mean_arr:>6.1f}s | "
+                f"ontime={ep_ontime:.2f} | "
                 f"steps={ep_steps:>2} | λ={trainer.lam_team:.3f} | "
                 f"{info.get('episode_status', '?'):>12}"
             )

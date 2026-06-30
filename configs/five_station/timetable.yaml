@@ -1,19 +1,19 @@
 priority_map:
-  '1': ???(G1380,G1616,G7629)
-  '2': ???(G230,G238,G2245,G1487)
-  '3': K?(K834,K1185)
+  '1': 复兴号(G1380,G1616,G7629)
+  '2': 和谐号(G230,G238,G2245,G1487,G1347)
+  '3': 普速(K834,K1185)
 station_dwell_defaults:
-  A: 60
-  B: 30
-  C: 60
-  D: 30
-  E: 30
+  A: 5
+  B: 5
+  C: 5
+  D: 5
+  E: 5
 station_names:
-  A: ???
-  B: ???
-  C: ??
-  D: ???
-  E: ???
+  A: 南昌西
+  B: 鹰潭北
+  C: 上饶
+  D: 杭州东
+  E: 南京南
 time_generation:
   corridor_runtime_sec:
     A_to_B: 90
@@ -28,7 +28,7 @@ time_generation:
   headway_sec: 60
   visitors:
     enabled: true
-    target_stations: [B, C, D]
+    target_stations: [A, B, C, E]
     prob_per_slot: 0.3
     slots_per_station: [1, 2]
     k_ratio: 0.6
@@ -36,12 +36,15 @@ time_generation:
     g_dwell: [120, 300]
 assumptions:
 - 'Time compression: real seconds / 25 = sim seconds. Base 15:00 = t=0.'
-- A:??? B:??? C:?? D:??? E:???
-- P1:??? P2:??? P3:K?
-- 'Pass-through at skip stations: dwell=0'
-- Partial trains enter (arr=dep=0 before origin) or exit (instant after dest)
-- G1616 E estimated, K834 D/E estimated, G1487 B estimated
+- A:南昌西 B:鹰潭北 C:上饶 D:杭州东 E:南京南
+- P1:复兴号 P2:和谐号 P3:普速
+- 'dep = raw_dep/25 — no dwell_min inflation, raw timetable preserved'
+- 'dwell_min reduced to 5s (2 min real) — realistic minimum platform time'
+- K834: single-station fixed visitor at C (arr=16:59 dep=17:04)
 trains:
+# ============================================================
+# UP (A->E) trains
+# ============================================================
 - id: G1380
   direction: up
   train_class: G
@@ -57,13 +60,13 @@ trains:
       dep: 53
     B:
       arr: 137
-      dep: 167
+      dep: 156
     C:
       arr: 233
-      dep: 293
+      dep: 238
     D:
       arr: 487
-      dep: 517
+      dep: 497
     E:
       arr: 703
       dep: 703
@@ -71,44 +74,30 @@ trains:
     A:
       arr_min: 0
       dep_max: 173
-      dwell_min: 60
+      dwell_min: 5
     B:
       arr_min: 17
-      dep_max: 287
-      dwell_min: 30
+      dep_max: 276
+      dwell_min: 5
     C:
       arr_min: 113
-      dep_max: 413
-      dwell_min: 60
+      dep_max: 358
+      dwell_min: 5
     D:
       arr_min: 367
-      dep_max: 637
-      dwell_min: 30
+      dep_max: 617
+      dwell_min: 5
     E:
       arr_min: 583
       dep_max: 823
       dwell_min: 0
   candidate_platforms:
-    A:
-    - A_p1
-    - A_p2
-    - A_p3
-    B:
-    - B_p1
-    - B_p2
-    - B_p3
-    C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
-    D:
-    - D_p1
-    - D_p2
-    E:
-    - E_p1
-    - E_p2
-    - E_p3
+    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    D: [D_p1, D_p2]
+    E: [E_p1, E_p2, E_p3]
+
 - id: G230
   direction: up
   train_class: G
@@ -124,13 +113,13 @@ trains:
       dep: 31
     B:
       arr: 108
-      dep: 138
+      dep: 113
     C:
-      arr: 228
-      dep: 228
+      arr: 197
+      dep: 197
     D:
       arr: 365
-      dep: 395
+      dep: 370
     E:
       arr: 514
       dep: 514
@@ -138,44 +127,30 @@ trains:
     A:
       arr_min: 0
       dep_max: 151
-      dwell_min: 60
+      dwell_min: 5
     B:
       arr_min: 0
-      dep_max: 258
-      dwell_min: 30
+      dep_max: 233
+      dwell_min: 5
     C:
-      arr_min: 108
-      dep_max: 348
+      arr_min: 77
+      dep_max: 317
       dwell_min: 0
     D:
       arr_min: 245
-      dep_max: 515
-      dwell_min: 30
+      dep_max: 490
+      dwell_min: 5
     E:
       arr_min: 394
       dep_max: 634
       dwell_min: 0
   candidate_platforms:
-    A:
-    - A_p1
-    - A_p2
-    - A_p3
-    B:
-    - B_p1
-    - B_p2
-    - B_p3
-    C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
-    D:
-    - D_p1
-    - D_p2
-    E:
-    - E_p1
-    - E_p2
-    - E_p3
+    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    D: [D_p1, D_p2]
+    E: [E_p1, E_p2, E_p3]
+
 - id: G1616
   direction: up
   train_class: G
@@ -183,7 +158,7 @@ trains:
   pass_through: false
   route:
     origin_station: A
-    destination_station: E
+    destination_station: D
     corridor: A_B_up
   planned:
     A:
@@ -191,58 +166,44 @@ trains:
       dep: 65
     B:
       arr: 173
-      dep: 203
+      dep: 178
     C:
       arr: 254
-      dep: 314
+      dep: 264
     D:
       arr: 492
-      dep: 522
+      dep: 502
     E:
-      arr: 702
-      dep: 702
+      arr: 0
+      dep: 0
   bounds:
     A:
       arr_min: 0
       dep_max: 185
-      dwell_min: 60
+      dwell_min: 5
     B:
       arr_min: 53
-      dep_max: 323
-      dwell_min: 30
+      dep_max: 298
+      dwell_min: 5
     C:
       arr_min: 134
-      dep_max: 434
-      dwell_min: 60
+      dep_max: 384
+      dwell_min: 5
     D:
       arr_min: 372
-      dep_max: 642
-      dwell_min: 30
+      dep_max: 622
+      dwell_min: 10
     E:
-      arr_min: 582
-      dep_max: 822
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    A:
-    - A_p1
-    - A_p2
-    - A_p3
-    B:
-    - B_p1
-    - B_p2
-    - B_p3
-    C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
-    D:
-    - D_p1
-    - D_p2
-    E:
-    - E_p1
-    - E_p2
-    - E_p3
+    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    D: [D_p1, D_p2]
+    E: [E_p1, E_p2, E_p3]
+
 - id: G238
   direction: up
   train_class: G
@@ -257,59 +218,45 @@ trains:
       arr: 0
       dep: 79
     B:
-      arr: 169
-      dep: 169
+      arr: 152
+      dep: 152
     C:
-      arr: 259
-      dep: 259
+      arr: 226
+      dep: 226
     D:
       arr: 372
       dep: 377
     E:
-      arr: 377
-      dep: 377
+      arr: 0
+      dep: 0
   bounds:
     A:
       arr_min: 0
       dep_max: 199
-      dwell_min: 60
+      dwell_min: 5
     B:
-      arr_min: 49
-      dep_max: 289
+      arr_min: 32
+      dep_max: 272
       dwell_min: 0
     C:
-      arr_min: 139
-      dep_max: 379
+      arr_min: 106
+      dep_max: 346
       dwell_min: 0
     D:
       arr_min: 252
       dep_max: 497
       dwell_min: 5
     E:
-      arr_min: 257
-      dep_max: 497
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    A:
-    - A_p1
-    - A_p2
-    - A_p3
-    B:
-    - B_p1
-    - B_p2
-    - B_p3
-    C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
-    D:
-    - D_p1
-    - D_p2
-    E:
-    - E_p1
-    - E_p2
-    - E_p3
+    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    D: [D_p1, D_p2]
+    E: [E_p1, E_p2, E_p3]
+
 - id: K834
   direction: up
   train_class: K
@@ -317,7 +264,7 @@ trains:
   pass_through: false
   route:
     origin_station: C
-    destination_station: E
+    destination_station: C
     corridor: C_D_up
   planned:
     A:
@@ -327,14 +274,14 @@ trains:
       arr: 0
       dep: 0
     C:
-      arr: 0
+      arr: 286
       dep: 298
     D:
-      arr: 478
-      dep: 508
+      arr: 0
+      dep: 0
     E:
-      arr: 688
-      dep: 688
+      arr: 0
+      dep: 0
   bounds:
     A:
       arr_min: 0
@@ -347,36 +294,25 @@ trains:
     C:
       arr_min: 0
       dep_max: 418
-      dwell_min: 60
+      dwell_min: 12
     D:
-      arr_min: 358
-      dep_max: 628
-      dwell_min: 30
+      arr_min: 0
+      dep_max: 120
+      dwell_min: 0
     E:
-      arr_min: 568
-      dep_max: 808
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    A:
-    - A_p1
-    - A_p2
-    - A_p3
-    B:
-    - B_p1
-    - B_p2
-    - B_p3
-    C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
-    D:
-    - D_p1
-    - D_p2
-    E:
-    - E_p1
-    - E_p2
-    - E_p3
+    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    D: [D_p1, D_p2]
+    E: [E_p1, E_p2, E_p3]
+
+# ============================================================
+# DOWN (E->A) trains
+# ============================================================
 - id: G7629
   direction: down
   train_class: G
@@ -394,56 +330,42 @@ trains:
       arr: 888
       dep: 893
     C:
-      arr: 893
-      dep: 893
+      arr: 0
+      dep: 0
     B:
-      arr: 893
-      dep: 893
+      arr: 0
+      dep: 0
     A:
-      arr: 893
-      dep: 893
+      arr: 0
+      dep: 0
   bounds:
     E:
       arr_min: 0
       dep_max: 826
-      dwell_min: 30
+      dwell_min: 5
     D:
       arr_min: 768
       dep_max: 1013
       dwell_min: 5
     C:
-      arr_min: 773
-      dep_max: 1013
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
     B:
-      arr_min: 773
-      dep_max: 1013
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
     A:
-      arr_min: 773
-      dep_max: 1013
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    E:
-    - E_p1
-    - E_p2
-    - E_p3
-    D:
-    - D_p1
-    - D_p2
-    C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
-    B:
-    - B_p1
-    - B_p2
-    - B_p3
-    A:
-    - A_p1
-    - A_p2
-    - A_p3
+    E: [E_p1, E_p2, E_p3]
+    D: [D_p1, D_p2]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3]
+
 - id: G2245
   direction: down
   train_class: G
@@ -461,56 +383,42 @@ trains:
       arr: 773
       dep: 773
     C:
-      arr: 773
-      dep: 773
+      arr: 0
+      dep: 0
     B:
-      arr: 773
-      dep: 773
+      arr: 0
+      dep: 0
     A:
-      arr: 773
-      dep: 773
+      arr: 0
+      dep: 0
   bounds:
     E:
       arr_min: 0
       dep_max: 660
-      dwell_min: 30
+      dwell_min: 5
     D:
       arr_min: 653
       dep_max: 893
       dwell_min: 0
     C:
-      arr_min: 653
-      dep_max: 893
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
     B:
-      arr_min: 653
-      dep_max: 893
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
     A:
-      arr_min: 653
-      dep_max: 893
+      arr_min: 0
+      dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    E:
-    - E_p1
-    - E_p2
-    - E_p3
-    D:
-    - D_p1
-    - D_p2
-    C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
-    B:
-    - B_p1
-    - B_p2
-    - B_p3
-    A:
-    - A_p1
-    - A_p2
-    - A_p3
+    E: [E_p1, E_p2, E_p3]
+    D: [D_p1, D_p2]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3]
+
 - id: G1487
   direction: down
   train_class: G
@@ -528,11 +436,11 @@ trains:
       arr: 0
       dep: 0
     C:
-      arr: 0
+      arr: 29
       dep: 36
     B:
-      arr: 126
-      dep: 156
+      arr: 132
+      dep: 132
     A:
       arr: 228
       dep: 238
@@ -548,36 +456,75 @@ trains:
     C:
       arr_min: 0
       dep_max: 156
-      dwell_min: 60
+      dwell_min: 5
     B:
-      arr_min: 6
-      dep_max: 276
-      dwell_min: 30
+      arr_min: 12
+      dep_max: 252
+      dwell_min: 0
     A:
       arr_min: 108
       dep_max: 358
       dwell_min: 10
   candidate_platforms:
+    E: [E_p1, E_p2, E_p3]
+    D: [D_p1, D_p2]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3]
+
+- id: G1347
+  direction: down
+  train_class: G
+  priority: 2
+  pass_through: false
+  route:
+    origin_station: D
+    destination_station: A
+    corridor: D_C_down
+  planned:
     E:
-    - E_p1
-    - E_p2
-    - E_p3
+      arr: 0
+      dep: 0
     D:
-    - D_p1
-    - D_p2
+      arr: 497
+      dep: 506
     C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
+      arr: 756
+      dep: 775
     B:
-    - B_p1
-    - B_p2
-    - B_p3
+      arr: 838
+      dep: 843
     A:
-    - A_p1
-    - A_p2
-    - A_p3
+      arr: 929
+      dep: 936
+  bounds:
+    E:
+      arr_min: 0
+      dep_max: 120
+      dwell_min: 0
+    D:
+      arr_min: 0
+      dep_max: 626
+      dwell_min: 9
+    C:
+      arr_min: 636
+      dep_max: 895
+      dwell_min: 19
+    B:
+      arr_min: 718
+      dep_max: 963
+      dwell_min: 5
+    A:
+      arr_min: 809
+      dep_max: 1056
+      dwell_min: 7
+  candidate_platforms:
+    E: [E_p1, E_p2, E_p3]
+    D: [D_p1, D_p2]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3]
+
 - id: K1185
   direction: down
   train_class: K
@@ -598,7 +545,7 @@ trains:
       arr: 0
       dep: 0
     B:
-      arr: 0
+      arr: 41
       dep: 96
     A:
       arr: 362
@@ -619,29 +566,14 @@ trains:
     B:
       arr_min: 0
       dep_max: 216
-      dwell_min: 30
+      dwell_min: 5
     A:
       arr_min: 242
       dep_max: 526
       dwell_min: 44
   candidate_platforms:
-    E:
-    - E_p1
-    - E_p2
-    - E_p3
-    D:
-    - D_p1
-    - D_p2
-    C:
-    - C_p1
-    - C_p2
-    - C_p3
-    - C_p4
-    B:
-    - B_p1
-    - B_p2
-    - B_p3
-    A:
-    - A_p1
-    - A_p2
-    - A_p3
+    E: [E_p1, E_p2, E_p3]
+    D: [D_p1, D_p2]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3]

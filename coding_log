@@ -1,3 +1,86 @@
+[2026-06-30]
+Task: Fix training log — episode aggregate metrics instead of final-step snapshot
+
+== Problem ==
+  Training log reported `ontime=0.00` even when all trains depart on time.
+  Root cause: `info["metrics"]` from the last env step was used as the
+  episode summary. The last step typically has n_granted=0/1, making
+  ontime_rate meaningless (0/1=0 even if 23/32 grants were on-time).
+
+== Fix ==
+  src/experiment/run_train.py:
+    - Per-episode accumulators (total_granted, total_ontime_dep, etc.)
+    - Sum metrics from each step
+    - Episode summary: mean_dep = total_dep / total_granted,
+      ontime = total_ontime / total_granted
+
+  Verified: heuristic 72% ontime, training output 59-72% ✓
+
+[2026-06-30]
+Task: Remove dwell_min inflation from planned departure times
+
+== Problem ==
+  dep = max(raw_dep/25, arr + dwell_min) inflated departures by 10-55s.
+  This created 70s of spurious "structural delay" in heuristic baseline.
+
+== Fix ==
+  configs/five_station/timetable.yaml:
+    - dep = raw_dep/25 (no max with arr+dwell_min)
+    - station_dwell_defaults: all 5s (was 60/30/60/30/30)
+    - All schedules verified legal
+
+  Results (heuristic, no visitors):
+    Before: 70s delay → After: 13.4s per-grant mean, 72% ontime
+
+[2026-06-30]
+Task: Rewrite timetable.yaml from real timetable (铁路时刻表.md)
+
+== Changes ==
+  configs/five_station/timetable.yaml — complete rewrite of trains section:
+
+  Route corrections (vs xlsx audit):
+    G238:  A→B→C→D→E → A→B(through)→C(through)→D (terminal at D)
+    G230:  C passthrough timing corrected (interpolated 214s vs old 228s)
+    G1616: A→B→C→D→E → A→B→C→D (no E, terminal at D with 10s dwell)
+    G1487: C→B→A → C→B(through)→A (B is passthrough, no dwell)
+    K834:  C→D→E → C only (single-station, origin=C dest=C, fixed visitor)
+    G1347: kept, timing recalculated from real timetable
+
+  Verified correct (already matched):
+    G1380: A→B→C→D→E ✓
+    G7629: E→D ✓
+    G2245: E→D ✓
+    K1185: B→A ✓
+
+  Timing: dep = max(raw_dep/25, arr + dwell_min) formula preserved.
+    Terminal stations use raw dwell (not dwell_min) — e.g., K1185 A dwell=44s.
+    Passthrough stations interpolated proportionally by corridor segment lengths.
+
+  src/env/five_station_env.py — reset() fix:
+    Single-station trains (origin==dest, e.g., K834) use planned_arr instead
+    of planned_dep for arrival_at_current. This ensures K834 occupies C platform
+    from t=286 (arrival) to t=298 (departure), acting as a fixed visitor.
+
+== Verified ==
+  Config loading: 10 trains, correct routes ✓
+  Heuristic: 10/10 complete, SUCCESS in 8 steps, 0 deadlock ✓
+  Training smoke test: 10 episodes, 10/10 success, 0 deadlock ✓
+
+  G1347 verified NOT isolated: at D station t=487-506, overlaps with
+  G1380 (D arr=487 dep=517) and G1616 (D arr=492 dep=502) —
+  3 trains competing for D's 2 platforms.
+
+  K834 at C (286-298s): single-station fixed visitor. Other trains
+  at C are done by t=264, so K834 doesn't create direct conflict,
+  but random visitors + K834 together increase C platform scarcity.
+
+[2026-06-29 23:08]
+Task: Add executable five-station L3 implementation plan to coding_plan
+Files:
+  coding_plan - appended a Claude Code-ready staged plan for moving from converged L2 platform allocation to rule-based SUMO/TraCI L3 execution.
+Rationale: User wants the next L3 work recorded as an actionable plan. The plan preserves current converged L2 behavior, starts with offline L2-to-L3 execution validation, then only later introduces closed-loop L3 feedback.
+Status: DONE
+
 [2026-06-28]
 Task: Diagnose bimodal performance + design difficulty-graded evaluation
 
@@ -1176,3 +1259,62 @@ Task: Rollback to V4 three-layer design
   obs_dim=22, ENTRY_CHOICES=6, action_dim=72
 
 Status: DONE - ready to retrain with V4-compliant design
+
+[2026-06-30]
+Task: Audit timetable.yaml against timetable_real.xlsx — route + time errors
+
+== Method ==
+  Compared every train's route and timing in configs/five_station/timetable.yaml
+  against the real timetable in timetable_real.xlsx (base 15:00, /25 compression).
+
+== Route errors found ==
+  G238:  config has A→B→C→D→E (full route).  xlsx shows D(arr=372,dep=377) only.
+         G238 only appears at D station, nowhere else.
+  K834:  config has C→D→E.  xlsx shows C(arr=286,dep=298) only.
+         K834 is a fixed visitor at C, not a through train.
+  G1487: config has C→B→A.  xlsx shows C(arr=29,dep=36)→A(arr=228,dep=238).
+         No B station stop in xlsx.
+  G1616: config has A→B→C→D→E.  xlsx shows A→B→C→D (no E).
+         Terminates at D.
+  G230:  config has A→B→C(through)→D→E.  xlsx shows A→B→D→E (skip C).
+         xlsx marks C as 停运/本站停.
+
+== Verified correct ==
+  G1380: A→B→C→D→E ✓
+  G7629: E→D ✓
+  G2245: E→D ✓
+  K1185: B→A ✓
+
+== Timing issues ==
+  Departure times use raw /25 conversion (arrival times match).
+  Existing trains have extra dwell: dep = max(raw_dep, arr + station_dwell_min).
+  Config departure times are consistently higher than xlsx /25 by 10-55s.
+  This pattern was discovered earlier for G1380 (B dep: xlsx=156 vs config=167,
+  C dep: xlsx=238 vs config=293, D dep: xlsx=497 vs config=517).
+
+== env fix: late-departure trains ==
+  Changed reset() to set arrival_at_current = planned_dep for origin stations.
+  Previously all trains had arrival_at_current=0, causing trains with late
+  departure (G2245 @540s, G7629 @706s) to poll as "pending" for 50+ idle steps.
+  After fix: time jumps work correctly, steps/ep from 150 → 10 avg.
+
+== visitor fix ==
+  Changed target_stations from [B, C, D] to [A, B, C, E].
+  D station (2 platforms) is bottleneck — visitors there block half capacity
+  for 300-900s, causing cascading held trains and truncations.
+
+== 10-train training (symmetric-5v5 branch) ==
+  Added G1347 (D→A, P2, down) for 5 UP + 5 DOWN symmetry.
+  Three 2000ep runs all collapsed: ontime ~0%, delay 60-80s, n_granted→1.0.
+  Root cause: G1347 at D(t=506) is temporally isolated — only overlaps with
+  G2245 at E(t=540), and they're at different stations. No real multi-agent
+  competition. Policy learns single-agent scheduling (n_granted≈1).
+  Not a model/parameter issue — a timetable spacing problem.
+  Decision: pause 10-train config. Fix route/dwell errors first, then
+  reconsider G1347 timing to create real competition.
+
+== Next ==
+  Rewrite timetable.yaml from xlsx with:
+  - Correct routes (remove placeholder stations, fix G238/K834/G1487/G1616/G230)
+  - Consistent dwell: dep = max(raw_dep, arr + dwell_min)
+  - K834 as fixed visitor (same mechanism as random visitors but deterministic)

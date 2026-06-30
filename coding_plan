@@ -225,3 +225,186 @@ Implement disturbance, observation, reward, env L2 loop
 Implement MAPPO modules and train/eval scripts
 Add tests for config-driven, safety, env, MAPPO smoke
 Run tests and fix failures
+
+2026-06-29: Five-station L3 execution plan after converged L2
+
+Context:
+  Latest committed L2 policy is considered converged for five_station. Current
+  FiveStationEnv still advances trains with timetable-based segment runtime:
+  actual_next_arrival = L2_departure + planned[next].arr - planned[cur].dep.
+  L3 should replace this idealized segment-runtime shortcut with physical
+  SUMO/TraCI execution while preserving L2 as the station/platform allocation
+  layer.
+
+Goal:
+  Build a rule-based five-station L3 executor that consumes fixed L2 station
+  allocation plans, executes them in SUMO, records actual station events, and
+  reports the L2-plan-vs-L3-actual gap. Do not retrain or destabilize L2 in the
+  first implementation.
+
+Design boundary:
+  L2 owns:
+    - platform allocation
+    - entry timing choice
+    - dwell/min-departure timing at station level
+    - station resource windows used by resolver
+
+  L3 owns:
+    - SUMO route execution
+    - physical approach/platform/corridor movement
+    - stop/dwell enforcement
+    - speed control / hold control for safety
+    - corridor headway enforcement
+    - actual event logging
+
+  L3 must not silently reassign platforms. If a platform cannot be reached or
+  executed, report an execution violation instead of changing the L2 decision.
+
+Phase A: Export a complete L2 execution plan
+  Files:
+    - src/control/execution_target.py
+    - src/control/five_station_execution_plan.py   (new, preferred)
+    - src/env/five_station_env.py
+    - src/experiment/run_l3_eval.py                (new)
+
+  Tasks:
+    1. Add dataclasses for complete multi-station execution:
+       - StationExecutionTarget
+       - SegmentExecutionTarget
+       - TrainExecutionPlan
+       - EpisodeExecutionPlan
+
+    2. Extend FiveStationEnv info/debug output so a complete episode can be
+       reconstructed as ordered grants per train and per station.
+
+    3. Add a helper that converts L2 grants into an EpisodeExecutionPlan.
+       The helper must use config data for station IDs, platform IDs, edge IDs,
+       directions, and corridors. No hardcoded train/platform/station IDs.
+
+  Pass criteria:
+    - A heuristic or checkpoint-driven five_station episode can be exported to
+      output/five_station/<run_id>/l2_execution_plan.json.
+    - Every train plan contains its route stations in order.
+    - Every station target has station_id, allocated_platform, platform_edge,
+      t_in, t_arr_platform, t_dep_platform, t_out, pass_flag, dwell_min.
+    - Exported station order matches the train route in configs/five_station.
+    - No code path assumes exactly five stations except scenario-specific tests
+      or scripts.
+
+Phase B: Build offline rule-based SUMO L3 executor
+  Files:
+    - src/control/five_station_executor.py         (new)
+    - src/control/executor.py                      (reuse common result types if useful)
+    - src/experiment/run_l3_eval.py                (new)
+    - configs/five_station/railway_resources.yaml
+    - sumo/five_station/*
+
+  Tasks:
+    1. Implement FiveStationExecutor with:
+       - load EpisodeExecutionPlan
+       - generate SUMO route file from L2 platform choices
+       - run TraCI
+       - enforce station stops/dwell using setStop or controlled speed/hold
+       - record actual platform arrival/departure events
+       - write l3_actual_events.csv and l3_metrics.json
+
+    2. Make all SUMO paths scenario-config driven:
+       - net path from cfg.sumo_net_path()
+       - route base from sumo/five_station/routes/five_station.rou.xml or a
+         config-selected equivalent
+       - output path under output/five_station/<run_id>/
+
+    3. Initial L3 control policy:
+       - depart vehicle according to first target timing
+       - route through L2-selected platform edges
+       - if a train arrives early at a platform, hold until scheduled departure
+       - if a train arrives late, depart at earliest safe time after dwell_min
+       - pass-through trains do not receive artificial dwell
+       - corridor headway is enforced by L3 speed/hold control, not by L2
+         ResourceCalendar
+
+  Pass criteria:
+    - run_l3_eval.py can execute one complete exported L2 plan in SUMO.
+    - completion_rate == 1.0 for the baseline plan.
+    - teleport_count == 0.
+    - actual platform edge equals L2 allocated platform edge for every stop.
+    - l3_actual_events.csv contains:
+      train_id, station_id, planned_platform, actual_edge,
+      arr_target, arr_actual, dep_target, dep_actual, dwell_actual.
+    - l3_metrics.json contains:
+      completion_rate, teleport_count, mean_arr_delay_l3, mean_dep_delay_l3,
+      max_delay_l3, mean_abs_plan_deviation, platform_mismatch_count,
+      missing_event_count, headway_violation_count.
+
+Phase C: Compare L2 ideal timing with L3 physical execution
+  Files:
+    - src/experiment/run_l3_eval.py
+    - src/experiment/metrics.py                    (new or extend existing)
+    - output/five_station/<run_id>/*
+
+  Tasks:
+    1. Compute per-event deviations:
+       - arr_actual - arr_target
+       - dep_actual - dep_target
+       - actual dwell - target dwell
+
+    2. Compute train-level and episode-level summary metrics:
+       - L2 planned delay
+       - L3 actual delay
+       - execution gap = L3 actual delay - L2 planned delay
+       - worst train and worst station bottleneck
+
+    3. Produce CSV/JSON outputs suitable for paper tables.
+
+  Pass criteria:
+    - One command generates L2 plan, L3 actual events, and comparison metrics.
+    - The report clearly separates L2 scheduling quality from L3 execution gap.
+    - Re-running with the same seed/checkpoint produces the same L2 plan and
+      deterministic or near-deterministic L3 metrics.
+
+Phase D: Only after offline L3 is stable, add closed-loop L2-L3 mode
+  Files:
+    - src/env/five_station_env.py
+    - src/control/five_station_executor.py
+    - src/experiment/run_l3_closed_loop.py         (new)
+
+  Tasks:
+    1. Add an optional execution_mode flag:
+       - "ideal": current timetable-runtime advance
+       - "l3_offline": export-only, no env feedback
+       - "l3_closed_loop": use actual SUMO arrival events for next-station
+         journey.arrival_at_current
+
+    2. Replace only the transit update path in closed-loop mode:
+       - L2 grant at current station
+       - L3 executes until actual arrival at next station
+       - env sets TrainJourney.arrival_at_current = actual arrival
+       - next L2 decision uses real physical arrival time
+
+    3. Keep the converged L2 checkpoint and ideal-mode evaluation unchanged.
+
+  Pass criteria:
+    - Existing L2 ideal training/eval still works with identical behavior by
+      default.
+    - Closed-loop evaluation completes without retraining.
+    - Closed-loop metrics show whether the converged L2 policy remains robust
+      under physical execution.
+
+Implementation order for Claude Code:
+  1. Read coding_log, this coding_plan section, and .claude/skills/coding-workflow.md.
+  2. Inspect only five_station-related code unless a shared module is required.
+  3. Write a task-specific plan in .claude/plans/ before code edits.
+  4. Implement Phase A first. Do not start Phase B until Phase A export passes.
+  5. Implement Phase B with a heuristic/exported L2 plan before using a trained
+     checkpoint.
+  6. Add narrow smoke tests or script-level validation for each phase.
+  7. Append coding_log after every completed phase.
+
+Recommended first command after implementation starts:
+  python -m src.experiment.run_l3_eval --scenario five_station --policy heuristic --seed 0
+
+Non-goals for the first L3 pass:
+  - Do not train an L3 RL policy.
+  - Do not change the converged L2 reward or MAPPO update loop.
+  - Do not move corridor headway into the L2 resolver.
+  - Do not hardcode station, train, platform, or route IDs in Python.

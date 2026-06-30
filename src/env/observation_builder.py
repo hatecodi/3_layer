@@ -20,6 +20,7 @@ MAX_EPISODE_TIME = 1500.0
 
 ACTOR_SELF_DIM = 14
 ACTOR_NEXT_DIM = 5
+ACTOR_COMPETITOR_DIM = 1  # n_competitors at current station
 _ACTOR_FIXED_RES_DIM = 2  # avail_now, corridor_delay (per-platform bits added dynamically)
 
 TRAIN_CLASS_MAP = {"G": 0, "D": 1, "Z": 2, "K": 3}
@@ -39,10 +40,10 @@ def _max_platforms(cfg: Optional[ScenarioConfig]) -> int:
 def compute_obs_dim(cfg: Optional[ScenarioConfig] = None) -> int:
     """Compute observation dimension from config.
 
-    OBS_DIM = SELF(14) + NEXT(5) + avail(1) + corridor(1) + per_platform_blocked(max_platforms)
+    OBS_DIM = SELF(14) + NEXT(5) + COMPETITOR(1) + avail(1) + corridor(1) + per_platform_blocked(max_platforms)
     """
     max_plat = _max_platforms(cfg)
-    return ACTOR_SELF_DIM + ACTOR_NEXT_DIM + _ACTOR_FIXED_RES_DIM + max_plat
+    return ACTOR_SELF_DIM + ACTOR_NEXT_DIM + ACTOR_COMPETITOR_DIM + _ACTOR_FIXED_RES_DIM + max_plat
 
 
 _OBS_DIM_CACHE: Optional[int] = None
@@ -144,6 +145,11 @@ def build_observations(
             slack / 300.0,
         ] + _one_hot(train.train_class)
 
+        # ?? Competitors at current station (1 dim) ??
+        pending_at_station = context.get("pending_at_station", {})
+        n_at_station = pending_at_station.get(train_id, 0)
+        competitor_info = [min(n_at_station / 4.0, 1.0)]  # normalized, cap at 4+
+
         # ?? Next station info (5 dims) ??
         next_st = _next_station(train_id, train.direction, station_map)
         if next_st and next_st in cfg.stations:
@@ -197,7 +203,7 @@ def build_observations(
             min(corr_delay / 180.0, 1.0) if corr_delay > 0 else 0.0,
         ] + platform_blocked
 
-        obs = self_state + next_info + res_info
+        obs = self_state + competitor_info + next_info + res_info
         observations[train_id] = obs
 
     return observations

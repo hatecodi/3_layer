@@ -120,9 +120,9 @@ def compute_layered_rewards(
     )
 
     global_reward = (
-        -0.02 * (metrics.total_dep_delay / max(metrics.n_active, 1))
-        -20.0 * metrics.deadlock_flag
-        +2.0 * metrics.ontime_rate
+        -0.10 * (metrics.total_dep_delay / max(metrics.n_active, 1))
+        -100.0 * metrics.deadlock_flag
+        +10.0 * metrics.ontime_rate
     )
 
     rewards: Dict[str, RewardBreakdown] = {}
@@ -138,11 +138,12 @@ def compute_layered_rewards(
             prio_weight = {1: 2.0, 2: 1.0, 3: 0.5}.get(bounds.prio_i, 1.0)
             # Progressive penalty: every 300s of delay doubles the marginal cost
             dep_mult = 1.0 + dep_delay // 300.0
-            # Continuous improvement: exponential decay so every second of
-            # delay reduction gives measurable gradient
+            # Binary ontime bonus gives a clear target at 15s — the policy
+            # learns to push delay below the threshold.  Continuous improvement
+            # term provides fine-grained gradient once below 15s.
             dep_improve = math.exp(-dep_delay / 60.0)
             local = (
-                -0.02 * dep_delay * prio_weight * dep_mult
+                -0.10 * dep_delay * prio_weight * dep_mult
                 + ONTIME_BONUS * dep_improve * prio_weight
             )
         total = local + lambda_team * global_reward
