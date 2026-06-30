@@ -1,3 +1,44 @@
+[2026-07-01 00:30]
+Task: Fix physical constants + per-option delay observation
+
+== Root cause of 40s delay ==
+  TRAVEL_TIME_TO_THROAT=5 and THROAT_CLEARANCE_TIME=5 added 10s overhead
+  per station.  At intermediate stations, t_now + 5s approach meant the
+  "plan" entry couldn't hit the planned departure time.
+  Fixed: both set to 0 (compressed timetable already includes overhead).
+
+== Results after fix ==
+  Heuristic (no visitors):   0s delay, 8 steps, 10/10 complete
+  Heuristic (prob=0.3):      0s delay — options correctly reflect visitor
+                              occupancy, option 0 always picks free platform
+  MAPPO 500ep (prob=0.3):    30s delay — policy not yet learning to pick
+                              option 0; needs option_delays in observation
+
+== Option_delays observation ==
+  Added 8 dims (K=8) to observation: per-option expected delay, normalized
+  to [-1, 1].  Padding options get 1.0 (max penalty).  This tells the policy
+  "option 0 has 0 delay, option 3 has +10s delay".
+  obs_dim: 26 -> 34.
+  schedule_options passed via env context to observation builder.
+
+== Calendar gap fix ==
+  Removed unnecessary 5s gap from _is_free check.  Trains with non-overlapping
+  time windows can now use the same platform back-to-back without forced gap.
+
+== Visitor key fix ==
+  Visitor booking keys changed from "B/B_p1" to "B_p1" to match platform IDs
+  used by the calendar.
+
+== abs(delay) sorting ==
+  Options sorted by abs(dep_delay) instead of dep_delay.  Previously negative
+  delays (early departure via "earliest" entry) were sorted first, causing
+  heuristic to pick dep=15s instead of planned dep=53s.
+
+== Remaining issue ==
+  MAPPO stuck at ~30s (heuristic=0s).  Policy sees all 8 options with
+  equal masks but can't distinguish good from bad.  option_delays in
+  observation should fix this — needs verification tomorrow.
+
 [2026-06-30 20:30]
 Task: Top-K schedule options + calendar-aware sequential booking
 
