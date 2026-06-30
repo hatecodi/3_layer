@@ -90,7 +90,7 @@ class TrainJourney:
 # ---------------------------------------------------------------------------
 
 MAX_EPISODE_TIME = 1500.0
-TRAVEL_TIME_TO_THROAT = 0.0   # zero — compressed timetable already includes overhead
+TRAVEL_TIME_TO_THROAT = 5.0   # approach time, aligned to time compression
 
 
 class EpisodeStatus(Enum):
@@ -197,12 +197,9 @@ class FiveStationEnv(BaseRailwayEnv):
                                  station_map=self._journey_station_map(),
                                  context=ctx)
 
-        # Build initial schedule options for action masks
-        self._build_requests({}, lookahead=self.batch_window_sec)
-
         pending = self._pending_trains()
         info = {
-            "action_masks": self._action_masks(),
+            "action_masks": self._action_masks(pending),
             "pending": pending,
             "completed": self._completed_ids,
             "active_train_ids": pending,
@@ -290,7 +287,7 @@ class FiveStationEnv(BaseRailwayEnv):
             self._t_now += self.decision_interval_sec
 
         # 9. Deadlock detection (global NO_LEGAL_ACTION count)
-        masks = self._action_masks()
+        masks = self._action_masks(self._pending_trains())
         no_legal = all(
             not any(masks.get(tid, [False]))
             for tid in self._pending_trains()
@@ -322,7 +319,7 @@ class FiveStationEnv(BaseRailwayEnv):
         truncated = self._episode_status == EpisodeStatus.TRUNCATED
 
         info = {
-            "action_masks": self._action_masks(),
+            "action_masks": self._action_masks(self._pending_trains()),
             "requests": requests,
             "active_train_ids": self._pending_trains(),
             "pending": self._pending_trains(),
@@ -391,7 +388,7 @@ class FiveStationEnv(BaseRailwayEnv):
                 end = start + dwell
 
                 visitors.setdefault(st, []).append((plat.id, start, end, prio))
-                windows[plat.id] = (start, end)
+                windows[f"{st}/{plat.id}"] = (start, end)
 
         return visitors, windows
 
@@ -417,7 +414,6 @@ class FiveStationEnv(BaseRailwayEnv):
             "journeys": {tid: {"current": j.current_station, "next": j.next_station}
                         for tid, j in self._journeys.items() if not j.is_done},
             "pending_at_station": pending_at_station,
-            "schedule_options": getattr(self, '_last_options', {}),
         }
 
     def _pending_trains(self, lookahead: float = 0.0) -> List[str]:
@@ -436,52 +432,14 @@ class FiveStationEnv(BaseRailwayEnv):
                 pending.append(tid)
         return pending
 
-    OPTION_K = 8
-
     def _build_requests(self, action_dict: Dict[str, int], lookahead: float = 0.0) -> Tuple[
         List[WindowRequest], List[str], int
     ]:
-        """Calendar-aware sequential request building.
-
-        Trains are processed in priority order.  Each train generates top-K
-        schedule options from the CURRENT calendar state.  The chosen option
-        is immediately booked, so later trains see earlier bookings.
-        No conflict resolver needed — calendar guarantees feasibility.
-        """
-        from ..control.action_mask import generate_schedule_options
-
         requests: List[WindowRequest] = []
         held: List[str] = []
         infeasible = 0
 
-        # Per-step calendar: platform_id -> [(start, end), ...]
-        calendar: Dict[str, List[Tuple[float, float]]] = {}
-
-        def _book(pid, start, end):
-            calendar.setdefault(pid, []).append((start, end))
-
-        def _is_free(pid, start, end):
-            for ws, we in calendar.get(pid, []):
-                if start < we and end > ws:
-                    return False
-            return True
-
-        # Pre-book visitor windows
-        if self._visitor_enabled:
-            for res_id, (s, e) in self._visitor_windows.items():
-                _book(res_id, s, e)
-
-        # Sort by priority, planned departure, train_id
-        pending = self._pending_trains(lookahead=lookahead)
-        sorted_pending = sorted(pending, key=lambda tid: (
-            self.cfg.trains[tid].priority,
-            self.cfg.trains[tid].planned[self._journeys[tid].current_station].dep,
-            tid,
-        ))
-
-        self._last_options = {}  # for action mask building
-
-        for train_id in sorted_pending:
+        for train_id in self._pending_trains(lookahead=lookahead):
             if self._journeys[train_id].is_done:
                 continue
 
@@ -489,49 +447,27 @@ class FiveStationEnv(BaseRailwayEnv):
             station_id = self._journeys[train_id].current_station
             bounds = self._get_effective_bounds(train_id, station_id, self._t_now)
 
-            # Generate schedule options from current calendar
-            opts = generate_schedule_options(
-                train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT,
-                self.cfg, k=self.OPTION_K, bounds_override=bounds,
-                calendar=calendar)
-
-            self._last_options[train_id] = opts
-
-            if not opts:
+            try:
+                # All trains use policy (no NOMINAL/heuristic branch)
+                action = self._policy_action(train_id, station_id, bounds, action_dict)
+            except ValueError:
                 held.append(train_id)
                 infeasible += 1
                 continue
 
-            # Get chosen option index
-            action = action_dict.get(train_id)
-            if action is not None and 0 <= action < len(opts):
-                chosen = opts[action]
-            else:
-                chosen = opts[0]  # heuristic: pick best option
-
-            # Option already has calendar-corrected times — just book
-            plat = chosen.platform
-            t_start = chosen.t_plat_start
-            t_end = chosen.t_plat_end
-            _book(plat, t_start, t_end)
-
-            # Build WindowRequest for compatibility with _advance_trains
-            t_in_start = t_start - THROAT_CLEARANCE_TIME
-            t_in_end = t_start
-            t_out_start = t_end
-            t_out_end = t_end + THROAT_CLEARANCE_TIME
-
-            req = WindowRequest(
-                train_id=train_id,
-                platform=plat,
-                W_in=(t_in_start, t_in_end),
-                W_plat=(t_start, t_end),
-                W_out=(t_out_start, t_out_end),
-                priority=train.priority,
-                delay=max(0.0, t_out_start - train.planned[station_id].dep),
+            request = action_to_request(
+                train, station_id, action, self._t_now,
+                TRAVEL_TIME_TO_THROAT,
+                current_delay=0.0,
+                cfg=self.cfg,
+                bounds_override=bounds,
             )
-            requests.append(req)
+            if request.W_in[0] < bounds.arr_min - 1e-6 or request.W_out[0] > bounds.dep_max + 1e-6:
+                held.append(train_id)
+                infeasible += 1
+                continue
 
+            requests.append(request)
         return requests, held, infeasible
 
     def _policy_action(self, train_id: str, station_id: str, bounds,
@@ -566,18 +502,20 @@ class FiveStationEnv(BaseRailwayEnv):
     # ------------------------------------------------------------------
 
     def _resolve_requests(self, requests: List[WindowRequest]) -> List[GrantResult]:
-        """Convert already-booked requests to grants (no conflict resolution needed)."""
         grants: List[GrantResult] = []
-        for req in requests:
-            grants.append(GrantResult(
-                train_id=req.train_id,
-                platform=req.platform,
-                W_in=req.W_in,
-                W_plat=req.W_plat,
-                W_out=req.W_out,
-                winner=True,
-                fallback_from=None,
-            ))
+        for station_id in sorted(self.cfg.stations):
+            st_reqs = [r for r in requests
+                       if self._journeys[r.train_id].current_station == station_id]
+            if st_reqs:
+                candidate_platforms = {
+                    tid: self.layer1.for_train(
+                        tid, self._journeys[tid].current_station).candidate_platforms
+                    for tid in [r.train_id for r in st_reqs]
+                }
+                grants.extend(resolve_all(
+                    st_reqs, candidate_platforms,
+                    make_rebuild_fn(self.layer1, station_id),
+                    parked_windows=self._visitor_windows if self._visitor_enabled else None))
         return grants
 
     def _advance_trains(self, grants: List[GrantResult]) -> int:
@@ -654,12 +592,41 @@ class FiveStationEnv(BaseRailwayEnv):
             if not j.is_done and j.current_station
         }
 
-    def _action_masks(self):
-        """Return flat option masks: {tid: [bool, ...]} of length OPTION_K."""
+    def _action_masks(self, pending_ids: List[str]):
+        """Return factored masks: {tid: (platform_mask, entry_mask)}.
+        
+        platform_mask: list of bool, length = candidate_platforms count (<= 4)
+        entry_mask: list of bool, length = ENTRY_CHOICES count (6)
+        Dwell is always 0 (min dwell).
+        """
         masks = {}
-        for tid, opts in self._last_options.items():
-            mask = [True] * len(opts) + [False] * (self.OPTION_K - len(opts))
-            masks[tid] = mask
+        for tid in pending_ids:
+            train = self.cfg.trains[tid]
+            st = self._journeys[tid].current_station
+            bounds = self._get_effective_bounds(tid, st, self._t_now)
+            mask_set = compute_joint_action_mask(
+                train, st, t_now=self._t_now,
+                travel_time_to_throat=TRAVEL_TIME_TO_THROAT, cfg=self.cfg,
+                bounds_override=bounds)
+            
+            # Compute factored masks: platform + entry, dwell=0 always
+            platforms = train.candidate_platforms.get(st, [])
+            n_plat = len(platforms)
+            n_entry = len(ENTRY_CHOICES)
+            p_mask = [False] * n_plat
+            e_mask = [False] * n_entry
+            
+            for i, a in enumerate(mask_set.actions):
+                if mask_set.mask[i]:
+                    if a.dwell_extend == 0:  # only consider min dwell
+                        plat_idx = platforms.index(a.platform) if a.platform in platforms else -1
+                        entry_idx = ENTRY_CHOICES.index(a.entry_choice) if a.entry_choice in ENTRY_CHOICES else -1
+                        if plat_idx >= 0:
+                            p_mask[plat_idx] = True
+                        if entry_idx >= 0:
+                            e_mask[entry_idx] = True
+            
+            masks[tid] = (p_mask, e_mask)
         return masks
 
     # ------------------------------------------------------------------

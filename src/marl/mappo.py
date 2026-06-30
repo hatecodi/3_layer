@@ -104,22 +104,27 @@ class MAPPOTrainer:
         for agent_id in sorted(obs.keys()):
             if agent_id not in masks:
                 continue
-            mask_list = masks[agent_id]
-            if not any(mask_list):
+            mask_tuple = masks[agent_id]
+            p_mask, e_mask = mask_tuple
+            if not any(p_mask) and not any(e_mask):
+                # No legal action — hold, handled by env
                 continue
 
             obs_t = torch.tensor(obs[agent_id], dtype=torch.float32,
                                  device=device).unsqueeze(0)
-            mask_t = torch.tensor(list(mask_list), dtype=torch.bool, device=device)
+            # Pad platform mask to 4
+            p_mask_t = torch.tensor(list(p_mask) + [False] * (4 - len(p_mask)), dtype=torch.bool, device=device)
+            e_mask_t = torch.tensor(list(e_mask), dtype=torch.bool, device=device)
             local_t = torch.tensor(local_group_obs.get(agent_id, obs[agent_id]),
                                    dtype=torch.float32,
                                    device=device).unsqueeze(0)
 
             with torch.no_grad():
-                out = self.ac.act(obs_t, mask_t, local_t, global_t)
+                out = self.ac.act(obs_t, p_mask_t, e_mask_t, local_t, global_t)
 
             actions[agent_id] = AgentAction(
-                option=out.option.item(),
+                platform=out.platform.item(),
+                entry=out.entry.item(),
                 logprob=out.logprob.item(),
                 value_local=out.value_local.item(),
                 value_global=out.value_global.item(),
@@ -162,8 +167,10 @@ class MAPPOTrainer:
                 mb_obs = batch["obs"][mb_idx]
 
                 mb_old_logprobs = batch["old_logprobs"][mb_idx]
-                mb_mask = batch["option_masks"][mb_idx]
-                mb_option = batch["option"][mb_idx]
+                mb_pmask = batch["platform_masks"][mb_idx]
+                mb_emask = batch["entry_masks"][mb_idx]
+                mb_platform = batch["platform"][mb_idx]
+                mb_entry = batch["entry"][mb_idx]
                 mb_adv_local = batch["advantages_local"][mb_idx]
                 mb_adv_global = batch["advantages_global"][mb_idx]
                 mb_ret_local = batch["returns_local"][mb_idx]
@@ -173,7 +180,7 @@ class MAPPOTrainer:
 
                 # Evaluate actions under current policy
                 out = self.ac.evaluate_actions(
-                    mb_obs, mb_mask, mb_option,
+                    mb_obs, mb_pmask, mb_emask, mb_platform, mb_entry,
                     mb_local_obs, mb_global)
 
                 # ---- Policy loss (V4: A_combined = A_local + lam_team * A_global) ----
@@ -231,7 +238,8 @@ class MAPPOTrainer:
 
 @dataclass
 class AgentAction:
-    option: int
+    platform: int
+    entry: int
     logprob: float
     value_local: float
     value_global: float

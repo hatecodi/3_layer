@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_PROJECT = Path(__file__).resolve().parent.parent.parent
+_PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT.parent))
 
 import matplotlib
@@ -54,7 +54,7 @@ total_len = x
 # ---------------------------------------------------------------------------
 Y_CENTER = 0
 Y_GAP = 1.0   # gap between platform tracks
-PLATFORM_COUNTS = {"A": 4, "B": 4, "C": 4, "D": 2, "E": 4}
+PLATFORM_COUNTS = {"A": 3, "B": 3, "C": 4, "D": 2, "E": 3}
 
 COLORS = {
     "A": "#e3f2fd", "B": "#e8f5e9", "C": "#fff3e0", "D": "#fce4ec", "E": "#f3e5f5",
@@ -115,7 +115,7 @@ for st in ["A", "B", "C", "D", "E"]:
             f"{st} ({n}p)", fontsize=13, fontweight="bold", ha="center", color="#333")
 
     # dwell time label
-    dwells = {"A": 60, "B": 30, "C": 60, "D": 30, "E": 30}
+    dwells = {"A": 60, "B": 30, "C": 60, "D": 15, "E": 30}
     ax.text(sx + STATION_WIDTH / 2, n * Y_GAP / 2 + 0.7,
             f"dwell={dwells[st]}s", fontsize=7, ha="center", color="#888")
 
@@ -197,7 +197,7 @@ legend = [
 ax.legend(handles=legend, loc="lower right", fontsize=8, ncol=2)
 
 # Save
-out = _PROJECT / "output" / "five_station" / "network_layout.png"
+out = _PROJECT / "output" / "network_layout.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 print(f"Saved: {out}")
 print(f"\nDistances from A:")

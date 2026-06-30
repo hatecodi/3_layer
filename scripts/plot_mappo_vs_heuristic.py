@@ -10,7 +10,7 @@ from pathlib import Path
 from collections import OrderedDict
 
 PROJECT = Path(__file__).resolve().parent.parent
-PIC_DIR = PROJECT / 'output' / 'pic_of_3'
+PIC_DIR = PROJECT / 'output' / 'pic'
 PIC_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- Load data ----

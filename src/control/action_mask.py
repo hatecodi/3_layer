@@ -26,7 +26,7 @@ from .resource_manager import WindowRequest
 # constants
 # ---------------------------------------------------------------------------
 
-THROAT_CLEARANCE_TIME = 0.0         # zero — compressed timetable already includes overhead
+THROAT_CLEARANCE_TIME = 5.0         # seconds to traverse throat (aligned to time compression)
 THROUGH_PLATFORM_CLEARANCE_TIME = 5.0   # minimum platform pass-through time
 MIN_CLEARANCE_SECONDS = 5.0          # safety gap between resource windows
 
@@ -222,90 +222,6 @@ def candidate_actions(
 # ---------------------------------------------------------------------------
 # joint action mask for a set of trains at a decision step
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Top-K concrete schedule options (action = pick an option index)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ScheduleOption:
-    """A concrete scheduling option with known departure time and delay."""
-    index: int
-    platform: str
-    entry_choice: str
-    dwell_extend: int
-    t_plat_start: float
-    t_plat_end: float
-    t_out_start: float
-    dep_delay: float
-
-
-def generate_schedule_options(
-    train: TrainTimetable,
-    station_id: str,
-    t_now: float,
-    travel_time_to_throat: float,
-    cfg: ScenarioConfig,
-    k: int = 8,
-    bounds_override=None,
-    calendar: Dict[str, List[Tuple[float, float]]] | None = None,
-) -> List[ScheduleOption]:
-    """Generate top-K concrete schedule options sorted by quality.
-
-    Scans all legal (platform, entry) combos, computes concrete times,
-    checks against calendar (if provided), sorts by delay (lowest first),
-    returns top K.
-    """
-    all_options: List[ScheduleOption] = []
-    platforms = train.candidate_platforms.get(station_id, [])
-    entry_order = ["plan", "plan+1", "plan+2", "plan+3", "earliest"]
-    plan = train.planned.get(station_id)
-    planned_dep = plan.dep if plan else 999.0
-    calendar = calendar or {}
-
-    def _plat_occupied(pid, start, end):
-        for ws, we in calendar.get(pid, []):
-            if start < we and end > ws:
-                return True
-        return False
-
-    for entry in entry_order:
-        for plat in platforms:
-            action = (plat, entry, 0)
-            if not is_legal_action(train, station_id, action, t_now,
-                                   travel_time_to_throat, cfg, bounds_override):
-                continue
-            times = derive_schedule(train, station_id, action, t_now,
-                                    travel_time_to_throat, bounds_override=bounds_override)
-            _, _, t_plat_start, t_plat_end, t_out_start, _ = times
-
-            # If platform is occupied, shift departure until it's free
-            shift = 0.0
-            while _plat_occupied(plat, t_plat_start + shift, t_plat_end + shift) and shift < 600:
-                shift += 5.0
-            t_plat_start += shift
-            t_plat_end += shift
-            t_out_start += shift
-
-            delay = t_out_start - planned_dep
-
-            all_options.append(ScheduleOption(
-                index=len(all_options),
-                platform=plat,
-                entry_choice=entry,
-                dwell_extend=0,
-                t_plat_start=t_plat_start,
-                t_plat_end=t_plat_end,
-                t_out_start=t_out_start,
-                dep_delay=delay,
-            ))
-
-    entry_rank = {e: i for i, e in enumerate(entry_order)}
-    all_options.sort(key=lambda o: (abs(o.dep_delay), entry_rank.get(o.entry_choice, 99),
-                                     platforms.index(o.platform) if o.platform in platforms else 99))
-
-    return all_options[:k]
-
 
 @dataclass
 class MaskedActionSet:
