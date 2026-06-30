@@ -1,3 +1,57 @@
+[2026-06-30 20:30]
+Task: Top-K schedule options + calendar-aware sequential booking
+
+== Motivation ==
+  Factored action space (platform_idx, entry_idx) is abstract — policy picks
+  without knowing concrete departure time or delay.  Also, parallel decisions
+  mean trains can't see each other's bookings.
+
+== Changes ==
+  1. action_mask.py — ScheduleOption dataclass + generate_schedule_options()
+     Enumerates all legal (platform, entry, dwell=0) combos, computes concrete
+     departure time and delay for each, sorts by quality, returns top K=8.
+
+  2. five_station_env.py — calendar-aware sequential _build_requests
+     Trains processed in priority order.  Each train's options generated from
+     current calendar state.  Chosen option immediately booked so later trains
+     see earlier bookings.  _resolve_requests simplified to pass-through
+     (no conflict resolution needed).  Action masks changed from factored
+     (p_mask, e_mask) to flat [bool]*K.
+
+  3. actor_critic.py — OptionActor replaces FactoredActor
+     Single K-way categorical head instead of (4+6) factored heads.
+     ActorCriticOutput: option tensor replaces (platform, entry).
+
+  4. mappo.py — AgentAction: option (int) replaces platform+entry.
+     collect_step uses flat mask.
+
+  5. rollout_buffer.py — AgentTransition: option + option_mask.
+     collate_transitions: flat option/mask tensors.
+
+  6. run_train.py — action_dict: tid → option_idx (int).
+     HP: action_dim=8.  Transitions use flat option/mask format.
+
+== Status ==
+  Heuristic: 10/10 complete, 22-44s delay per step (higher than old 13.4s —
+    calendar 5s gap adds friction).
+  Training: runs, 39s/500ep (worse than old 14.1s baseline).
+  Architecture is sound but calendar gap needs tuning.
+
+== What didn't work today ==
+  - Event-driven env (event_env.py): training loop mismatch, reverted
+  - Sequential resolver (calendar without platform switching): lost fallback, reverted
+  - Priority-sequential action sampling: worse than parallel, reverted
+  - platform_contention observation: no signal (trains time-separated), reverted to n_at_station
+  - initial_delays: made problem harder but MAPPO didn't beat heuristic, reverted
+  - dwell_min=15: caused truncations, reverted
+  - continuous reward: worse than binary ontime, reverted to binary
+
+== Confirmed stable results ==
+  prob=0.3: MAPPO 14.1s/70.5% vs heuristic 19s/72% (-26% delay)
+  prob=0.5: MAPPO 14.2s/70.0% vs heuristic 24s/72% (-41% delay)
+  5000ep: 0 deadlock, 1 truncated
+  Best config: binary ontime reward 5x, K=1, n_at_station obs, platform_util obs
+
 [2026-06-30]
 Task: Fix training log — episode aggregate metrics instead of final-step snapshot
 
