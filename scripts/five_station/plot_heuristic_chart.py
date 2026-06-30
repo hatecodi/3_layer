@@ -24,11 +24,12 @@ while True:
     obs, reward, terminated, truncated, info = env.step({})
     step += 1
     for g in info.get('granted_windows', []):
-        j = env._journeys.get(g.train_id)
-        if j and g.train_id not in seen:
-            st = j.current_station
+        # Extract station from platform (e.g., "A_p1" → "A")
+        st = g.platform.split('_')[0]
+        key = (g.train_id, st)
+        if key not in seen:
             actual.setdefault(g.train_id, []).append((st, g.W_in[0], g.W_out[0]))
-            seen.add(g.train_id)
+            seen.add(key)
     if terminated or truncated:
         break
 

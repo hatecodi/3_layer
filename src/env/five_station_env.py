@@ -391,7 +391,7 @@ class FiveStationEnv(BaseRailwayEnv):
                 end = start + dwell
 
                 visitors.setdefault(st, []).append((plat.id, start, end, prio))
-                windows[f"{st}/{plat.id}"] = (start, end)
+                windows[plat.id] = (start, end)
 
         return visitors, windows
 
@@ -459,9 +459,9 @@ class FiveStationEnv(BaseRailwayEnv):
         def _book(pid, start, end):
             calendar.setdefault(pid, []).append((start, end))
 
-        def _is_free(pid, start, end, gap=5.0):
+        def _is_free(pid, start, end):
             for ws, we in calendar.get(pid, []):
-                if start < we + gap and end > ws - gap:
+                if start < we and end > ws:
                     return False
             return True
 
@@ -491,7 +491,8 @@ class FiveStationEnv(BaseRailwayEnv):
             # Generate schedule options from current calendar
             opts = generate_schedule_options(
                 train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT,
-                self.cfg, k=self.OPTION_K, bounds_override=bounds)
+                self.cfg, k=self.OPTION_K, bounds_override=bounds,
+                calendar=calendar)
 
             self._last_options[train_id] = opts
 
@@ -507,24 +508,10 @@ class FiveStationEnv(BaseRailwayEnv):
             else:
                 chosen = opts[0]  # heuristic: pick best option
 
-            # If platform occupied, find earliest free time
+            # Option already has calendar-corrected times — just book
             plat = chosen.platform
             t_start = chosen.t_plat_start
             t_end = chosen.t_plat_end
-            duration = t_end - t_start
-
-            if not _is_free(plat, t_start, t_end):
-                # Shift to earliest free slot
-                candidate = t_start
-                for ws, we in calendar.get(plat, []):
-                    if candidate < we + 5.0 and candidate + duration > ws - 5.0:
-                        candidate = we + 5.0
-                t_start = candidate
-                t_end = t_start + duration
-
-            shift = t_start - chosen.t_plat_start
-
-            # Book
             _book(plat, t_start, t_end)
 
             # Build WindowRequest for compatibility with _advance_trains
