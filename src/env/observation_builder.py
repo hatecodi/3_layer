@@ -40,10 +40,10 @@ def _max_platforms(cfg: Optional[ScenarioConfig]) -> int:
 def compute_obs_dim(cfg: Optional[ScenarioConfig] = None) -> int:
     """Compute observation dimension from config.
 
-    OBS_DIM = SELF(14) + NEXT(5) + COMPETITOR(1) + avail(1) + corridor(1) + per_platform_blocked(max_platforms)
+    OBS_DIM = SELF(14) + NEXT(5) + COMPETITOR(1) + avail(1) + corridor(1) + per_platform_blocked(max_platforms) + OPTION_DELAYS(8)
     """
     max_plat = _max_platforms(cfg)
-    return ACTOR_SELF_DIM + ACTOR_NEXT_DIM + ACTOR_COMPETITOR_DIM + _ACTOR_FIXED_RES_DIM + max_plat
+    return ACTOR_SELF_DIM + ACTOR_NEXT_DIM + ACTOR_COMPETITOR_DIM + _ACTOR_FIXED_RES_DIM + max_plat + 8
 
 
 _OBS_DIM_CACHE: Optional[int] = None
@@ -203,7 +203,18 @@ def build_observations(
             min(corr_delay / 180.0, 1.0) if corr_delay > 0 else 0.0,
         ] + platform_blocked
 
-        obs = self_state + competitor_info + next_info + res_info
+        # Per-option expected delay (K=8 dims) — tells the policy which options are good
+        schedule_options = context.get("schedule_options", {})
+        opts = schedule_options.get(train_id, [])
+        option_delays = []
+        for i in range(8):
+            if i < len(opts):
+                d = opts[i].dep_delay
+                option_delays.append(max(-1.0, min(1.0, d / 120.0)))
+            else:
+                option_delays.append(1.0)  # padding = maximum penalty
+
+        obs = self_state + competitor_info + next_info + res_info + option_delays
         observations[train_id] = obs
 
     return observations

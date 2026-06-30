@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 
-DEFAULT_OBS_DIM = 26
+DEFAULT_OBS_DIM = 34
 OPTION_K = 8       # top-K schedule options
 GLOBAL_STATE_DIM = 14
 

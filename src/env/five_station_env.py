@@ -90,7 +90,7 @@ class TrainJourney:
 # ---------------------------------------------------------------------------
 
 MAX_EPISODE_TIME = 1500.0
-TRAVEL_TIME_TO_THROAT = 5.0   # approach time, aligned to time compression
+TRAVEL_TIME_TO_THROAT = 0.0   # zero — compressed timetable already includes overhead
 
 
 class EpisodeStatus(Enum):
@@ -417,6 +417,7 @@ class FiveStationEnv(BaseRailwayEnv):
             "journeys": {tid: {"current": j.current_station, "next": j.next_station}
                         for tid, j in self._journeys.items() if not j.is_done},
             "pending_at_station": pending_at_station,
+            "schedule_options": getattr(self, '_last_options', {}),
         }
 
     def _pending_trains(self, lookahead: float = 0.0) -> List[str]:
