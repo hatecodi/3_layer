@@ -14,8 +14,7 @@ from torch.distributions import Categorical
 
 
 DEFAULT_OBS_DIM = 26
-PLATFORM_DIM = 4  # max platforms per station
-ENTRY_DIM = 6      # 6 entry choices
+OPTION_K = 8       # top-K schedule options
 GLOBAL_STATE_DIM = 14
 
 
@@ -29,23 +28,21 @@ def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
     )
 
 
-class FactoredActor(nn.Module):
-    """Two-headed actor: platform choice + entry timing.
-    
-    4 platform logits + 6 entry logits = 10 total (was 72).
-    Dwell is always min_dwell (0 extra).
+class OptionActor(nn.Module):
+    """Single-headed actor: pick from K concrete schedule options.
+
+    Each option is a (platform, entry_time, departure_time) tuple.
+    Mask is a single boolean tensor of length K.
     """
     def __init__(
         self,
         obs_dim: int = DEFAULT_OBS_DIM,
-        platform_dim: int = PLATFORM_DIM,
-        entry_dim: int = ENTRY_DIM,
+        K: int = OPTION_K,
         hidden_dim: int = 128,
     ):
         super().__init__()
-        self.platform_dim = platform_dim
-        self.entry_dim = entry_dim
-        self.action_dim = platform_dim + entry_dim  # 10 total
+        self.K = K
+        self.action_dim = K
         self.norm = nn.LayerNorm(obs_dim)
         self.shared = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -53,30 +50,20 @@ class FactoredActor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
         )
-        self.platform_head = nn.Linear(hidden_dim, platform_dim)
-        self.entry_head = nn.Linear(hidden_dim, entry_dim)
+        self.head = nn.Linear(hidden_dim, K)
 
-    def logits(
-        self,
-        obs: torch.Tensor,
-        platform_mask: torch.Tensor | None = None,
-        entry_mask: torch.Tensor | None = None,
-    ):
+    def logits(self, obs: torch.Tensor, mask: torch.Tensor | None = None):
         h = self.norm(obs)
         h = self.shared(h)
-        p_logits = self.platform_head(h)
-        e_logits = self.entry_head(h)
-        if platform_mask is not None:
-            platform_mask = platform_mask.to(dtype=torch.bool, device=p_logits.device)
-            p_logits = p_logits.masked_fill(~platform_mask, float("-inf"))
-        if entry_mask is not None:
-            entry_mask = entry_mask.to(dtype=torch.bool, device=e_logits.device)
-            e_logits = e_logits.masked_fill(~entry_mask, float("-inf"))
-        return p_logits, e_logits
+        logits = self.head(h)
+        if mask is not None:
+            mask = mask.to(dtype=torch.bool, device=logits.device)
+            logits = logits.masked_fill(~mask, float("-inf"))
+        return logits
 
-    def dist(self, obs, platform_mask=None, entry_mask=None):
-        p_logits, e_logits = self.logits(obs, platform_mask, entry_mask)
-        return Categorical(logits=p_logits), Categorical(logits=e_logits)
+    def dist(self, obs, mask=None):
+        logits = self.logits(obs, mask)
+        return Categorical(logits=logits)
 
 
 class LocalCritic(nn.Module):
@@ -111,8 +98,7 @@ class GlobalCritic(nn.Module):
 
 @dataclass
 class ActorCriticOutput:
-    platform: torch.Tensor
-    entry: torch.Tensor
+    option: torch.Tensor          # index into top-K schedule options
     logprob: torch.Tensor
     entropy: torch.Tensor
     value_local: torch.Tensor
@@ -123,35 +109,29 @@ class Layer2ActorCritic(nn.Module):
     def __init__(
         self,
         obs_dim: int = DEFAULT_OBS_DIM,
-        platform_dim: int = PLATFORM_DIM,
-        entry_dim: int = ENTRY_DIM,
+        K: int = OPTION_K,
         k_local: int = 3,
         global_state_dim: int = GLOBAL_STATE_DIM,
         hidden_dim: int = 128,
     ):
         super().__init__()
-        self.actor = FactoredActor(obs_dim, platform_dim, entry_dim, hidden_dim)
+        self.actor = OptionActor(obs_dim, K, hidden_dim)
         self.local_critic = LocalCritic(obs_dim, k_local, hidden_dim)
         self.global_critic = GlobalCritic(global_state_dim, hidden_dim)
 
     def act(
         self,
         obs: torch.Tensor,
-        platform_mask: torch.Tensor,
-        entry_mask: torch.Tensor,
+        mask: torch.Tensor,
         local_group_obs: torch.Tensor,
         global_state: torch.Tensor,
     ) -> ActorCriticOutput:
-        p_dist, e_dist = self.actor.dist(obs, platform_mask, entry_mask)
-        platform = p_dist.sample()
-        entry = e_dist.sample()
-        logprob = p_dist.log_prob(platform) + e_dist.log_prob(entry)
-        entropy = p_dist.entropy() + e_dist.entropy()
+        dist = self.actor.dist(obs, mask)
+        option = dist.sample()
         return ActorCriticOutput(
-            platform=platform,
-            entry=entry,
-            logprob=logprob,
-            entropy=entropy,
+            option=option,
+            logprob=dist.log_prob(option),
+            entropy=dist.entropy(),
             value_local=self.local_critic(local_group_obs),
             value_global=self.global_critic(global_state),
         )
@@ -159,21 +139,16 @@ class Layer2ActorCritic(nn.Module):
     def evaluate_actions(
         self,
         obs: torch.Tensor,
-        platform_mask: torch.Tensor,
-        entry_mask: torch.Tensor,
-        platform: torch.Tensor,
-        entry: torch.Tensor,
+        mask: torch.Tensor,
+        option: torch.Tensor,
         local_group_obs: torch.Tensor,
         global_state: torch.Tensor,
     ) -> ActorCriticOutput:
-        p_dist, e_dist = self.actor.dist(obs, platform_mask, entry_mask)
-        logprob = p_dist.log_prob(platform) + e_dist.log_prob(entry)
-        entropy = p_dist.entropy() + e_dist.entropy()
+        dist = self.actor.dist(obs, mask)
         return ActorCriticOutput(
-            platform=platform,
-            entry=entry,
-            logprob=logprob,
-            entropy=entropy,
+            option=option,
+            logprob=dist.log_prob(option),
+            entropy=dist.entropy(),
             value_local=self.local_critic(local_group_obs),
             value_global=self.global_critic(global_state),
         )

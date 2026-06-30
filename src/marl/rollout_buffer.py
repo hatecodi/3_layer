@@ -17,11 +17,9 @@ import torch
 class AgentTransition:
     agent_id: str
     obs: torch.Tensor           # [obs_dim] from config
-    platform: int                # platform index (0-3)
-    entry: int                   # entry choice index (0-5)
+    option: int                  # index into top-K schedule options (0..K-1)
     logprob: float
-    platform_mask: torch.Tensor   # [4] boolean
-    entry_mask: torch.Tensor      # [6] boolean
+    option_mask: torch.Tensor    # [K] boolean
     value_local: float
     value_global: float
     reward_local: float
@@ -32,8 +30,7 @@ class AgentTransition:
 
     def to(self, device: torch.device) -> "AgentTransition":
         self.obs = self.obs.to(device)
-        self.platform_mask = self.platform_mask.to(device)
-        self.entry_mask = self.entry_mask.to(device)
+        self.option_mask = self.option_mask.to(device)
         return self
 
 
@@ -128,13 +125,11 @@ def collate_transitions(
     transitions: List[AgentTransition],
     device: torch.device,
 ) -> Dict[str, torch.Tensor]:
-    """Batch AgentTransitions for factored-action PPO update."""
+    """Batch AgentTransitions for option-action PPO update."""
     obs = torch.stack([t.obs for t in transitions]).to(device)
-    platform = torch.tensor([t.platform for t in transitions], dtype=torch.long, device=device)
-    entry = torch.tensor([t.entry for t in transitions], dtype=torch.long, device=device)
+    option = torch.tensor([t.option for t in transitions], dtype=torch.long, device=device)
     logprobs = torch.tensor([t.logprob for t in transitions], device=device)
-    platform_masks = torch.stack([t.platform_mask for t in transitions]).to(device)
-    entry_masks = torch.stack([t.entry_mask for t in transitions]).to(device)
+    option_masks = torch.stack([t.option_mask for t in transitions]).to(device)
     adv_local = torch.tensor([t.advantage_local for t in transitions], device=device)
     adv_global = torch.tensor([t.advantage_global for t in transitions], device=device)
     ret_local = torch.tensor([t.return_local for t in transitions], device=device)
@@ -144,11 +139,9 @@ def collate_transitions(
 
     return {
         "obs": obs,
-        "platform": platform,
-        "entry": entry,
+        "option": option,
         "old_logprobs": logprobs,
-        "platform_masks": platform_masks,
-        "entry_masks": entry_masks,
+        "option_masks": option_masks,
         "advantages_local": adv_local,
         "advantages_global": adv_global,
         "returns_local": ret_local,

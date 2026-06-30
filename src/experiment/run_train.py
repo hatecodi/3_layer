@@ -37,7 +37,7 @@ from src.marl.rollout_buffer import RolloutBuffer, AgentTransition
 
 HP = {
     "obs_dim": 26,                       # overridden per env
-    "action_dim": 45,                    # overridden per env
+    "action_dim": 8,                     # K schedule options
     "k_local": 1,                       # LocalCritic: agent + 1 neighbour
     "hidden_dim": 128,
     "lr": 3e-4,
@@ -160,7 +160,7 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
                 obs, masks, group_obs, gs_vec, device=device)
 
             # Build action_dict
-            action_dict = {aid: (a.platform, a.entry) for aid, a in agent_actions.items()}
+            action_dict = {aid: a.option for aid, a in agent_actions.items()}
 
             # Step
             next_obs, reward, terminated, truncated, info = env.step(action_dict)
@@ -184,25 +184,16 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
                 r_local = reward_breakdown.get(agent_id, {}).get("local", 0.0)
                 r_global = reward_breakdown.get(agent_id, {}).get("global_", 0.0)
 
-                # Factored masks: platform_mask + entry_mask
-                m = masks.get(agent_id)
-                if m is not None:
-                    pm = list(m[0]) + [False] * (4 - len(m[0]))  # pad to 4
-                    em = list(m[1])  # already 6
-                    p_mask = torch.tensor(pm, dtype=torch.bool)
-                    e_mask = torch.tensor(em, dtype=torch.bool)
-                else:
-                    p_mask = torch.zeros(4, dtype=torch.bool)
-                    e_mask = torch.zeros(6, dtype=torch.bool)
+                # Flat option mask (length K)
+                m = masks.get(agent_id, [])
+                opt_mask = torch.tensor(list(m), dtype=torch.bool)
 
                 step_transitions.append(AgentTransition(
                     agent_id=agent_id,
                     obs=torch.tensor(obs[agent_id], dtype=torch.float32),
-                    platform=a.platform,
-                    entry=a.entry,
+                    option=a.option,
                     logprob=a.logprob,
-                    platform_mask=p_mask,
-                    entry_mask=e_mask,
+                    option_mask=opt_mask,
                     value_local=a.value_local,
                     value_global=a.value_global,
                     reward_local=r_local,
