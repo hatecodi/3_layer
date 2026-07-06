@@ -144,6 +144,8 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
         ep_total_dep_delay = 0.0
         ep_total_arr_delay = 0.0
         ep_total_held = 0
+        ep_total_plat_util = 0.0
+        ep_plat_util_steps = 0
 
         while not ep_done:
             # ---- collect step ----
@@ -173,6 +175,9 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
             ep_total_dep_delay += metrics.get("total_dep_delay", 0.0)
             ep_total_arr_delay += metrics.get("total_arr_delay", 0.0)
             ep_total_held += metrics.get("n_held", 0)
+            if metrics.get("platform_utilization", 0) > 0:
+                ep_total_plat_util += metrics["platform_utilization"]
+                ep_plat_util_steps += 1
             reward_breakdown = info.get("reward_breakdown", {})
 
             # Record transitions
@@ -271,6 +276,7 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
             "n_ontime_dep": ep_total_ontime_dep,
             "n_granted": ep_total_granted,
             "n_held": ep_total_held,
+            "platform_utilization": ep_total_plat_util / max(ep_plat_util_steps, 1),
             "lam_team": trainer.lam_team,
             "illegal_actions": 0,
         }

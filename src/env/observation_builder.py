@@ -9,6 +9,7 @@ Critic gets broader context via critic_input().
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Dict, List, Optional, Set
 
 from ..control.dispatch_bounds import DispatchBounds
@@ -18,7 +19,7 @@ from ..experiment.scenario_loader import ScenarioConfig
 K_MAX = 5
 MAX_EPISODE_TIME = 1500.0
 
-ACTOR_SELF_DIM = 14
+ACTOR_SELF_DIM = 16  # +2: mean_delay_at_station, remaining_slack
 ACTOR_NEXT_DIM = 5
 ACTOR_COMPETITOR_DIM = 0  # platform_contention uses max_plat dims dynamically
 _ACTOR_FIXED_RES_DIM = 2  # avail_now, corridor_delay (per-platform bits added dynamically)
@@ -127,10 +128,25 @@ def build_observations(
         bounds = layer1.for_train(train_id, station_id)
         grant = grants_by_train.get(train_id)
 
-        # ?? Self state (14 dims) ??
+        # Pending trains at current station (needed for self + contention)
+        station_pending = context.get("station_pending", {})
+        pending_at_st = station_pending.get(station_id, [])
+
+        # ?? Self state (16 dims) ??
         cum_delay = cum_delays.get(train_id, 0.0)
         slack = bounds.t_dep_max - max(grant.W_out[0] if grant else t_now, bounds.t_dep_plan)
         slack = max(0.0, min(slack, 300.0))
+
+        # Mean delay of other pending trains at this station
+        others_delays = [
+            cum_delays.get(t, 0.0)
+            for t, _ in pending_at_st if t != train_id
+        ]
+        mean_other_delay = sum(others_delays) / max(len(others_delays), 1)
+
+        # Remaining scheduling slack before dep_max hard ceiling
+        remaining_slack = max(0.0, bounds.t_dep_max - max(t_now, bounds.t_arr_min) - bounds.dwell_min)
+        remaining_slack = min(remaining_slack, 300.0)
 
         self_state = [
             min(t_now / MAX_EPISODE_TIME, 1.0),
@@ -143,25 +159,39 @@ def build_observations(
             bounds.prio_i / 3.0,
             float(bounds.pass_flag),
             slack / 300.0,
+            min(mean_other_delay / 600.0, 1.0),
+            remaining_slack / 300.0,
         ] + _one_hot(train.train_class)
 
         # ?? Platform contention at current station (max_plat dims) ??
-        # For each platform, fraction of other pending trains whose planned
-        # departure window overlaps with mine — tells the policy which
-        # platforms are "hot" and which are free.
+        # Per-platform contention weighted by conflict-group sharing.
+        # A platform in g1 (1 platform) gets full competitor count; a platform
+        # in g2 (3 platforms) gets count / 3 — the throat resource is shared.
         my_dep = bounds.t_dep_plan
-        station_pending = context.get("station_pending", {})
-        pending_at_st = station_pending.get(station_id, [])
+        # Build platform -> conflict_group mapping for this station + direction
+        station = cfg.stations[station_id]
+        dir_cfg = station.up if train.direction == "up" else station.down
+        plat_to_in_group: Dict[str, str] = {}
+        for r in dir_cfg.in_routes:
+            plat_to_in_group[r.platform] = r.conflict_group
+        # Count platforms per group
+        group_sizes: Dict[str, int] = defaultdict(int)
+        for g in plat_to_in_group.values():
+            group_sizes[g] += 1
+
         contention = []
         for p in cfg.stations[station_id].platforms:
             n_overlap = 0
             for other_tid, other_dep in pending_at_st:
                 if other_tid == train_id:
                     continue
-                # Check time overlap: other's [dep-15, dep] vs my [dep-15, dep]
                 if abs(other_dep - my_dep) < 30:
                     n_overlap += 1
-            contention.append(min(n_overlap / 3.0, 1.0))
+            # Distribute competitor count across platforms in the same conflict group
+            p_group = plat_to_in_group.get(p.id, "?")
+            n_in_group = max(group_sizes.get(p_group, 1), 1)
+            val = n_overlap / n_in_group
+            contention.append(min(val, 1.0))
         while len(contention) < max_plat:
             contention.append(0.0)
 

@@ -28,12 +28,13 @@ time_generation:
   headway_sec: 60
   visitors:
     enabled: true
-    target_stations: [A, B, C, E]
+    target_stations: [A, B, C, D, E]
     prob_per_slot: 0.3
     slots_per_station: [1, 2]
     k_ratio: 0.6
-    k_dwell: [300, 900]
-    g_dwell: [120, 300]
+    k_dwell: [60, 180]
+    g_dwell: [30, 90]
+    p1_bias: 0.6    # 60% of VT slots occupy p1, forcing policy to use side platforms
 assumptions:
 - 'Time compression: real seconds / 25 = sim seconds. Base 15:00 = t=0.'
 - A:南昌西 B:鹰潭北 C:上饶 D:杭州东 E:南京南
@@ -92,11 +93,11 @@ trains:
       dep_max: 823
       dwell_min: 0
   candidate_platforms:
-    A: [A_p1, A_p2, A_p3]
-    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3, A_p4]
+    B: [B_p1, B_p2, B_p3, B_p4]
     C: [C_p1, C_p2, C_p3, C_p4]
     D: [D_p1, D_p2]
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
 
 - id: G230
   direction: up
@@ -145,11 +146,11 @@ trains:
       dep_max: 634
       dwell_min: 0
   candidate_platforms:
-    A: [A_p1, A_p2, A_p3]
-    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3, A_p4]
+    B: [B_p1, B_p2, B_p3, B_p4]
     C: [C_p1, C_p2, C_p3, C_p4]
     D: [D_p1, D_p2]
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
 
 - id: G1616
   direction: up
@@ -198,11 +199,11 @@ trains:
       dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    A: [A_p1, A_p2, A_p3]
-    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3, A_p4]
+    B: [B_p1, B_p2, B_p3, B_p4]
     C: [C_p1, C_p2, C_p3, C_p4]
     D: [D_p1, D_p2]
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
 
 - id: G238
   direction: up
@@ -251,11 +252,11 @@ trains:
       dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    A: [A_p1, A_p2, A_p3]
-    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3, A_p4]
+    B: [B_p1, B_p2, B_p3, B_p4]
     C: [C_p1, C_p2, C_p3, C_p4]
     D: [D_p1, D_p2]
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
 
 - id: K834
   direction: up
@@ -304,11 +305,11 @@ trains:
       dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    A: [A_p1, A_p2, A_p3]
-    B: [B_p1, B_p2, B_p3]
+    A: [A_p1, A_p2, A_p3, A_p4]
+    B: [B_p1, B_p2, B_p3, B_p4]
     C: [C_p1, C_p2, C_p3, C_p4]
     D: [D_p1, D_p2]
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
 
 # ============================================================
 # DOWN (E->A) trains
@@ -360,11 +361,11 @@ trains:
       dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
     D: [D_p1, D_p2]
     C: [C_p1, C_p2, C_p3, C_p4]
-    B: [B_p1, B_p2, B_p3]
-    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3, B_p4]
+    A: [A_p1, A_p2, A_p3, A_p4]
 
 - id: G2245
   direction: down
@@ -413,11 +414,11 @@ trains:
       dep_max: 120
       dwell_min: 0
   candidate_platforms:
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
     D: [D_p1, D_p2]
     C: [C_p1, C_p2, C_p3, C_p4]
-    B: [B_p1, B_p2, B_p3]
-    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3, B_p4]
+    A: [A_p1, A_p2, A_p3, A_p4]
 
 - id: G1487
   direction: down
@@ -466,11 +467,11 @@ trains:
       dep_max: 358
       dwell_min: 10
   candidate_platforms:
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
     D: [D_p1, D_p2]
     C: [C_p1, C_p2, C_p3, C_p4]
-    B: [B_p1, B_p2, B_p3]
-    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3, B_p4]
+    A: [A_p1, A_p2, A_p3, A_p4]
 
 - id: G1347
   direction: down
@@ -519,11 +520,11 @@ trains:
       dep_max: 1056
       dwell_min: 7
   candidate_platforms:
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
     D: [D_p1, D_p2]
     C: [C_p1, C_p2, C_p3, C_p4]
-    B: [B_p1, B_p2, B_p3]
-    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3, B_p4]
+    A: [A_p1, A_p2, A_p3, A_p4]
 
 - id: K1185
   direction: down
@@ -572,8 +573,8 @@ trains:
       dep_max: 526
       dwell_min: 44
   candidate_platforms:
-    E: [E_p1, E_p2, E_p3]
+    E: [E_p1, E_p2, E_p3, E_p4]
     D: [D_p1, D_p2]
     C: [C_p1, C_p2, C_p3, C_p4]
-    B: [B_p1, B_p2, B_p3]
-    A: [A_p1, A_p2, A_p3]
+    B: [B_p1, B_p2, B_p3, B_p4]
+    A: [A_p1, A_p2, A_p3, A_p4]

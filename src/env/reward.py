@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from ..control.dispatch_bounds import DispatchBounds
 from ..control.resource_manager import GrantResult
@@ -32,6 +32,7 @@ class Metrics:
     n_ontime_dep: int = 0          # trains departing within threshold
     n_ontime_arr: int = 0          # trains arriving within threshold
     ontime_rate: float = 0.0       # ontine departures / n_granted
+    platform_utilization: float = 0.0  # distinct platforms used / total platforms (per station avg)
 
 
 @dataclass
@@ -75,6 +76,21 @@ def compute_metrics(
     n_active = max(len(active), 1)
     n_ontime_dep = sum(1 for d in dep_delays if d <= ONTIME_THRESHOLD_SEC)
     n_ontime_arr = sum(1 for d in arr_delays if d <= ONTIME_THRESHOLD_SEC)
+
+    # Platform utilization: per-station average of (distinct_platforms_used / total_platforms)
+    plat_by_station: Dict[str, set] = {}
+    for grant in grants:
+        sid = station_map.get(grant.train_id) if station_map else "?"
+        plat_by_station.setdefault(sid, set()).add(grant.platform)
+    util_sum = 0.0
+    n_stations = 0
+    for sid, used in plat_by_station.items():
+        if sid and sid in cfg.stations:
+            total = len(cfg.stations[sid].platforms)
+            if total > 0:
+                util_sum += len(used) / total
+                n_stations += 1
+    platform_util = util_sum / max(n_stations, 1)
     return Metrics(
         n_granted=n_granted,
         n_held=len(held),
@@ -92,6 +108,7 @@ def compute_metrics(
         n_ontime_dep=n_ontime_dep,
         n_ontime_arr=n_ontime_arr,
         ontime_rate=n_ontime_dep / max(n_granted, 1),
+        platform_utilization=platform_util,
     )
 
 

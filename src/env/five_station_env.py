@@ -28,17 +28,19 @@ from ..control.action_mask import (
     action_to_request,
     compute_joint_action_mask,
     heuristic_action,
+    is_legal_action,
 )
 from ..control.dispatch_bounds import DispatchBounds
 from ..control.resource_manager import (
     GrantResult,
+    ResourceCalendar,
     WindowRequest,
     build_conflict_graph,
     resolve_all,
 )
 from ..experiment.heuristic_planner import make_rebuild_fn
 from ..experiment.scenario_loader import ScenarioConfig, TrainBound
-from .disturbance import DEADLOCK_THRESHOLD
+from .disturbance import DEADLOCK_THRESHOLD, inject_initial_delays
 from .observation_builder import build_observations
 from .reward import compute_layered_rewards, compute_metrics
 
@@ -185,6 +187,9 @@ class FiveStationEnv(BaseRailwayEnv):
                 plan_dep = self.cfg.trains[tid].planned[origin].dep
                 j.arrival_at_current = float(plan_dep)
             self._journeys[tid] = j
+
+        # Inject random initial departure delays at origin stations
+        inject_initial_delays(self._journeys, self.cfg.trains, self.rng)
 
         self._last_requests = []
         self._last_grants = []
@@ -384,6 +389,17 @@ class FiveStationEnv(BaseRailwayEnv):
                 dwell = self.rng.uniform(k_dwell[0], k_dwell[1]) if is_k \
                     else self.rng.uniform(g_dwell[0], g_dwell[1])
                 plat = self.rng.choice(station.platforms)
+                # Bias: preferentially occupy p1 (main line), forcing policy
+                # to learn platform switching when the main line is blocked.
+                p1_bias = self._visitor_config.get("p1_bias", 0.0)
+                if p1_bias > 0 and self.rng.random() < p1_bias and station.platforms:
+                    plat = station.platforms[0]  # p1 is always first
+                else:
+                    # Exclude p1 if biased, so other platforms get the slot
+                    candidates = station.platforms
+                    if p1_bias > 0 and len(candidates) > 1:
+                        candidates = station.platforms[1:]
+                    plat = self.rng.choice(candidates)
                 start = self.rng.uniform(0, max(0, MAX_EPISODE_TIME - dwell))
                 end = start + dwell
 
@@ -409,10 +425,23 @@ class FiveStationEnv(BaseRailwayEnv):
             st = self._journeys[tid].current_station
             pending_at_station[tid] = station_counts.get(st, 0) - 1
 
+        # Cumulative delays from initial delay + propagated scheduling delays
+        cumulative_delays = {}
+        for tid, j in self._journeys.items():
+            if j.is_done:
+                continue
+            train = self.cfg.trains[tid]
+            st = j.current_station
+            planned = train.planned.get(st)
+            if planned:
+                # Origin: delay = actual - planned_dep.  Intermediate: delay = actual_arrival - planned_arr.
+                ref = planned.dep if j.current_idx == 0 else planned.arr
+                cumulative_delays[tid] = max(0.0, j.arrival_at_current - ref)
+
         return {
             "visitor_windows": self._visitor_windows if self._visitor_enabled else {},
             "visitors": self._visitor_list if self._visitor_enabled else {},
-            "cumulative_delays": {},
+            "cumulative_delays": cumulative_delays,
             "corridor_delays": {},
             "journeys": {tid: {"current": j.current_station, "next": j.next_station}
                         for tid, j in self._journeys.items() if not j.is_done},
@@ -439,40 +468,143 @@ class FiveStationEnv(BaseRailwayEnv):
     def _build_requests(self, action_dict: Dict[str, int], lookahead: float = 0.0) -> Tuple[
         List[WindowRequest], List[str], int
     ]:
+        """Build WindowRequests with intra-station sequential ordering.
+
+        Trains at the same station are processed in priority order.  Higher-priority
+        trains commit first; lower-priority trains see committed choices and avoid
+        picking the same platform, reducing intra-step collisions that would otherwise
+        be resolved by fallback.
+        """
         requests: List[WindowRequest] = []
         held: List[str] = []
         infeasible = 0
 
-        for train_id in self._pending_trains(lookahead=lookahead):
+        # Group pending trains by station
+        pending = self._pending_trains(lookahead=lookahead)
+        by_station: Dict[str, List[str]] = defaultdict(list)
+        for train_id in pending:
             if self._journeys[train_id].is_done:
                 continue
+            sid = self._journeys[train_id].current_station
+            by_station.setdefault(sid, []).append(train_id)
 
-            train = self.cfg.trains[train_id]
-            station_id = self._journeys[train_id].current_station
-            bounds = self._get_effective_bounds(train_id, station_id, self._t_now)
+        for station_id, station_trains in by_station.items():
+            # Sort: priority (1 > 2 > 3), tiebreak by planned departure
+            station_trains.sort(key=lambda tid: (
+                self.cfg.trains[tid].priority,
+                self.cfg.trains[tid].planned.get(station_id).dep
+                if station_id in self.cfg.trains[tid].planned else 0.0,
+            ))
 
-            try:
-                # All trains use policy (no NOMINAL/heuristic branch)
-                action = self._policy_action(train_id, station_id, bounds, action_dict)
-            except ValueError:
-                held.append(train_id)
-                infeasible += 1
-                continue
+            # Intra-step calendar tracks committed platform/throat windows
+            station_cal = ResourceCalendar(min_gap_sec=5.0)
 
+            for train_id in station_trains:
+                train = self.cfg.trains[train_id]
+                bounds = self._get_effective_bounds(train_id, station_id, self._t_now)
+
+                try:
+                    action = self._policy_action(train_id, station_id, bounds, action_dict)
+                except ValueError:
+                    held.append(train_id)
+                    infeasible += 1
+                    continue
+
+                request = action_to_request(
+                    train, station_id, action, self._t_now,
+                    TRAVEL_TIME_TO_THROAT,
+                    current_delay=0.0,
+                    cfg=self.cfg,
+                    bounds_override=bounds,
+                )
+                if request.W_in[0] < bounds.arr_min - 1e-6 or request.W_out[0] > bounds.dep_max + 1e-6:
+                    held.append(train_id)
+                    infeasible += 1
+                    continue
+
+                # Check against already-committed higher-priority trains
+                if self._request_conflicts(request, station_cal):
+                    request = self._retry_action(
+                        train_id, station_id, bounds, action_dict, station_cal)
+                    if request is None:
+                        held.append(train_id)
+                        infeasible += 1
+                        continue
+
+                # Commit to intra-step calendar
+                self._book_to_calendar(request, station_cal)
+                requests.append(request)
+
+        return requests, held, infeasible
+
+    # ------------------------------------------------------------------
+    # intra-step coordination helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _request_conflicts(request: WindowRequest, calendar: ResourceCalendar) -> bool:
+        """True if any of *request*'s resource windows overlap with *calendar*."""
+        for rid, (s, e) in request._resource_windows.items():
+            if not calendar.is_free(rid, s, e):
+                return True
+        return False
+
+    @staticmethod
+    def _book_to_calendar(request: WindowRequest, calendar: ResourceCalendar) -> None:
+        for rid, (s, e) in request._resource_windows.items():
+            calendar.book(rid, request.train_id, s, e)
+
+    def _retry_action(self, train_id: str, station_id: str, bounds,
+                      action_dict, calendar: ResourceCalendar) -> Optional[WindowRequest]:
+        """Try alternative (platform, entry) combos avoiding the committed calendar.
+
+        Prefers the policy's entry_choice over other entries.  Falls through to
+        heuristic_action if no policy-derived action fits.
+        """
+        train = self.cfg.trains[train_id]
+        candidates = train.candidate_platforms.get(station_id, [])
+
+        # Policy's preferred entry_choice
+        entry_choice = "plan"
+        if train_id in action_dict:
+            _, entry_idx = action_dict.get(train_id, (0, 0))
+            if 0 <= entry_idx < len(ENTRY_CHOICES):
+                entry_choice = ENTRY_CHOICES[entry_idx]
+
+        # Try policy's entry with every platform
+        for entry in [entry_choice] + [e for e in ENTRY_CHOICES if e != entry_choice]:
+            for plat in candidates:
+                action = (plat, entry, 0)
+                if not is_legal_action(
+                    train, station_id, action, self._t_now,
+                    TRAVEL_TIME_TO_THROAT, self.cfg, bounds_override=bounds,
+                ):
+                    continue
+                request = action_to_request(
+                    train, station_id, action, self._t_now,
+                    TRAVEL_TIME_TO_THROAT, current_delay=0.0,
+                    cfg=self.cfg, bounds_override=bounds,
+                )
+                if not self._request_conflicts(request, calendar):
+                    return request
+
+        # Fall through: heuristic
+        try:
+            plat, entry, _dwell = heuristic_action(
+                train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT,
+                self.cfg, bounds_override=bounds)
+            action = (plat, entry, 0)
             request = action_to_request(
                 train, station_id, action, self._t_now,
-                TRAVEL_TIME_TO_THROAT,
-                current_delay=0.0,
-                cfg=self.cfg,
-                bounds_override=bounds,
+                TRAVEL_TIME_TO_THROAT, current_delay=0.0,
+                cfg=self.cfg, bounds_override=bounds,
             )
-            if request.W_in[0] < bounds.arr_min - 1e-6 or request.W_out[0] > bounds.dep_max + 1e-6:
-                held.append(train_id)
-                infeasible += 1
-                continue
+            if not self._request_conflicts(request, calendar):
+                return request
+        except ValueError:
+            pass
 
-            requests.append(request)
-        return requests, held, infeasible
+        return None
 
     def _policy_action(self, train_id: str, station_id: str, bounds,
                        action_dict) -> Tuple:
@@ -563,6 +695,19 @@ class FiveStationEnv(BaseRailwayEnv):
         orig_bounds = train.bounds.get(station_id)
 
         if journey.current_idx == 0 or orig_bounds is None:
+            # When an initial delay has been injected, arr_min must shift to
+            # the actual departure time.  Without this the delay is silently
+            # absorbed and never propagates to downstream stations.
+            if orig_bounds is not None:
+                actual_arrival = journey.arrival_at_current
+                if actual_arrival > orig_bounds.arr_min + 1e-6:
+                    slack = self.cfg.time_generation.get("dep_max_slack_sec", 120)
+                    dwell = orig_bounds.dwell_min
+                    return TrainBound(
+                        arr_min=actual_arrival,
+                        dep_max=max(actual_arrival + dwell + slack, orig_bounds.dep_max),
+                        dwell_min=dwell,
+                    )
             return orig_bounds
 
         actual_arrival = journey.arrival_at_current
