@@ -1759,3 +1759,43 @@ Task: Hierarchical MAPPO — L2 Manager + L3 Worker
   - Widen throat conflict groups to allow simultaneous platform access
   - Or accept station-level contention as the real coordination problem
   - Fix Phase C joint training stability (different L2/L3 update frequencies?)
+
+[2026-07-07 18:30]
+Task: Throat conflict group split + headway breakthrough
+
+== Root cause ==
+  A/B/E stations: p2/p3/p4 shared throttle group g2. With p1 blocked, only 1
+  stopping train could access platforms at a time.  Bunched trains serialised
+  at station, never reached the corridor together → headway never triggered.
+
+== Fix ==
+  Split p2/g2, p3/g3, p4/g4 into independent conflict groups at A/B/E.
+  Result: 3 bunched trains depart simultaneously (all at t=200), immediately
+  triggering corridor headway:
+    G1616: 15.0s headway on A→B
+    G238:  30.0s headway on A→B
+    G238:   5.0s headway on B→C
+
+== L3 improvements ==
+  L3 PPO buffer threshold: 32 → 128 transitions (more stable updates)
+  L3 hard guard: headway > 120s → hold for replan (infeasible count)
+  Event-driven time advance: tested but reverted (L3 buffer cadence broke)
+
+== Event-driven experiment (reverted) ==
+  t_now jumps to next arrival when idle; 10s cadence when trains held.
+  Steps/ep dropped from ~80 to ~40 but Phase B degraded (20.8→30.6s).
+  Reason: L3 buffer fill cadence changed, PPO update rhythm broke.
+  Reverted to fixed 10s step.
+
+== Results (bunched delay + VT prob=0.3 + p1 blocked + split throats + headway=15s) ==
+  Heuristic:                23.2s
+  Phase A (Flat MAPPO):     21.4s  (-8% vs heuristic)
+  Phase B (Hierarchical):   18.4s  (-21% vs heuristic, -14% vs flat MAPPO)
+  Phase C (Joint):          21.8s  (degraded)
+
+== Key findings ==
+  1. Throat conflict groups were the hidden bottleneck — not headway value
+  2. Headway now triggers on every bunched episode (2-3 events)
+  3. Hierarchical MAPPO (L2+L3) clearly beats flat MAPPO (L2 only): -14%
+  4. Larger L3 buffer (128 vs 32) critical for stable corridor policy learning
+  5. Phase C joint training still degrades — credit overlap issue

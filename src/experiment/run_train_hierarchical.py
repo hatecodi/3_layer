@@ -238,12 +238,12 @@ def train_hierarchical(
                     l2_buffer.clear()
 
                 # L3 PPO update (buffer filled inside env._advance_trains)
-                if phase_cfg["train_l3"] and len(l3_trainer.buffer) >= 32:
+                if phase_cfg["train_l3"] and len(l3_trainer.buffer) >= 128:
                     l3_trainer.update()
                     l3_update_count += 1
 
             # ---- end of episode ----
-            if phase_cfg["train_l3"] and len(l3_trainer.buffer) > 0:
+            if phase_cfg["train_l3"] and len(l3_trainer.buffer) >= 32:
                 l3_trainer.update()
                 l3_update_count += 1
 
