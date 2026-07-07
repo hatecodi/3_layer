@@ -309,21 +309,20 @@ class FiveStationEnv(BaseRailwayEnv):
             station_map=grant_station,
         )
 
-        # 8. Event-driven time advance
+        # 8. Advance time (single unified block)
         self._step_idx += 1
-        still_pending = self._pending_trains()
-        future_arrivals = [
-            j.arrival_at_current for j in self._journeys.values()
-            if not j.is_done and j.arrival_at_current > self._t_now
-        ]
-        next_event = min(future_arrivals) if future_arrivals else self._t_now + self.decision_interval_sec
-
-        if still_pending:
-            # Trains held — retry after decision_interval, but don't jump past next event
-            self._t_now = min(self._t_now + self.decision_interval_sec, next_event)
+        if len(pending) == 0 and not all(j.is_done for j in self._journeys.values()):
+            # All trains in transit — jump to next arrival
+            future_arrivals = [
+                j.arrival_at_current for j in self._journeys.values()
+                if not j.is_done and j.arrival_at_current > self._t_now
+            ]
+            if future_arrivals:
+                self._t_now = min(future_arrivals)
+            else:
+                self._t_now += self.decision_interval_sec
         else:
-            # All trains in transit — jump to next arrival event
-            self._t_now = next_event
+            self._t_now += self.decision_interval_sec
 
         # 9. Deadlock detection (global NO_LEGAL_ACTION count)
         masks = self._action_masks(self._pending_trains())
