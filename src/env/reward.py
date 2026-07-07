@@ -12,6 +12,7 @@ from ..experiment.scenario_loader import ScenarioConfig
 
 ONTIME_THRESHOLD_SEC = 15.0   # within 15s of plan = on-time (both early and late)
 ONTIME_BONUS = 2.0            # per-train local reward bonus
+AVOIDANCE_BONUS = 2.0         # bonus for proactively choosing non-p1 when p1 is contested
 
 
 @dataclass
@@ -121,11 +122,15 @@ def compute_layered_rewards(
     hard_bound_infeasible_count: int = 0,
     lambda_team: float = 0.3,
     station_map: Optional[Dict[str, str]] = None,
+    visitor_windows: Optional[Dict[str, Tuple[float, float]]] = None,
+    retried_train_ids: Optional[Iterable[str]] = None,
 ) -> Dict[str, RewardBreakdown]:
     layer1 = DispatchBounds(cfg)
     held = set(held_train_ids)
     active = set(active_train_ids or cfg.trains.keys())
     grant_by_train = {g.train_id: g for g in grants}
+    retried = set(retried_train_ids or [])
+    visitor_windows = visitor_windows or {}
     metrics = compute_metrics(
         cfg,
         grants,
@@ -137,9 +142,9 @@ def compute_layered_rewards(
     )
 
     global_reward = (
-        -0.10 * (metrics.total_dep_delay / max(metrics.n_active, 1))
-        -100.0 * metrics.deadlock_flag
-        +10.0 * metrics.ontime_rate
+        -0.02 * (metrics.total_dep_delay / max(metrics.n_active, 1))
+        -20.0 * metrics.deadlock_flag
+        +2.0 * metrics.ontime_rate
     )
 
     rewards: Dict[str, RewardBreakdown] = {}
@@ -155,14 +160,20 @@ def compute_layered_rewards(
             prio_weight = {1: 2.0, 2: 1.0, 3: 0.5}.get(bounds.prio_i, 1.0)
             # Progressive penalty: every 300s of delay doubles the marginal cost
             dep_mult = 1.0 + dep_delay // 300.0
-            # Binary ontime bonus gives a clear target at 15s — the policy
-            # learns to push delay below the threshold.  Continuous improvement
-            # term provides fine-grained gradient once below 15s.
+            # Continuous improvement: exponential decay so every second of
+            # delay reduction gives measurable gradient
             dep_improve = math.exp(-dep_delay / 60.0)
             local = (
-                -0.10 * dep_delay * prio_weight * dep_mult
+                -0.02 * dep_delay * prio_weight * dep_mult
                 + ONTIME_BONUS * dep_improve * prio_weight
             )
+            # Early/late arrival penalty (intermediate stations only).
+            # L3 decomposition can make transit faster than planned; penalising
+            # arrival deviation gives MAPPO incentive to adjust departure timing
+            # to match the physical corridor transit time.
+            if sid != train.origin_station:
+                arr_delay = abs(grant.W_in[0] - bounds.t_arr_plan)
+                local += -0.01 * arr_delay * prio_weight
         total = local + lambda_team * global_reward
         rewards[train_id] = RewardBreakdown(local, global_reward, total)
     return rewards
@@ -183,3 +194,29 @@ def compute_rewards(
             lambda_team=lambda_team, station_map=station_map,
         ).items()
     }
+
+
+# ---------------------------------------------------------------------------
+# L3 Worker reward (corridor-level objectives)
+# ---------------------------------------------------------------------------
+
+
+def compute_l3_reward(
+    headway_delay_sec: float,
+    arrival_deviation_sec: float,
+    recovery_used_sec: float,
+) -> float:
+    """Compute L3 Worker reward for one corridor transit.
+
+    Objectives:
+      - Minimise headway waiting time
+      - Minimise arrival time deviation (early or late)
+      - Reward using recovery margin only when it helps (net time saved)
+
+    All terms are in seconds, scaled to comparable magnitudes.
+    """
+    return (
+        -0.02 * headway_delay_sec
+        - 0.01 * abs(arrival_deviation_sec)
+        + 0.01 * recovery_used_sec
+    )

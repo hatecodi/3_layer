@@ -1,0 +1,13 @@
+# L3 physical parameters.
+# All times in simulation seconds (real_s / 25).
+# Platform-to-platform corridor transit times are taken from the timetable
+# (planned[nxt].arr - planned[cur].dep).
+
+l3_physics:
+  throat_in_sec: 3.0
+  throat_out_sec: 3.0
+  approach_sec: 3.0
+  cruise_speed_mps: 25.0
+  max_speed_mps: 30.0
+  corridor_headway_sec: 15.0
+  platform_min_gap_sec: 5.0

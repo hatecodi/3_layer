@@ -47,7 +47,7 @@ HP = {
     "ppo_epochs": 5,
     "minibatch_size": 256,
     "entropy_coef_start": 0.01,          # early exploration
-    "entropy_coef_end": 0.003,            # multi-agent stability + convergence balance
+    "entropy_coef_end": 0.005,            # more exploration to escape local optima
     "value_coef": 0.5,
     "max_grad_norm": 1.0,
     "rollout_steps": 512,
@@ -252,7 +252,7 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
         # ---- end of episode ----
         # V4: deadlock penalty applied to ALL agents at episode level
         if info.get("episode_status") == "deadlock":
-            DL_PENALTY = 400.0
+            DL_PENALTY = 200.0
             for tid in env.cfg.trains:
                 ep_reward[tid] += (-DL_PENALTY)
 
@@ -356,6 +356,8 @@ def main():
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--lr", type=float, default=HP["lr"])
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--vt", action="store_true", help="Enable visitor train disturbance")
+    parser.add_argument("--delay", action="store_true", help="Enable initial departure delay disturbance")
     args = parser.parse_args()
 
     HP["rollout_steps"] = args.rollout_steps
@@ -386,6 +388,8 @@ def main():
                 cfg=cfg,
                 seed=seed,
                 batch_window_sec=120.0,
+                enable_vt=args.vt,
+                enable_initial_delay=args.delay,
             )
 
     train(env_factory, args,  obs_dim=obs_dim)

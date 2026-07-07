@@ -55,6 +55,12 @@ class FactoredActor(nn.Module):
         )
         self.platform_head = nn.Linear(hidden_dim, platform_dim)
         self.entry_head = nn.Linear(hidden_dim, entry_dim)
+        # p1 bias: initialize platform head to prefer p1 (index 0).
+        # MAPPO must learn platform preference from a flat reward landscape;
+        # this gives it the same prior the heuristic has (try p1 first).
+        with torch.no_grad():
+            self.platform_head.bias.zero_()
+            self.platform_head.bias[0] = 2.0
 
     def logits(
         self,

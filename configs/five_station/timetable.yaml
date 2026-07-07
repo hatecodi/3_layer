@@ -24,17 +24,17 @@ time_generation:
     D_to_C: 180
     D_to_E: 180
     E_to_D: 180
-  dep_max_slack_sec: 120
+  dep_max_slack_sec: 60
   headway_sec: 60
   visitors:
     enabled: true
-    target_stations: [A, B, C, D, E]
+    target_stations: [A, B, C, E]
     prob_per_slot: 0.3
     slots_per_station: [1, 2]
     k_ratio: 0.6
     k_dwell: [60, 180]
     g_dwell: [30, 90]
-    p1_bias: 0.6    # 60% of VT slots occupy p1, forcing policy to use side platforms
+    p1_bias: 0.6
 assumptions:
 - 'Time compression: real seconds / 25 = sim seconds. Base 15:00 = t=0.'
 - A:南昌西 B:鹰潭北 C:上饶 D:杭州东 E:南京南

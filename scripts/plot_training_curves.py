@@ -10,8 +10,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # Heuristic baseline (100 episodes, five_station, with bounds fix)
-HEURISTIC_DEP_DELAY = 25.0
-HEURISTIC_ONTIME = 0.665
+HEURISTIC_DEP_DELAY = 24.6
+HEURISTIC_ONTIME = 0.68
 
 SMOOTH_WINDOW = 201  # episodes
 

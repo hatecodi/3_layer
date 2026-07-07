@@ -1656,5 +1656,51 @@ Task: Fix _get_effective_bounds — initial delay was silently absorbed at origi
   After fix:  dep_dly=25.0s, ontime=66.5%, held=3.7/ep
   → Delay was being silently absorbed, now propagates correctly.
 
-== 5000ep MAPPO (running, with fix) ==
-  Expected: larger MAPPO vs heuristic gap now that delays cascade properly.
+[2026-07-06 23:00]
+Task: Slack reduction + urgency reward + dwell experiment + L3 foundation
+
+== Slack & reward ==
+  dep_max_slack_sec: 120 → 60 (25 min real, realistic upper bound)
+  reward.py: urgency_mult ramps delay penalty 4x near dep_max boundary
+  Result: delay dropped 30% (34.8→24.2s) despite tighter slack. Held stable at ~1/ep.
+
+== Dwell experiment ==
+  Added dwell_head (3 logits) + [0,15,30] choices + bias initialization.
+  L2 result: dwell does NOT help — no physical throat time to make dwell meaningful.
+  Dwell removed (reverted). Will revisit when L3 physics is calibrated.
+
+== VT/delay ablation ==
+  Added --no-vt, --no-initial-delay CLI toggles.
+  Clean (no disturb):  MAPPO 5.2s vs heuristic 4.3s  — floor, no room
+  Delay only:          MAPPO 22.9s vs heuristic 24.6s — +1.7s, MAPPO wins
+  Full (VT+delay):     MAPPO 24.2s vs heuristic 24.3s — VT adds negligible difficulty
+
+== Key insight ==
+  MAPPO vs heuristic gap is small at L2 because each station is independently
+  solvable (pick p1, fallback to p2).  L3 physics (headway, throat time) creates
+  cross-station coupling — the value of MAPPO pre-judgment should appear there.
+
+[2026-07-07 00:00]
+Task: L3 Python simulator — connected to _advance_trains
+
+== Implementation ==
+  configs/five_station/l3_physics.yaml: throat_in/out=3s, approach=3s,
+    cruise=25m/s, max=30m/s, headway=8s
+  src/control/l3_sim.py: L3Simulator + L3CorridorState
+    - Per-corridor headway enforcement (entry-time-based, not block-based)
+    - Transit decomposition (planned total preserved, overhead tbd)
+    - Headway = time between successive corridor entries (moving-block semantics)
+  src/env/five_station_env.py:
+    - _advance_trains calls L3 transit instead of fixed runtime
+    - L3 simulator reset per episode
+
+== Headway calibration ==
+  Initial headway=15s caused 117.8s delay (too conservative — used exit-based
+  block logic, not entry-based headway). Fixed to entry-based + headway=8s
+  (~3.3 min real → sim). Clean heuristic now 9.0s delay, 100% ontime.
+
+== Next ==
+  - Physical segment decomposition (corridor = approach + run + throat)
+  - Recovery margin from speed differential
+  - MAPPO training with L3 headway to see if gap vs heuristic widens
+  - Priority-level ontime metrics

@@ -271,3 +271,39 @@ def critic_input(
     while len(chunks) < k_max + 1:
         chunks.append([0.0] * obs_dim)
     return [x for chunk in chunks[:k_max + 1] for x in chunk]
+
+
+# ---------------------------------------------------------------------------
+# L3 Worker observation (corridor state, 9 dims)
+# ---------------------------------------------------------------------------
+
+def build_l3_observation(
+    corridor_id: str,
+    headway_gap: float,
+    recovery_margin: float,
+    cumulative_delay: float,
+    distance_m: float,
+    max_distance_m: float,
+    planned_arrival: float,
+    estimated_arrival: float,
+    planned_transit: float,
+    speed_ratio: float,
+    next_station_platforms_free: int,
+    next_station_platforms_total: int,
+    arrival_slack_ratio: float,
+) -> List[float]:
+    """Build a 9-dim observation for the L3 Worker.
+
+    All values are normalised to [0, 1] where possible.
+    """
+    return [
+        min(headway_gap / 60.0, 1.0),                         # headway wait
+        min(recovery_margin / 30.0, 1.0),                     # recoverable time
+        min(cumulative_delay / 300.0, 1.0),                    # current delay
+        min(distance_m / max(max_distance_m, 1.0), 1.0),       # corridor length
+        (estimated_arrival - planned_arrival) / max(planned_transit, 1.0),  # arrival dev
+        speed_ratio,                                           # cruise/max
+        arrival_slack_ratio,                                   # urgency at next station
+        next_station_platforms_free / max(next_station_platforms_total, 1),
+        0.0,  # reserved
+    ]

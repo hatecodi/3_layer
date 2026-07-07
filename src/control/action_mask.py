@@ -124,9 +124,13 @@ def derive_schedule(
     else:
         bounds = bounds_override if bounds_override else train.bounds.get(station_id)
         dwell_min = bounds.dwell_min if bounds else 0.0
-        dwell = dwell_min + dwell_extend
+        plan_data = train.planned.get(station_id)
+        planned_dep = plan_data.dep if plan_data else 0.0
         t_plat_start = t_in_end
-        t_plat_end = t_plat_start + dwell
+        # For on-time trains, the planned dwell already satisfies dwell_min.
+        # dwell_min only forces extra platform time when the train is delayed
+        # and the remaining time before planned departure is insufficient.
+        t_plat_end = max(t_plat_start + dwell_min + dwell_extend, planned_dep)
 
     t_out_start = t_plat_end
     t_out_end = t_out_start + THROAT_CLEARANCE_TIME
