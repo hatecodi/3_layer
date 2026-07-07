@@ -1799,3 +1799,26 @@ Task: Throat conflict group split + headway breakthrough
   3. Hierarchical MAPPO (L2+L3) clearly beats flat MAPPO (L2 only): -14%
   4. Larger L3 buffer (128 vs 32) critical for stable corridor policy learning
   5. Phase C joint training still degrades — credit overlap issue
+
+[2026-07-07 19:20]
+Task: Scalability test — add real G5038 train (+1 more on A→B→C)
+
+== G5038 ==
+  Real timetable: A dep 15:32 → B arr 16:25/dep 16:27 → C arr 16:58/dep 17:20
+  C station: 22 min dwell (locomotive change) = 53s sim dwell — 10x normal
+  Fits between G1616(65) and G238(79) at A, occupies C platform for 53s
+
+== Scalability results (11 trains) ==
+                         10 trains        11 trains (+G5038)
+  Heuristic:              23.2s            26.4s   (+14%)
+  Phase A (Flat MAPPO):   21.4s (-8%)      24.3s   (-8%)
+  Phase B (Hierarchical): 18.4s (-21%)     18.9s   (-28%)
+  Hier vs Flat gap:       -14%             -22%    ← gap WIDENS with scale
+  Phase C (Joint):        21.8s (degraded) 20.2s   (-23%, stable!)
+
+== Key findings ==
+  1. Hierarchical advantage GROWS with problem complexity: -14% → -22%
+  2. Phase C joint training stabilised with more trains (denser reward signal)
+  3. Absolute delay barely increased (+0.5s) while heuristic jumped +3.2s
+  4. 53s long dwell at C creates sustained platform contention that L2+L3 handle
+  5. Strong scalability argument for paper: hierarchical MAPPO degrades gracefully
