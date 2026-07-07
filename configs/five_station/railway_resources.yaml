@@ -29,26 +29,26 @@ stations:
       in_routes:
         - {id: A_in_1, edges: [A_up_in_1], platform: A_p1, conflict_group: A_up_in_g1}
         - {id: A_in_2, edges: [A_up_in_2], platform: A_p2, conflict_group: A_up_in_g2}
-        - {id: A_in_3, edges: [A_up_in_3], platform: A_p3, conflict_group: A_up_in_g2}
-        - {id: A_in_4, edges: [A_up_in_4], platform: A_p4, conflict_group: A_up_in_g2}
+        - {id: A_in_3, edges: [A_up_in_3], platform: A_p3, conflict_group: A_up_in_g3}
+        - {id: A_in_4, edges: [A_up_in_4], platform: A_p4, conflict_group: A_up_in_g4}
       out_routes:
         - {id: A_out_1, edges: [A_up_out_1], platform: A_p1, conflict_group: A_up_out_g1}
         - {id: A_out_2, edges: [A_up_out_2], platform: A_p2, conflict_group: A_up_out_g2}
-        - {id: A_out_3, edges: [A_up_out_3], platform: A_p3, conflict_group: A_up_out_g2}
-        - {id: A_out_4, edges: [A_up_out_4], platform: A_p4, conflict_group: A_up_out_g2}
+        - {id: A_out_3, edges: [A_up_out_3], platform: A_p3, conflict_group: A_up_out_g3}
+        - {id: A_out_4, edges: [A_up_out_4], platform: A_p4, conflict_group: A_up_out_g4}
     down:
       approach_edge: A_down_approach
       depart_edge: A_down_depart
       in_routes:
         - {id: A_dn_in_1, edges: [A_down_in_1], platform: A_p1, conflict_group: A_down_in_g1}
         - {id: A_dn_in_2, edges: [A_down_in_2], platform: A_p2, conflict_group: A_down_in_g2}
-        - {id: A_dn_in_3, edges: [A_down_in_3], platform: A_p3, conflict_group: A_down_in_g2}
-        - {id: A_dn_in_4, edges: [A_down_in_4], platform: A_p4, conflict_group: A_down_in_g2}
+        - {id: A_dn_in_3, edges: [A_down_in_3], platform: A_p3, conflict_group: A_down_in_g3}
+        - {id: A_dn_in_4, edges: [A_down_in_4], platform: A_p4, conflict_group: A_down_in_g4}
       out_routes:
         - {id: A_dn_out_1, edges: [A_down_out_1], platform: A_p1, conflict_group: A_down_out_g1}
         - {id: A_dn_out_2, edges: [A_down_out_2], platform: A_p2, conflict_group: A_down_out_g2}
-        - {id: A_dn_out_3, edges: [A_down_out_3], platform: A_p3, conflict_group: A_down_out_g2}
-        - {id: A_dn_out_4, edges: [A_down_out_4], platform: A_p4, conflict_group: A_down_out_g2}
+        - {id: A_dn_out_3, edges: [A_down_out_3], platform: A_p3, conflict_group: A_down_out_g3}
+        - {id: A_dn_out_4, edges: [A_down_out_4], platform: A_p4, conflict_group: A_down_out_g4}
 
   - id: B
     platforms:
@@ -63,26 +63,26 @@ stations:
       in_routes:
         - {id: B_in_1, edges: [B_up_in_1], platform: B_p1, conflict_group: B_up_in_g1}
         - {id: B_in_2, edges: [B_up_in_2], platform: B_p2, conflict_group: B_up_in_g2}
-        - {id: B_in_3, edges: [B_up_in_3], platform: B_p3, conflict_group: B_up_in_g2}
-        - {id: B_in_4, edges: [B_up_in_4], platform: B_p4, conflict_group: B_up_in_g2}
+        - {id: B_in_3, edges: [B_up_in_3], platform: B_p3, conflict_group: B_up_in_g3}
+        - {id: B_in_4, edges: [B_up_in_4], platform: B_p4, conflict_group: B_up_in_g4}
       out_routes:
         - {id: B_out_1, edges: [B_up_out_1], platform: B_p1, conflict_group: B_up_out_g1}
         - {id: B_out_2, edges: [B_up_out_2], platform: B_p2, conflict_group: B_up_out_g2}
-        - {id: B_out_3, edges: [B_up_out_3], platform: B_p3, conflict_group: B_up_out_g2}
-        - {id: B_out_4, edges: [B_up_out_4], platform: B_p4, conflict_group: B_up_out_g2}
+        - {id: B_out_3, edges: [B_up_out_3], platform: B_p3, conflict_group: B_up_out_g3}
+        - {id: B_out_4, edges: [B_up_out_4], platform: B_p4, conflict_group: B_up_out_g4}
     down:
       approach_edge: B_down_approach
       depart_edge: B_down_depart
       in_routes:
         - {id: B_dn_in_1, edges: [B_down_in_1], platform: B_p1, conflict_group: B_down_in_g1}
         - {id: B_dn_in_2, edges: [B_down_in_2], platform: B_p2, conflict_group: B_down_in_g2}
-        - {id: B_dn_in_3, edges: [B_down_in_3], platform: B_p3, conflict_group: B_down_in_g2}
-        - {id: B_dn_in_4, edges: [B_down_in_4], platform: B_p4, conflict_group: B_down_in_g2}
+        - {id: B_dn_in_3, edges: [B_down_in_3], platform: B_p3, conflict_group: B_down_in_g3}
+        - {id: B_dn_in_4, edges: [B_down_in_4], platform: B_p4, conflict_group: B_down_in_g4}
       out_routes:
         - {id: B_dn_out_1, edges: [B_down_out_1], platform: B_p1, conflict_group: B_down_out_g1}
         - {id: B_dn_out_2, edges: [B_down_out_2], platform: B_p2, conflict_group: B_down_out_g2}
-        - {id: B_dn_out_3, edges: [B_down_out_3], platform: B_p3, conflict_group: B_down_out_g2}
-        - {id: B_dn_out_4, edges: [B_down_out_4], platform: B_p4, conflict_group: B_down_out_g2}
+        - {id: B_dn_out_3, edges: [B_down_out_3], platform: B_p3, conflict_group: B_down_out_g3}
+        - {id: B_dn_out_4, edges: [B_down_out_4], platform: B_p4, conflict_group: B_down_out_g4}
 
   - id: C
     platforms:
@@ -155,26 +155,26 @@ stations:
       in_routes:
         - {id: E_in_1, edges: [E_up_in_1], platform: E_p1, conflict_group: E_up_in_g1}
         - {id: E_in_2, edges: [E_up_in_2], platform: E_p2, conflict_group: E_up_in_g2}
-        - {id: E_in_3, edges: [E_up_in_3], platform: E_p3, conflict_group: E_up_in_g2}
-        - {id: E_in_4, edges: [E_up_in_4], platform: E_p4, conflict_group: E_up_in_g2}
+        - {id: E_in_3, edges: [E_up_in_3], platform: E_p3, conflict_group: E_up_in_g3}
+        - {id: E_in_4, edges: [E_up_in_4], platform: E_p4, conflict_group: E_up_in_g4}
       out_routes:
         - {id: E_out_1, edges: [E_up_out_1], platform: E_p1, conflict_group: E_up_out_g1}
         - {id: E_out_2, edges: [E_up_out_2], platform: E_p2, conflict_group: E_up_out_g2}
-        - {id: E_out_3, edges: [E_up_out_3], platform: E_p3, conflict_group: E_up_out_g2}
-        - {id: E_out_4, edges: [E_up_out_4], platform: E_p4, conflict_group: E_up_out_g2}
+        - {id: E_out_3, edges: [E_up_out_3], platform: E_p3, conflict_group: E_up_out_g3}
+        - {id: E_out_4, edges: [E_up_out_4], platform: E_p4, conflict_group: E_up_out_g4}
     down:
       approach_edge: E_down_approach
       depart_edge: E_down_depart
       in_routes:
         - {id: E_dn_in_1, edges: [E_down_in_1], platform: E_p1, conflict_group: E_down_in_g1}
         - {id: E_dn_in_2, edges: [E_down_in_2], platform: E_p2, conflict_group: E_down_in_g2}
-        - {id: E_dn_in_3, edges: [E_down_in_3], platform: E_p3, conflict_group: E_down_in_g2}
-        - {id: E_dn_in_4, edges: [E_down_in_4], platform: E_p4, conflict_group: E_down_in_g2}
+        - {id: E_dn_in_3, edges: [E_down_in_3], platform: E_p3, conflict_group: E_down_in_g3}
+        - {id: E_dn_in_4, edges: [E_down_in_4], platform: E_p4, conflict_group: E_down_in_g4}
       out_routes:
         - {id: E_dn_out_1, edges: [E_down_out_1], platform: E_p1, conflict_group: E_down_out_g1}
         - {id: E_dn_out_2, edges: [E_down_out_2], platform: E_p2, conflict_group: E_down_out_g2}
-        - {id: E_dn_out_3, edges: [E_down_out_3], platform: E_p3, conflict_group: E_down_out_g2}
-        - {id: E_dn_out_4, edges: [E_down_out_4], platform: E_p4, conflict_group: E_down_out_g2}
+        - {id: E_dn_out_3, edges: [E_down_out_3], platform: E_p3, conflict_group: E_down_out_g3}
+        - {id: E_dn_out_4, edges: [E_down_out_4], platform: E_p4, conflict_group: E_down_out_g4}
 
 corridors:
   - id: A_B_up
