@@ -578,3 +578,56 @@ trains:
     C: [C_p1, C_p2, C_p3, C_p4]
     B: [B_p1, B_p2, B_p3, B_p4]
     A: [A_p1, A_p2, A_p3, A_p4]
+
+- id: G5038
+  direction: up
+  train_class: G
+  priority: 2
+  pass_through: false
+  route:
+    origin_station: A
+    destination_station: C
+    corridor: A_B_up
+  planned:
+    A:
+      arr: 0
+      dep: 77
+    B:
+      arr: 204
+      dep: 209
+    C:
+      arr: 283
+      dep: 336
+    D:
+      arr: 0
+      dep: 0
+    E:
+      arr: 0
+      dep: 0
+  bounds:
+    A:
+      arr_min: 0
+      dep_max: 197
+      dwell_min: 5
+    B:
+      arr_min: 84
+      dep_max: 329
+      dwell_min: 5
+    C:
+      arr_min: 163
+      dep_max: 456
+      dwell_min: 53
+    D:
+      arr_min: 0
+      dep_max: 0
+      dwell_min: 0
+    E:
+      arr_min: 0
+      dep_max: 0
+      dwell_min: 0
+  candidate_platforms:
+    A: [A_p1, A_p2, A_p3, A_p4]
+    B: [B_p1, B_p2, B_p3, B_p4]
+    C: [C_p1, C_p2, C_p3, C_p4]
+    D: [D_p1, D_p2]
+    E: [E_p1, E_p2, E_p3, E_p4]
