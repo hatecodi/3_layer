@@ -1704,3 +1704,58 @@ Task: L3 Python simulator — connected to _advance_trains
   - Recovery margin from speed differential
   - MAPPO training with L3 headway to see if gap vs heuristic widens
   - Priority-level ontime metrics
+
+[2026-07-07 16:30]
+Task: Hierarchical MAPPO — L2 Manager + L3 Worker
+
+== Architecture ==
+  L2 Manager (per-train shared actor): (platform, entry) every 10s at stations
+  L3 Worker (shared across all trains): speed choice (cruise/fast/slow) per corridor
+  Training: Phase A (L2 only 3000ep) → Phase B (L3 only 2000ep) → Phase C (Joint 2000ep)
+
+== L3 physical decomposition ==
+  Corridor distances auto-derived from timetable: distance = min(planned_transit - overhead) * cruise
+  Transit = throat_out(3s) + approach(3s) + run(distance/speed) + throat_in(3s)
+  SpeedMode: CRUISE (normal), FAST (max_speed, consume recovery), SLOW (1.2x cruise)
+  Recovery margin = distance/cruise - distance/max (13s for A→B)
+  Headway: entry-time-based, 15s floor from config
+
+== L3 Worker (src/marl/l3_worker.py) ==
+  CorridorActor: 9-dim obs → 3-way categorical
+  CorridorCritic: 9-dim obs → scalar value
+  L3 reward: -0.02*headway - 0.01*arrival_dev + 0.01*recovery_used
+  Shared across all trains, trained with PPO (lr=1e-3)
+
+== Bunched infrastructure delay ==
+  Replaced per-train random delay with infrastructure failure model:
+  Pick random origin station, select 40s time window covering ≥2 trains,
+  all trains in window delayed to window_end + 60-120s.
+  Creates genuine corridor bunching (multiple trains released together).
+
+== L2 reward simplification ==
+  Removed urgency_mult (noisy), avoidance bonus (never fired).
+  Simplified to: -0.02*dep_delay*prio*mult + ontime_bonus - 0.01*arr_delay*prio
+  Added intermediate-station arrival deviation penalty.
+
+== Other changes ==
+  p1 bias: platform head initialized with +2.0 bias on p1 logit
+  dwell: on-time trains not forced to add dwell_min (max(platform_ready, planned_dep))
+  CLI: --vt/--delay positive flags replace --no-vt/--no-initial-delay
+
+== Results (bunched delay + VT prob=0.3 + p1 blocked A/B/C/E) ==
+  Heuristic:                        29.6s
+  Phase A (L2 only, last 300ep):    26.3s  (-11% vs heuristic)
+  Phase B (L3 only, last 300ep):    20.8s  (-30% vs heuristic)  ← L3 Worker learns speed control!
+  Phase C (Joint, last 300ep):      25.8s  (degraded — credit overlap without headway coupling)
+
+== Key insight ==
+  L3 Worker learned meaningful speed control even WITHOUT headway triggering:
+  - Delayed trains → FAST to recover time
+  - On-time trains → CRUISE to match planned arrival
+  Headway=0 throughout (station/platform contention serialises trains before corridor).
+  L2 bottleneck: throat conflict groups (p2/p3/p4 share same group → only 1 at a time).
+
+== Next ==
+  - Widen throat conflict groups to allow simultaneous platform access
+  - Or accept station-level contention as the real coordination problem
+  - Fix Phase C joint training stability (different L2/L3 update frequencies?)
