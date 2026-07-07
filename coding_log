@@ -1820,5 +1820,38 @@ Task: Scalability test — add real G5038 train (+1 more on A→B→C)
   1. Hierarchical advantage GROWS with problem complexity: -14% → -22%
   2. Phase C joint training stabilised with more trains (denser reward signal)
   3. Absolute delay barely increased (+0.5s) while heuristic jumped +3.2s
+  4. Flat→Hierarchical gap: -14%(10trains) → -22%(11trains) — scalability confirmed
+
+== Final comparison (11 trains) ==
+  Heuristic:              26.4s
+  Flat MAPPO (Phase A):   24.3s  (-8% vs heuristic)
+  Hierarchical (Phase B): 18.9s  (-28% vs heuristic, -22% vs flat MAPPO)
+  Joint (Phase C):        20.2s  (-23% vs heuristic)
+
+[2026-07-07 ~20:00]
+Task: Parameter tuning plan for Phase C joint training
+
+== Current parameters ==
+  L2: lr=3e-4, entropy 0.01→0.003, hidden=128, rollout=512
+  L3: lr=1e-3, entropy=0.01, hidden=64, buffer_threshold=128
+
+== Issues ==
+  1. Phase C degrades: 18.9→20.2s (L2/L3 gradients interfere)
+  2. L3 hidden might be too small (64 vs 128 for L2)
+  3. Phase A 3000ep might not fully converge L2 before L3 starts
+
+== Tuning candidates ==
+  A. Phase C: halve L2 lr when joint (3e-4 → 1e-4), keep L3 at 1e-3
+  B. L3 hidden: 64 → 128 (match L2 expressiveness)
+  C. Phase A: 3000 → 5000ep (fully converge L2 first)
+  D. L3 speed modes: 3 → 5 (cruise, fast+, fast, slow, slow-)
+  E. Phase C: alternate L2/L3 updates per step instead of per episode
+
+== Next session plan ==
+  1. Try A+B together (low risk, 1-2 lines each): Phase C L2 lr + L3 hidden dim
+  2. Extend Phase A to 5000ep for better L2 convergence
+  3. Ablation: compare L2-only, L3-only (fixed L2), Hierarchical (joint)
+  4. Multi-seed runs (3 seeds) for error bars on final results
+  5. Write up: architecture diagram, training curves, ablation table
   4. 53s long dwell at C creates sustained platform contention that L2+L3 handle
   5. Strong scalability argument for paper: hierarchical MAPPO degrades gracefully
