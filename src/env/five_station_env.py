@@ -157,6 +157,8 @@ class FiveStationEnv(BaseRailwayEnv):
         corridor_dist = compute_corridor_distances(cfg.trains, l3_physics)
         self._l3_sim = L3Simulator(l3_physics, corridor_hw, corridor_dist)
         self._corridor_delays: Dict[str, float] = {}  # train_id -> headway delay
+        self._replan_threshold_sec = 120.0  # max headway delay before hold/replan
+        self._hard_guard_violations = 0
 
         # State
         self._t_now = 0.0
@@ -196,6 +198,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._completed_ids = []
         self._held_steps = {}
         self._corridor_delays = {}
+        self._hard_guard_violations = 0
         self._l3_sim.reset()
 
         all_ids = sorted(self.cfg.trains.keys())
@@ -296,7 +299,7 @@ class FiveStationEnv(BaseRailwayEnv):
             self.cfg, grants, held,
             active_train_ids=pending,
             unresolved_conflicts=unresolved,
-            hard_bound_infeasible_count=infeasible,
+            hard_bound_infeasible_count=infeasible + self._hard_guard_violations,
             station_map=grant_station,
             visitor_windows=self._visitor_windows if self._visitor_enabled else {},
             retried_train_ids=retried,
@@ -305,7 +308,7 @@ class FiveStationEnv(BaseRailwayEnv):
             self.cfg, grants, held,
             active_train_ids=pending,
             unresolved_conflicts=unresolved,
-            hard_bound_infeasible_count=infeasible,
+            hard_bound_infeasible_count=infeasible + self._hard_guard_violations,
             station_map=grant_station,
         )
 
@@ -370,6 +373,7 @@ class FiveStationEnv(BaseRailwayEnv):
             "metrics": asdict(metrics),
             "episode_status": self._episode_status.value,
             "deadlock_counter": self._deadlock_counter,
+            "hard_guard_violations": self._hard_guard_violations,
             "t_now": self._t_now,
         }
         return (
@@ -772,6 +776,13 @@ class FiveStationEnv(BaseRailwayEnv):
             t_corridor_exit = l3_result.actual_arrival
             if l3_result.headway_delay_sec > 1e-6:
                 self._corridor_delays[g.train_id] = l3_result.headway_delay_sec
+
+            # L3 hard guard: if headway pushes arrival beyond acceptable
+            # slack at the next station, flag for replan and penalise.
+            if l3_result.headway_delay_sec > self._replan_threshold_sec:
+                self._hard_guard_violations += 1
+                # Don't advance — hold at current station for replan
+                continue
 
             # Record L3 transition for training
             if self._l3_worker is not None and distance > 0:
