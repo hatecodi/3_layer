@@ -124,6 +124,7 @@ def compute_layered_rewards(
     station_map: Optional[Dict[str, str]] = None,
     visitor_windows: Optional[Dict[str, Tuple[float, float]]] = None,
     retried_train_ids: Optional[Iterable[str]] = None,
+    corridor_delays: Optional[Dict[str, float]] = None,
 ) -> Dict[str, RewardBreakdown]:
     layer1 = DispatchBounds(cfg)
     held = set(held_train_ids)
@@ -131,6 +132,7 @@ def compute_layered_rewards(
     grant_by_train = {g.train_id: g for g in grants}
     retried = set(retried_train_ids or [])
     visitor_windows = visitor_windows or {}
+    corridor_delays = corridor_delays or {}
     metrics = compute_metrics(
         cfg,
         grants,
@@ -174,6 +176,11 @@ def compute_layered_rewards(
             if sid != train.origin_station:
                 arr_delay = abs(grant.W_in[0] - bounds.t_arr_plan)
                 local += -0.01 * arr_delay * prio_weight
+            # Corridor headway penalty: penalise trains that experienced
+            # headway delay, giving L2 incentive to space departures.
+            hw_delay = corridor_delays.get(train_id, 0.0)
+            if hw_delay > 1e-6:
+                local += -0.02 * hw_delay * prio_weight
         total = local + lambda_team * global_reward
         rewards[train_id] = RewardBreakdown(local, global_reward, total)
     return rewards

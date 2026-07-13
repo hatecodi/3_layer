@@ -28,13 +28,13 @@ time_generation:
   headway_sec: 60
   visitors:
     enabled: true
-    target_stations: [A, B, C, E]
-    prob_per_slot: 0.3
-    slots_per_station: [1, 2]
+    target_stations: [A, B, C, D, E]   # D included — bottleneck under pressure
+    prob_per_slot: 0.5                  # more VT
+    slots_per_station: [2, 3]           # 2-3 VT per station
     k_ratio: 0.6
-    k_dwell: [60, 180]
-    g_dwell: [30, 90]
-    p1_bias: 0.6
+    k_dwell: [120, 300]                 # longer occupation
+    g_dwell: [60, 150]
+    p1_bias: 0.0                        # uniform — heuristic can't predict
 assumptions:
 - 'Time compression: real seconds / 25 = sim seconds. Base 15:00 = t=0.'
 - A:南昌西 B:鹰潭北 C:上饶 D:杭州东 E:南京南
@@ -48,7 +48,7 @@ trains:
 # ============================================================
 - id: G1380
   direction: up
-  train_class: G
+  train_class: G1    # 复兴号 350/400 km/h
   priority: 1
   pass_through: false
   route:
@@ -119,8 +119,8 @@ trains:
       arr: 197
       dep: 197
     D:
-      arr: 365
-      dep: 370
+      arr: 370    # C dep 197 + phys C→D 172.7s = 369.7s
+      dep: 375    # arr + dwell 5s
     E:
       arr: 514
       dep: 514
@@ -138,8 +138,8 @@ trains:
       dep_max: 317
       dwell_min: 0
     D:
-      arr_min: 245
-      dep_max: 490
+      arr_min: 250
+      dep_max: 495
       dwell_min: 5
     E:
       arr_min: 394
@@ -154,7 +154,7 @@ trains:
 
 - id: G1616
   direction: up
-  train_class: G
+  train_class: G1    # 复兴号 350/400 km/h
   priority: 1
   pass_through: false
   route:
@@ -219,14 +219,14 @@ trains:
       arr: 0
       dep: 79
     B:
-      arr: 152
-      dep: 152
+      arr: 155    # phys A dep 79 + A→B 76.2s (pass-through, no dwell)
+      dep: 155
     C:
-      arr: 226
-      dep: 226
+      arr: 213    # phys B dep 155 + B→C 57.5s (pass-through, no dwell)
+      dep: 213
     D:
-      arr: 372
-      dep: 377
+      arr: 386    # phys C dep 213 + C→D 172.7s = 385.7s
+      dep: 391    # arr + dwell 5s
     E:
       arr: 0
       dep: 0
@@ -236,16 +236,16 @@ trains:
       dep_max: 199
       dwell_min: 5
     B:
-      arr_min: 32
-      dep_max: 272
+      arr_min: 35
+      dep_max: 275
       dwell_min: 0
     C:
-      arr_min: 106
-      dep_max: 346
+      arr_min: 93
+      dep_max: 333
       dwell_min: 0
     D:
-      arr_min: 252
-      dep_max: 497
+      arr_min: 266
+      dep_max: 511
       dwell_min: 5
     E:
       arr_min: 0
@@ -316,7 +316,7 @@ trains:
 # ============================================================
 - id: G7629
   direction: down
-  train_class: G
+  train_class: G1    # 复兴号 350/400 km/h
   priority: 1
   pass_through: false
   route:

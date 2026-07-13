@@ -47,7 +47,7 @@ HP = {
     "action_dim": 45,
     "k_local": 1,
     "hidden_dim": 128,
-    "l3_hidden_dim": 64,
+    "l3_hidden_dim": 128,
     "lr": 3e-4,
     "l3_lr": 1e-3,
     "gamma": 0.99,
@@ -56,7 +56,7 @@ HP = {
     "ppo_epochs": 5,
     "minibatch_size": 256,
     "entropy_coef_start": 0.01,
-    "entropy_coef_end": 0.003,
+    "entropy_coef_end": 0.005,            # floor at 0.005 — lower causes collapse
     "l3_entropy_coef": 0.01,
     "value_coef": 0.5,
     "max_grad_norm": 1.0,
@@ -136,6 +136,13 @@ def train_hierarchical(
               f"  ({phase_cfg['episodes']} ep)")
         print(f"{'='*60}\n")
 
+        # Phase C: stabilise joint training
+        if phase_name == "C":
+            for pg in l2_trainer.optimizer.param_groups:
+                pg["lr"] = HP["lr"] * 0.3          # L2 lr: 3e-4 → 1e-4
+            for pg in l3_trainer.optimizer.param_groups:
+                pg["lr"] = HP["l3_lr"] * 0.5        # L3 lr: 1e-3 → 5e-4
+
         for ep in range(phase_cfg["episodes"]):
             l2_trainer.advance_episode()
 
@@ -170,7 +177,8 @@ def train_hierarchical(
                     obs, masks, group_obs, gs_vec, device=device)
                 action_dict = {aid: (a.platform, a.entry) for aid, a in agent_actions.items()}
 
-                next_obs, reward, terminated, truncated, info = env.step(action_dict)
+                next_obs, reward, terminated, truncated, info = env.step(
+                    action_dict, lambda_team=l2_trainer.lam_team)
                 ep_done = terminated or truncated
                 metrics = info.get("metrics", {})
                 ep_total_granted += metrics.get("n_granted", 0)
@@ -238,12 +246,12 @@ def train_hierarchical(
                     l2_buffer.clear()
 
                 # L3 PPO update (buffer filled inside env._advance_trains)
-                if phase_cfg["train_l3"] and len(l3_trainer.buffer) >= 128:
+                if phase_cfg["train_l3"] and len(l3_trainer.buffer) >= 64:
                     l3_trainer.update()
                     l3_update_count += 1
 
             # ---- end of episode ----
-            if phase_cfg["train_l3"] and len(l3_trainer.buffer) >= 32:
+            if phase_cfg["train_l3"] and len(l3_trainer.buffer) >= 16:
                 l3_trainer.update()
                 l3_update_count += 1
 

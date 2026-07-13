@@ -1,0 +1,20 @@
+{
+  "No VT": {
+    "heuristic_mean": 19.046830385781384,
+    "heuristic_std": 18.911506686629235,
+    "mappo_mean": 20.669477365946307,
+    "mappo_std": 19.159411378928286
+  },
+  "Soft VT": {
+    "heuristic_mean": 19.452255058764255,
+    "heuristic_std": 18.93992991995565,
+    "mappo_mean": 20.889872499536402,
+    "mappo_std": 19.2710275689532
+  },
+  "Hard VT": {
+    "heuristic_mean": 22.319474479203734,
+    "heuristic_std": 19.406087075481487,
+    "mappo_mean": 21.60231695722675,
+    "mappo_std": 19.408471319454836
+  }
+}

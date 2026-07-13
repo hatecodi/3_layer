@@ -30,8 +30,9 @@ THROAT_CLEARANCE_TIME = 0.0         # zero — compressed timetable includes ove
 THROUGH_PLATFORM_CLEARANCE_TIME = 5.0   # minimum platform pass-through time
 MIN_CLEARANCE_SECONDS = 5.0          # safety gap between resource windows
 
-ENTRY_CHOICES = ["earliest", "plan", "plan+1", "plan+2", "plan+3", "plan+4"]  # minutes
-DWELL_EXTEND_CHOICES = [0, 60, 120]  # seconds
+# "plan+N" offset = N compressed seconds (N ∈ {10,20,30,50}, all within dep_max_slack=60s)
+ENTRY_CHOICES = ["earliest", "plan", "plan+10", "plan+20", "plan+30", "plan+50"]
+DWELL_EXTEND_CHOICES = [0]  # dwell is always min_dwell (5s), no extension
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +93,7 @@ def requested_entry_time(
     if entry_choice == "plan":
         return plan_entry
 
-    offset_sec = float(entry_choice.split("+")[1]) * 60.0
+    offset_sec = float(entry_choice.split("+")[1])  # already in compressed seconds
     return plan_entry + offset_sec
 
 

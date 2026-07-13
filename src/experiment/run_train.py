@@ -165,7 +165,8 @@ def train(env_factory: Callable[[int], BaseRailwayEnv], args, obs_dim: int = 25)
             action_dict = {aid: (a.platform, a.entry) for aid, a in agent_actions.items()}
 
             # Step
-            next_obs, reward, terminated, truncated, info = env.step(action_dict)
+            next_obs, reward, terminated, truncated, info = env.step(
+                action_dict, lambda_team=trainer.lam_team)
             ep_done = terminated or truncated
             metrics = info.get("metrics", {})
             # Accumulate episode-level metrics

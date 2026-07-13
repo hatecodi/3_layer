@@ -103,7 +103,8 @@ class TwoStationEnv(BaseRailwayEnv):
         return obs, info
 
     def step(
-        self, action_dict: Optional[Dict[str, int]] = None
+        self, action_dict: Optional[Dict[str, int]] = None,
+        lambda_team: float = 0.3,
     ) -> Tuple[
         Dict[str, List[float]],    # observations
         Dict[str, float],          # rewards (train_id → scalar)
@@ -157,6 +158,7 @@ class TwoStationEnv(BaseRailwayEnv):
             active_train_ids=step_train_ids,
             unresolved_conflicts=unresolved,
             hard_bound_infeasible_count=infeasible,
+            lambda_team=lambda_team,
         )
         metrics = compute_metrics(
             self.cfg, grants, held,
