@@ -65,8 +65,8 @@ HP = {
 
 PHASES = {
     "A": {"episodes": 3000, "train_l2": True, "train_l3": False},
-    "B": {"episodes": 2000, "train_l2": False, "train_l3": True},
-    "C": {"episodes": 2000, "train_l2": True, "train_l3": True},
+    "B": {"episodes": 3000, "train_l2": False, "train_l3": True},
+    "C": {"episodes": 3000, "train_l2": True, "train_l3": True},
 }
 
 
@@ -311,7 +311,15 @@ def train_hierarchical(
     # CSV
     csv_path = run_dir / "training_metrics.csv"
     if episode_metrics:
+        # Collect all keys across all phases to handle mismatched dicts
         fieldnames = list(episode_metrics[0].keys())
+        for m in episode_metrics:
+            for k in list(m.keys()):
+                if k not in fieldnames:
+                    fieldnames.append(k)
+        for m in episode_metrics:
+            for k in fieldnames:
+                m.setdefault(k, "")
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

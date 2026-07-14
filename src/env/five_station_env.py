@@ -161,6 +161,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._l3_sim = L3Simulator(l3_physics, corridor_hw, corridor_dist)
         self._corridor_delays: Dict[str, float] = {}  # train_id -> headway delay
         self._hard_guard_violations = 0
+        self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
         # State
         self._t_now = 0.0
@@ -202,6 +203,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._corridor_delays = {}
         self._hard_guard_violations = 0
         self._l3_sim.reset()
+        self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
         all_ids = sorted(self.cfg.trains.keys())
         self._journeys = {}
@@ -379,6 +381,8 @@ class FiveStationEnv(BaseRailwayEnv):
             "metrics": asdict(metrics),
             "episode_status": self._episode_status.value,
             "deadlock_counter": self._deadlock_counter,
+            "l3_speed_choices": getattr(self, "_l3_speed_choices", {}),
+            "retried_train_ids": retried,  # trains whose platform was changed by resolver
             "hard_guard_violations": self._hard_guard_violations,
             "hard_guard_held": hard_guard_held,
             "t_now": self._t_now,
@@ -549,6 +553,13 @@ class FiveStationEnv(BaseRailwayEnv):
 
             # Intra-step calendar tracks committed platform/throat windows
             station_cal = ResourceCalendar(min_gap_sec=5.0)
+            # Seed with cross-step persistent bookings (skip self)
+            pending_set = set(station_trains)
+            for rid, windows in self._persistent_cal._windows.items():
+                if rid.startswith(f"{station_id}/"):
+                    for w in windows:
+                        if w.end > self._t_now and w.train_id not in pending_set:
+                            station_cal.book(rid, w.train_id, w.start, w.end)
 
             for train_id in station_trains:
                 train = self.cfg.trains[train_id]
@@ -691,6 +702,16 @@ class FiveStationEnv(BaseRailwayEnv):
 
     def _resolve_requests(self, requests: List[WindowRequest]) -> List[GrantResult]:
         grants: List[GrantResult] = []
+        # Build parked windows from persistent calendar
+        parked: Dict[str, Tuple[float, float]] = {}
+        for rid, windows in self._persistent_cal._windows.items():
+            for w in windows:
+                if w.end > self._t_now:
+                    parked[rid] = (w.start, w.end)
+        if self._visitor_enabled:
+            for rid, (s, e) in self._visitor_windows.items():
+                if e > self._t_now:
+                    parked[rid] = (s, e)
         for station_id in sorted(self.cfg.stations):
             st_reqs = [r for r in requests
                        if self._journeys[r.train_id].current_station == station_id]
@@ -703,7 +724,18 @@ class FiveStationEnv(BaseRailwayEnv):
                 grants.extend(resolve_all(
                     st_reqs, candidate_platforms,
                     make_rebuild_fn(self.layer1, station_id),
-                    parked_windows=self._visitor_windows if self._visitor_enabled else None))
+                    parked_windows=parked if parked else None))
+        # Book grants into persistent calendar (old bookings expire via t_now filter)
+        granted_ids = {g.train_id for g in grants}
+        for rid in self._persistent_cal._windows:
+            self._persistent_cal._windows[rid] = [
+                w for w in self._persistent_cal._windows[rid]
+                if w.train_id not in granted_ids
+            ]
+        for g in grants:
+            station_id = self._journeys[g.train_id].current_station
+            self._persistent_cal.book(
+                f"{station_id}/{g.platform}", g.train_id, g.W_plat[0], g.W_plat[1])
         return grants
 
     def _advance_trains(self, grants: List[GrantResult]) -> int:
@@ -714,6 +746,7 @@ class FiveStationEnv(BaseRailwayEnv):
         """
         advanced = 0
         hard_guard_held: List[str] = []
+        self._l3_speed_choices: Dict[str, int] = {}
         grants = sorted(grants, key=lambda g: g.W_out[0])
         for g in grants:
             journey = self._journeys[g.train_id]
@@ -739,10 +772,17 @@ class FiveStationEnv(BaseRailwayEnv):
             distance = self._l3_sim._distances.get(corridor_key, 0.0)
 
             # L3 Worker: sample speed_choice or default to CRUISE
-            train_cls = self.cfg.trains[g.train_id].train_class
-            speeds = p.get_speeds(train_cls)
+            train_prio = self.cfg.trains[g.train_id].priority
+            speeds = p.get_speeds(train_prio)
             speed_choice = SpeedMode.CRUISE
             l3_action = 0; l3_logprob = 0.0; l3_value = 0.0
+
+            # Throat conflict group for this platform+direction
+            station_cfg = self.cfg.stations[cur]
+            dir_cfg = station_cfg.up if self.cfg.trains[g.train_id].direction == "up" else station_cfg.down
+            out_route = next((r for r in dir_cfg.out_routes if r.platform == g.platform), None)
+            throat_group = out_route.conflict_group if out_route else None
+
             # Flat MAPPO: speed pre-selected during station decision
             flat_speeds = getattr(self, '_flat_speed_choices', {})
             if g.train_id in flat_speeds and self._l3_worker is None:
@@ -756,6 +796,11 @@ class FiveStationEnv(BaseRailwayEnv):
                     self._l3_sim._corridors.earliest_entry(corridor_key, self._l3_sim._headways.get(corridor_key, p.corridor_headway_sec))
                     - (g.W_out[0] + p.throat_out_sec))
                 recovery_margin = max(distance / speeds.cruise_mps - distance / speeds.max_mps, 0.0)
+
+                # Throat gap for L3 observation
+                throat_id = f"{cur}/{throat_group}" if throat_group else None
+                throat_gap = self._l3_sim.throat_gap(throat_id, g.W_out[0]) if throat_id else 0.0
+
                 nxt_station = self.cfg.stations.get(nxt)
                 nxt_total = len(nxt_station.platforms) if nxt_station else 4
                 nxt_free = max(nxt_total - 1, 1)
@@ -769,16 +814,20 @@ class FiveStationEnv(BaseRailwayEnv):
                     planned_transit=planned_transit,
                     speed_ratio=speeds.cruise_mps / max(speeds.max_mps, 1.0),
                     next_station_platforms_free=nxt_free,
-                    next_station_platforms_total=nxt_total, arrival_slack_ratio=0.5)
+                    next_station_platforms_total=nxt_total,
+                    arrival_slack_ratio=0.5,
+                    throat_gap=throat_gap)
                 l3_obs_t = torch.tensor(l3_obs_vec, dtype=torch.float32)
                 l3_action, l3_logprob, l3_value = self._l3_worker.select_action(l3_obs_t)
                 speed_choice = SpeedMode(l3_action)
 
+            self._l3_speed_choices[g.train_id] = int(speed_choice)
             l3_result = self._l3_sim.transit(
                 g.train_id, cur, nxt, corridor_key,
                 planned_total_sec=planned_transit,
                 actual_departure=g.W_out[0], speed_choice=speed_choice,
-                train_class=train_cls)
+                throat_conflict_group=throat_group,
+                priority=self.cfg.trains[g.train_id].priority)
             t_corridor_exit = l3_result.actual_arrival
             if l3_result.headway_delay_sec > 1e-6:
                 self._corridor_delays[g.train_id] = l3_result.headway_delay_sec
@@ -798,7 +847,8 @@ class FiveStationEnv(BaseRailwayEnv):
                 planned_arrival = train_plan[nxt].arr
                 arrival_dev = l3_result.actual_arrival - planned_arrival
                 l3_reward = compute_l3_reward(
-                    l3_result.headway_delay_sec, arrival_dev, l3_result.recovery_used_sec)
+                    l3_result.headway_delay_sec, arrival_dev,
+                    l3_result.recovery_used_sec, l3_result.throat_delay_sec)
                 from ..marl.l3_worker import L3Transition
                 self._l3_worker.buffer.add(L3Transition(
                     obs=l3_obs_t, action=l3_action, logprob=l3_logprob,
@@ -839,13 +889,15 @@ class FiveStationEnv(BaseRailwayEnv):
             return orig_bounds
 
         actual_arrival = journey.arrival_at_current
+        t_arr_plan = train.planned[station_id].arr if station_id in train.planned else 0.0
         dwell = orig_bounds.dwell_min
         slack = self.cfg.time_generation.get("dep_max_slack_sec", 120)
-        ref_time = max(actual_arrival, t_now)
+        # Floor at planned arrival — trains must not depart before schedule
+        ref_time = max(actual_arrival, t_now, t_arr_plan)
         physical_overhead = TRAVEL_TIME_TO_THROAT + 2 * THROAT_CLEARANCE_TIME
         physical_min_dep = ref_time + physical_overhead + dwell
         return TrainBound(
-            arr_min=actual_arrival,
+            arr_min=ref_time,
             dep_max=max(ref_time + dwell + slack, physical_min_dep),
             dwell_min=dwell,
         )

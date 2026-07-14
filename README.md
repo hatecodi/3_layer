@@ -1,212 +1,217 @@
-# Railway MARL — Three-Layer Scheduling Framework
+# Railway MARL — 三层分层调度框架
 
-三层铁路调度强化学习框架：Layer 1 硬边界约束 → Layer 2 MAPPO 调度 → Layer 3 执行（规划中）。
+三层铁路调度 MARL 框架：Layer 1 硬边界约束 → Layer 2 MAPPO 站台调度 → Layer 3 物理走廊速度控制。
 
 ## 快速开始
 
 ```bash
+# 分层 MAPPO 训练（三阶段：L2 → L3 → joint）
+python -m src.experiment.run_train_hierarchical --env five_station
+
+# 带扰动训练
+python -m src.experiment.run_train_hierarchical --env five_station --vt --delay
+
+# L2 安全审查（平台资源冲突检测）
+python scripts/validate_l3_schedule.py \
+  --l2-ckpt output/five_station_hierarchical/{run}/checkpoints/final.pt \
+  --l3-ckpt output/five_station_hierarchical/{run}/checkpoints/final.pt \
+  --n-episodes 10
+
 # 五站 heuristic baseline
 python scripts/five_station/run_heuristic.py
-
-# 五站 MAPPO 训练
-python -m src.experiment.run_train --env five_station --episodes 5000
-
-# 画训练曲线（含启发式参考线）
-PYTHONPATH=. python scripts/plot_training_curves.py output/five_station/20260706_201526/training_metrics.csv
-
-# 提取 chunk 级趋势
-PYTHONPATH=. python scripts/extract_trend.py output/five_station/20260706_201526/training_metrics.csv
-
-# 跟踪 L2 输出（每列车、每站、站台、时间窗口）
-PYTHONPATH=. python scripts/trace_l2_output.py
 ```
 
 ## 项目结构
 
 ```
 ├── configs/
-│   ├── two_station/              # 两站 (A-B) 配置（遗留，不再更新）
-│   └── five_station/             # 五站 (A-B-C-D-E) 配置 ← 当前主力
-│       ├── railway_resources.yaml
-│       ├── timetable.yaml
-│       └── timetable_annotated.yaml
+│   └── five_station/              # 五站 (A-B-C-D-E) 配置
+│       ├── railway_resources.yaml # 站台、喉道、冲突组
+│       ├── l3_physics.yaml        # L3 物理参数（速度、距离、headway）
+│       └── timetable.yaml         # 11 列车时刻表 + VT 访客配置
 │
 ├── src/
 │   ├── common/
 │   │   └── base_env.py           # BaseRailwayEnv 抽象接口
-│   ├── control/                  # 调度控制（通用于所有场景）
+│   ├── control/                  # 调度控制层
 │   │   ├── dispatch_bounds.py    # Layer 1: 硬边界封装
-│   │   ├── action_mask.py        # 动作空间 + 合法性掩码 + derive_schedule
-│   │   ├── resource_manager.py   # ResourceCalendar + 冲突检测 + 确定性 resolver
-│   │   ├── executor.py           # Layer 3: 规则执行器（预留，未接入训练回路）
-│   │   └── execution_target.py   # Layer 2 → Layer 3 接口数据类
+│   │   ├── action_mask.py        # 动作空间 + mask + derive_schedule
+│   │   ├── resource_manager.py   # ResourceCalendar + 冲突 resolver
+│   │   ├── l3_sim.py             # L3 物理走廊模拟器（per-class speeds）
+│   │   ├── executor.py           # Layer 3: 规则执行器（预留）
+│   │   └── execution_target.py   # L2 → L3 接口数据类
 │   ├── env/                      # 环境实现
-│   │   ├── five_station_env.py   # 五站环境（MDP，当前主力）
-│   │   ├── two_station_env.py    # 两站环境（遗留，bandit-like）
-│   │   ├── disturbance.py        # 初始延误注入 + 死锁阈值
-│   │   ├── observation_builder.py# 29 维观测构造（config-driven dims）
-│   │   └── reward.py             # 分层 reward（local + global curriculum）
+│   │   ├── five_station_env.py   # 五站环境（MDP）— 含 persistent calendar
+│   │   ├── two_station_env.py    # 两站环境（遗留）
+│   │   ├── disturbance.py        # 初始延误 + VT 注入
+│   │   ├── observation_builder.py# config-driven 观测（~31 dims）
+│   │   └── reward.py             # 分层 reward（local + global）
 │   ├── marl/                     # MAPPO 模块
-│   │   ├── actor_critic.py       # FactoredActor + LocalCritic + GlobalCritic
+│   │   ├── actor_critic.py       # L2: FactoredActor + LocalCritic + GlobalCritic
+│   │   ├── l3_worker.py          # L3: CorridorActor + CorridorCritic（共享）
 │   │   ├── rollout_buffer.py     # RolloutBuffer + 双 critic GAE
-│   │   └── mappo.py              # MAPPOTrainer（dual-critic loss fusion）
-│   ├── experiment/               # 实验入口
-│   │   ├── scenario_loader.py    # 配置加载 + 5 规则跨文件校验
-│   │   ├── heuristic_planner.py  # 启发式调度器 + make_rebuild_fn
-│   │   ├── run_train.py          # MAPPO 训练脚本（--env two_station/five_station）
-│   │   ├── run_heuristic.py      # 两站启发式 baseline
-│   │   └── run_executor_baseline.py # SUMO 执行器 baseline（预留）
-│   └── sumo/                     # 预留：SUMO TraCI 连接器
+│   │   └── mappo.py              # MAPPOTrainer
+│   └── experiment/               # 实验入口
+│       ├── scenario_loader.py    # 配置加载 + 跨文件校验
+│       ├── heuristic_planner.py  # 启发式调度器
+│       ├── run_train_hierarchical.py  # 分层训练（Phase A/B/C）
+│       ├── run_train_l3_only.py  # 冻结 L2 仅训 L3
+│       ├── run_flat_mappo.py     # 无 L3 的平面 MAPPO（对比 baseline）
+│       ├── run_heuristic.py      # 启发式 baseline
+│       └── run_executor_baseline.py # SUMO 执行器（预留）
 │
 ├── scripts/
-│   ├── two_station/              # 两站脚本（部分已存档）
-│   │   └── validate_sumo.py
-│   ├── five_station/             # 五站脚本
-│   │   ├── run_heuristic.py      # 启发式单 episode trace
-│   │   ├── visualize.py          # 网络文本可视化
-│   │   ├── plot_timetable.py     # 列车运行图
-│   │   ├── plot_network_layout.py# 物理拓扑图
-│   │   ├── plot_heuristic_chart.py
-│   │   └── generate_sumo_network.py
-│   ├── plot_training_curves.py   # 训练曲线（含启发式对比虚线）
-│   ├── extract_trend.py          # Chunk 级趋势提取
-│   ├── trace_l2_output.py        # L2 输出追踪
-│   ├── resume_training.py        # 续训脚本
-│   ├── analyze_training.py       # 训练分析
-│   ├── difficulty_tiers.py       # 难度分层评估
-│   ├── plot_mappo_vs_heuristic.py # MAPPO vs heuristic 对比图
-│   └── update_pic_figures.py     # 图片素材更新
+│   ├── five_station/
+│   ├── validate_l3_schedule.py   # 安全审查：平台重叠 + 喉道冲突检测
+│   ├── train_l2_quick.py         # 快速 L2 验证训练
+│   └── ...
 │
-├── docs/
-│   ├── L2_design.md              # L2 层完整设计文档
-│   └── L3_constraints_and_data.md # L3 物理约束 + 数据需求设计
-│
-├── archive/                      # 已存档的遗留/过时文件
-│   ├── env_bak/
-│   ├── scripts/two_station/
-│   └── tests/
-│
-├── sumo/
-│   ├── two_station/
-│   └── five_station/             # SUMO 文件（占位，不可用于训练）
-│
-├── output/                       # 训练输出（按场景/时间戳组织）
-│   └── five_station/
+├── docs/                         # L2/L3 设计文档
+├── output/                       # 训练输出（按场景/时间戳）
+│   ├── five_station/
+│   ├── five_station_hierarchical/
+│   └── five_station_l3_only/
 │
 └── tests/
-    └── two_station/
 ```
-
-## 五站环境 (A-B-C-D-E)
-
-- **10 列车**（5 上行 + 5 下行），依次经过 5 个车站，episode ≈ 30+ 步
-- **D 站瓶颈**：仅 2 站台，其余各站 4 站台
-- **调度决策跨站传播**：本站延误级联到后续所有站，构成完整 MDP
-- **站内顺序决策**：同站列车按优先级排序处理，低优先级车看到高优先级车的选择
-- **初始延误注入**：30% 概率，每列车在始发站随机延迟 30-90s
 
 ## 三层架构
 
 ```
-Layer 1 (固定规则)              Layer 2 (MAPPO 学习)                 Layer 3 (规划中)
-───────────────────            ────────────────────────              ────────────────
-DispatchBounds                  FactoredActor                        Python Sim
-timetable.yaml                   (platform_head + entry_head)        事件驱动
-bounds: arr_min, dep_max        + 动作掩码 (L1 边界硬约束)            PhysicalCalendar
-dwell_min, candidate_platforms  + 站内顺序决策 (优先级排序)            咽喉/走廊/站台物理约束
-                                + 确定性 resolver (安全网)            speed profile
-                                + VT 扰动 (60% 占正线)               dwell 追回
-                                + 初始延误注入 (disturbance)
+Layer 1 (固定规则)          Layer 2 (MAPPO)              Layer 3 (物理执行)
+───────────────────        ──────────────────           ───────────────────
+DispatchBounds              FactoredActor                L3Simulator
+timetable.yaml              + 动作掩码 (L1 硬约束)       per-priority speeds
+bounds: arr_min/dep_max     + 站内顺序决策 (优先级)      corridor headway
+dwell_min (5s 全部)         + 确定性 resolver            CRUISE/FAST/SLOW
+candidate_platforms         + persistent calendar        recovery margin
+t_arr_plan floor (防早发)   + VT 扰动                    硬 guard (>4× headway)
 ```
 
-### Layer 1 → Layer 2 接口
+### Layer 1: 调度边界
 
-YAML 中每列车每站定义：
-- `planned.arr / dep`：计划到发时刻
-- `bounds.arr_min / dep_max / dwell_min`：硬边界（通过 action mask 强制执行）
-- `candidate_platforms`：允许的站台列表（策略只能从中选择）
+- 每列车每站：`arr_min / dep_max / dwell_min / candidate_platforms`
+- 中间站 `_get_effective_bounds`：`arr_min = max(actual_arrival, t_arr_plan)` — 防止早发
+- 延误时自动扩展 `dep_max`（120s slack）
 
-中间站：`_get_effective_bounds` 将边界平移到实际到达时间，利用 120s slack 消化延误。
+### Layer 2: MAPPO 调度
 
-### 动作空间（Factored）
+**动作空间**：`(platform_idx, entry_idx)` — factored action，总 logits = 4 + 6 = 10
 
-```
-action = (platform_idx, entry_idx)     # dwell_extend 固定为 0
-
-platform_idx: 0..3    (candidate_platforms 中的索引，≤4)
-entry_idx:    0..5    (ENTRY_CHOICES: earliest, plan, plan+1~plan+4)
-```
-
-总 logits: 4 + 6 = 10（而非 flat 的 4×6×3=72）。非法动作被 mask 为 `-inf`。
-
-### 观测空间（29 维，config-driven）
-
+**观测空间**：config-driven，~31 dims（取决于 max_platforms）：
 | 段 | 维度 | 内容 |
 |----|------|------|
-| Self | 14 | 时间、累计延迟、计划/边界时间、优先级、列车类型 one-hot、松弛量 |
-| Contention | max_plat (4) | 按冲突组分摊的每站台竞争压力 |
-| Next Station | 5 | 可用站台、竞争车数、预计到达时间、拥堵度、dwell |
-| Resource | 2+max_plat (6) | 当前可用站台、走廊延迟、每站台 VT 预占标志 |
+| Self | 16 | 时间、累计延迟、计划/边界、priority、class one-hot、邻居平均延迟、slack |
+| Contention | max_plat | 按 conflict group 分摊的平台竞争压力 |
+| Next Station | 5 | 可用站台、竞争车数、est arrival、拥堵度、dwell |
+| Resource | 2+max_plat | 当前可用站台、corridor delay、per-platform VT 预占标志 |
 
-### Reward（curriculum）
+**Critic**：LocalCritic（(K+1)×obs，K=1）+ GlobalCritic（14 dims）
 
-```python
-local  = -0.10 × |delay| × prio_weight × (1 + |delay|//300)    # 渐进惩罚
-         + 2.0 × exp(-|delay|/60) × prio_weight                # 指数衰减 ontime bonus
-held   = -3.0
-
-global = -0.10 × mean_delay - 100.0 × deadlock + 10.0 × ontime_rate
-total  = local + λ_team × global       (λ: 0.05 → 0.30)
-```
-
-ONTIME_THRESHOLD = 15s。同时惩罚早到和晚到。
-
-### Critic（CTDE）
-
-- **LocalCritic**：(K+1) × 29 维输入，K=1 邻居
-- **GlobalCritic**：14 维全局状态
-- 训练时集中，执行时每个 agent 只看自己的 29 维观测
-
-### 冲突解决（确定性）
-
-1. 请求按 `(priority, -delay, train_id)` 排序
-2. 高优先级先 grant，booking 到 `ResourceCalendar`
-3. 冲突者：换站台 → 延时 → 最多 2 次 fallback → held
+**冲突 resolver**（确定性）：
+1. 按 `(priority, -delay, train_id)` 排序
+2. 高优先级先 grant，booking 到 `station_cal`（同 step）+ `persistent_cal`（跨 step）
+3. 冲突者：换站台 → 最多 2 次 fallback → held
 4. 保证零硬边界违规
 
-### 扰动
+**Persistent calendar**：跨 step 追踪站台占用，防止不同 step 的 grant 分配到同一站台重叠窗口。Booking 通过 `w.end > t_now` 自然过期。
 
-- **Visitor trains**：随机预占站台，60% 偏向正线 p1，观测中提前通知
-- **初始延误**：`disturbance.py` 注入，30% 概率，30-90s 均匀分布
+### Layer 3: 物理走廊 + 喉道
 
-## 当前结果（5000ep，含初始延误 + VT p1_bias）
+**L3Simulator**：entry-headway 走廊 transit，per-priority 速度查表 + 喉道 headway（6s）：
+| Priority | 列车类型 | cruise (m/s) | max (m/s) |
+|----------|---------|-------------|-----------|
+| 1 | 复兴号 | 97.22 | 111.11 |
+| 2 | 和谐号 | 83.33 | 97.22 |
+| 3 | 普速 | 33.33 | 33.33 |
 
-| 指标 | Heuristic | MAPPO |
-|------|-----------|-------|
-| dep_delay | 7.5s | **5.8s** (-23%) |
-| ontime | 88.2% | **91.1%** (+2.9pt) |
-| deadlock | 0 | 0 |
+**L3 Worker**：共享 3-way categorical actor（CRUISE/FAST/SLOW），10-dim 观测（headway_gap、recovery_margin、cumulative_delay、distance、arrival_dev、speed_ratio、slack、platforms_free、throat_gap）
 
-Best episode: 0.1s delay, 100% ontime（epoch 4297）。
+**L3 reward**：
+```python
+late = max(arrival_deviation, 0.0)         # 只罚晚到（早到不罚）
+total_delay = headway_delay + throat_delay
+effective_recovery = min(recovery_used, total_delay + late)
+fuel_penalty = 0.003 * recovery_used        # FAST 微成本（准点时 CRUISE 默认）
+return -0.02*headway - 0.02*throat - 0.01*late + 0.01*effective - fuel
+```
 
-训练输出 CSV 在 `output/five_station/{timestamp}/training_metrics.csv`，含 reward、ontime、delay、platform_utilization、fallback 等字段。画图脚本读取 CSV，启发式参考线内嵌于绘图脚本。
+**硬 guard**：headway delay > 4× corridor_headway → hold for replan
 
-## 两站环境（遗留）
+## 训练流程
 
-两站环境仅一步决策（所有列车在始发站同时调度），是 bandit-like 问题。当前开发重心在五站，两站相关代码保留但不再更新。部分过时的两站脚本已归档至 `archive/scripts/two_station/`。
+三阶段交替训练（`run_train_hierarchical.py`）：
+
+| Phase | Episodes | L2 | L3 | 说明 |
+|-------|----------|----|----|------|
+| A | 3000 | train | frozen/rule | L2 学习站台分配 |
+| B | 2000 | frozen | train | L3 学习速度控制 |
+| C | 2000 | train | train | 联合微调 |
+
+L3-only 微调（加载已有 L2）：
+```bash
+python -m src.experiment.run_train_l3_only \
+  --ckpt output/five_station_hierarchical/{run}/checkpoints/best.pt --episodes 2000
+```
+
+## 扰动
+
+- **Visitor trains (VT)**：随机在 A/B/C/D/E 站预占站台（可配置 prob/p1_bias/K-ratio），观测中提前通知
+- **Initial delay**：`disturbance.py` 注入，30% 概率，30-90s
+
+## 站台配置
+
+| 站 | 站台数 | dwell_min | 喉道 |
+|----|-------|-----------|------|
+| A | 4 | 5s | 每站台独立 |
+| B | 4 | 5s | 每站台独立 |
+| **C** | | **4** | **5s** | **p1+p2 共享 g1, p3+p4 共享 g2 (up)** |
+| D | 2 | 5s | 每站台独立 |
+| E | 4 | 5s | 每站台独立 |
+
+C 站喉道共享是唯一存在咽喉资源竞争的场景，L2 通过 intra-step resolver 处理。
+
+## 11 列车
+
+5 上行 (G1380, G1616, G230, G5038, K1185) + 4 下行 (G1347, G1487, G2245, G7629) + 2 K 车 (K1185, K834)。G5038 为 B→C 调机换向场景（C 站 53s dwell）。
+
+## 安全保证
+
+1. **Hard bounds via masking**：L1 边界通过 action mask 强制，非 reward penalty
+2. **Persistent platform calendar**：跨 step 防止站台重叠
+3. **确定性 resolver**：保证所有 grant 窗口内无资源冲突
+4. **L3 hard guard**：headway delay 超限时 hold 重调度
+
+## 最终结果（9000ep，无扰动）
+
+| Phase | dep_dly | ontime | cv |
+|-------|---------|--------|-----|
+| A (L2) | 2.0s | 91% | 3% |
+| B (L3, frozen L2) | 1.3s | 100% | 39%* |
+| C (joint) | **1.2s** | **100%** | 38%* |
+
+\* cv 受少量 deadlock_flag 误触发 episode 影响（全部在途时误报），核心指标稳定。
+
+L3 速度分布（Clean）：CRUISE=22, FAST=39, SLOW=11 — 三种模式均被使用。
+
+Checkpoint：`output/five_station_hierarchical/20260714_231614/checkpoints/best.pt`
+
+## 已知限制
+
+- 模拟器在 grant 后立即 `_advance_trains`（不等 `t_dep`），与实际物理有偏差。Persistent calendar 补偿了这一缺陷，保证调度一致性。
+- Corridor headway 在 L3 层执行，不在 L2 resolver 中约束。
 
 ## 依赖
 
 - Python 3.9+
 - PyTorch
-- PyYAML
-- NumPy
+- PyYAML, NumPy
 - matplotlib（画图）
-- SUMO（可选，仅用于 L3 final validation，当前训练不需要）
+- SUMO（可选，仅 L3 validation）
 
 ## 设计文档
 
-- `docs/L2_design.md` — L2 层完整设计
-- `docs/L3_constraints_and_data.md` — L3 物理约束 + 数据需求
+- `docs/L2_design.md` / `docs/L3_constraints_and_data.md` — 设计细节
 - `CLAUDE.md` — 项目约束与开发工作流
-- `coding_log` — 变更历史与实验记录
+- `coding_log` — 变更历史
+- `BUG_REPORT.md` — 已知 bug 记录

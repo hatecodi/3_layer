@@ -48,7 +48,7 @@ trains:
 # ============================================================
 - id: G1380
   direction: up
-  train_class: G1    # 复兴号 350/400 km/h
+  train_class: G
   priority: 1
   pass_through: false
   route:
@@ -154,7 +154,7 @@ trains:
 
 - id: G1616
   direction: up
-  train_class: G1    # 复兴号 350/400 km/h
+  train_class: G
   priority: 1
   pass_through: false
   route:
@@ -316,7 +316,7 @@ trains:
 # ============================================================
 - id: G7629
   direction: down
-  train_class: G1    # 复兴号 350/400 km/h
+  train_class: G
   priority: 1
   pass_through: false
   route:

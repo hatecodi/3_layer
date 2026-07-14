@@ -212,18 +212,27 @@ def compute_l3_reward(
     headway_delay_sec: float,
     arrival_deviation_sec: float,
     recovery_used_sec: float,
+    throat_delay_sec: float = 0.0,
 ) -> float:
     """Compute L3 Worker reward for one corridor transit.
 
     Objectives:
-      - Minimise headway waiting time
-      - Minimise arrival time deviation (early or late)
-      - Reward using recovery margin only when it helps (net time saved)
+      - Minimise corridor headway and throat waiting time
+      - Penalise late arrival only (early is acceptable)
+      - Reward using recovery margin only when catching up from delay
 
     All terms are in seconds, scaled to comparable magnitudes.
     """
+    total_delay = headway_delay_sec + throat_delay_sec
+    late = max(arrival_deviation_sec, 0.0)
+    # Reward recovery only when it helps reduce existing delay.
+    # Small fuel penalty makes FAST a net cost when there is no delay to recover.
+    effective_recovery = min(recovery_used_sec, total_delay + late)
+    fuel_penalty = 0.003 * recovery_used_sec
     return (
         -0.02 * headway_delay_sec
-        - 0.01 * abs(arrival_deviation_sec)
-        + 0.01 * recovery_used_sec
+        - 0.02 * throat_delay_sec
+        - 0.01 * late
+        + 0.01 * effective_recovery
+        - fuel_penalty
     )

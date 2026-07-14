@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 from torch.optim import Adam
 
-L3_OBS_DIM = 9
+L3_OBS_DIM = 10
 L3_ACTION_DIM = 3  # cruise / fast / slow
 
 
@@ -160,6 +160,7 @@ class L3WorkerTrainer:
         self.value_coef = value_coef
         self.max_grad_norm = max_grad_norm
         self._buffer = L3RolloutBuffer(gamma, gae_lambda)
+        self._last_stats: Dict[str, float] = {}
 
     @property
     def buffer(self) -> L3RolloutBuffer:
@@ -230,4 +231,8 @@ class L3WorkerTrainer:
             }
 
         buffer.clear()
+        self._last_stats = stats
         return stats
+
+    def get_last_stats(self) -> Dict[str, float]:
+        return self._last_stats

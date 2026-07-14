@@ -20,22 +20,21 @@ l3_physics:
   throat_out_sec: 3.0
   approach_sec: 3.0
 
-  # Speed by train class (real m/s, NOT compressed)
-  # P1/Fuxing (复兴号): 350 cruise / 400 max
+  # Speed by train priority (real m/s, NOT compressed)
+  # P1/Fuxing (复兴号): 350 cruise / 400 max — fastest, recovery margin ~7s
   # P2/Hexie (和谐号): 300 cruise / 350 max
-  # K (普速): 120 km/h, no recovery margin
+  # P3/K (普速):      120 cruise / 120 max — no recovery margin
+  # Priority is already in L2 observation (prio_i/3.0), so L2 implicitly
+  # knows train speed without needing a new observation feature.
   train_speeds:
-    G:
-      cruise_mps: 83.33    # 300 km/h (和谐号 default)
-      max_mps: 97.22       # 350 km/h
-    G1:
+    "1":
       cruise_mps: 97.22    # 350 km/h (复兴号)
       max_mps: 111.11      # 400 km/h
-    D:
-      cruise_mps: 69.44    # 250 km/h
-      max_mps: 83.33       # 300 km/h
-    K:
-      cruise_mps: 33.33    # 120 km/h
+    "2":
+      cruise_mps: 83.33    # 300 km/h (和谐号)
+      max_mps: 97.22       # 350 km/h
+    "3":
+      cruise_mps: 33.33    # 120 km/h (普速)
       max_mps: 33.33       # no recovery margin
 
   # Default speeds (used when train class not found above)

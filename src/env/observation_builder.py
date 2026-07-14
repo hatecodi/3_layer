@@ -291,13 +291,14 @@ def build_l3_observation(
     next_station_platforms_free: int,
     next_station_platforms_total: int,
     arrival_slack_ratio: float,
+    throat_gap: float = 0.0,
 ) -> List[float]:
-    """Build a 9-dim observation for the L3 Worker.
+    """Build a 10-dim observation for the L3 Worker.
 
     All values are normalised to [0, 1] where possible.
     """
     return [
-        min(headway_gap / 60.0, 1.0),                         # headway wait
+        min(headway_gap / 60.0, 1.0),                         # corridor headway wait
         min(recovery_margin / 30.0, 1.0),                     # recoverable time
         min(cumulative_delay / 300.0, 1.0),                    # current delay
         min(distance_m / max(max_distance_m, 1.0), 1.0),       # corridor length
@@ -305,5 +306,6 @@ def build_l3_observation(
         speed_ratio,                                           # cruise/max
         arrival_slack_ratio,                                   # urgency at next station
         next_station_platforms_free / max(next_station_platforms_total, 1),
+        min(throat_gap / 30.0, 1.0),                           # throat headway wait
         0.0,  # reserved
     ]

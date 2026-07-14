@@ -1,3 +1,53 @@
+[2026-07-15 00:30]
+Task: Finalise L3 reward + throat headway + all training
+Files:
+  src/env/reward.py — L3 reward: abs→max(dev,0), +fuel_penalty, +throat_delay_sec
+  src/control/l3_sim.py — L3ThroatState, throat_headway_sec=6.0, throat tracking in transit()
+  src/env/observation_builder.py — L3 obs 9→10 dims (throat_gap)
+  src/marl/l3_worker.py — L3_OBS_DIM 9→10
+  src/experiment/run_train_hierarchical.py — CSV field consistency fix, Phase B/C 3000ep
+  src/experiment/run_train_l3_only.py — CSV field consistency fix
+  README.md — updated L3 docs + final results
+  HANDOFF.md — session handoff doc
+Results:
+  Clean: dly=1.2s ont=100% (CRUISE=22, FAST=39, SLOW=11)
+  Delay: dly=15.7s ont=83% (FAST dominant — expected with delay disturbance)
+  Zero platform violations after persistent calendar fix.
+Status: DONE — project ready for paper writeup
+
+[2026-07-14 18:00]
+Task: Fix L3 observation speed lookup — use priority instead of train_class
+Files:
+  src/env/five_station_env.py:742-743 — changed get_speeds(train_cls) to get_speeds(train_prio)
+Rationale: L3Physics.get_speeds(priority: int) expects int priority (1/2/3) matching
+  l3_physics.yaml keys "1"/"2"/"3". transit() correctly passes priority, but the
+  L3 observation builder was passing train_class ("G"/"K" string), which never
+  matched → all trains fell back to default 25/30 m/s. L3 worker learned from
+  garbage observations with wrong recovery_margin and speed_ratio.
+Status: DONE
+
+[2026-07-14 17:35]
+Task: Add L3-only training script (frozen L2 + train L3 Worker)
+Files:
+  src/experiment/run_train_l3_only.py — new script, loads L2 ckpt, trains L3 only
+  src/marl/l3_worker.py — added _last_stats + get_last_stats() for monitoring
+  src/env/five_station_env.py — track l3_speed_choices in _advance_trains, expose in info
+Rationale: After fixing L3 observation speed lookup bug, need to verify L3 convergence.
+  Phase B requires L3 to be trained from scratch with frozen L2. Script loads any
+  hierarchical/flat checkpoint, freezes L2, trains only L3 Worker.
+Status: DONE
+
+[2026-07-14 19:40]
+Task: Remove _retry_action — hold immediately on conflict (REVERTED)
+Files:
+  src/env/five_station_env.py — restored _retry_action
+Rationale: Tested 3000ep with direct-hold. Safety improved (violations 0-1) but
+  held rate did not decrease because VT noise makes held signal ambiguous —
+  policy cannot distinguish "my bad choice" from "all platforms VT-blocked".
+  Conclusion: in VT env, retry is necessary as a safety net; persistent calendar
+  already ensures cross-step safety.
+Status: REVERTED — retry restored
+
 [2026-07-01 01:00]
 Task: Platform contention table — breakthrough result
 

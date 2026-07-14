@@ -19,6 +19,7 @@ class L3Physics:
     throat_out_sec: float = 3.0
     approach_sec: float = 3.0
     corridor_headway_sec: float = 15.0
+    throat_headway_sec: float = 6.0
     replan_threshold_headway_mult: float = 4.0
     platform_min_gap_sec: float = 5.0
     train_speeds: Dict[str, TrainClassSpeed] = field(default_factory=dict)
@@ -26,9 +27,11 @@ class L3Physics:
     default_max_mps: float = 30.0
     corridor_distances_m: Dict[str, float] = field(default_factory=dict)
 
-    def get_speeds(self, train_class: str) -> TrainClassSpeed:
-        if train_class in self.train_speeds:
-            return self.train_speeds[train_class]
+    def get_speeds(self, priority: int) -> TrainClassSpeed:
+        """Look up speeds by train priority (1=Fuxing, 2=Hexie, 3=K)."""
+        key = str(priority)
+        if key in self.train_speeds:
+            return self.train_speeds[key]
         return TrainClassSpeed(self.default_cruise_mps, self.default_max_mps)
 
     @property
@@ -48,26 +51,44 @@ class L3CorridorState:
         self._last_entry[corridor_id] = entry_time
 
 @dataclass
+class L3ThroatState:
+    """Track throat occupancy per station+conflict_group."""
+    _last_exit: Dict[str, float] = field(default_factory=dict)
+    def earliest_exit(self, throat_id: str, headway: float) -> float:
+        return self._last_exit.get(throat_id, -float("inf")) + headway
+    def record_exit(self, throat_id: str, exit_time: float) -> None:
+        self._last_exit[throat_id] = exit_time
+
+@dataclass
 class L3TransitResult:
     train_id: str; from_station: str; to_station: str; corridor_id: str
     planned_total_sec: float; distance_m: float
     corridor_run_cruise_sec: float; corridor_run_fast_sec: float
     recovery_margin_sec: float
     headway_delay_sec: float = 0.0; recovery_used_sec: float = 0.0
+    throat_delay_sec: float = 0.0
     actual_transit_sec: float = 0.0; actual_arrival: float = 0.0
 
 class L3Simulator:
-    def __init__(self, physics: L3Physics, corridor_headways=None, corridor_distances=None):
+    def __init__(self, physics: L3Physics, corridor_headways=None,
+                 corridor_distances=None, throat_headways=None):
         self.p = physics
         self._corridors = L3CorridorState()
+        self._throats = L3ThroatState()
         self._headways = corridor_headways or {}
+        self._throat_hw = throat_headways or {}
         self._distances = corridor_distances or dict(physics.corridor_distances_m)
+
+    def throat_gap(self, throat_id: str, departure: float) -> float:
+        """Seconds until throat is free after *departure*."""
+        earliest = self._throats.earliest_exit(throat_id, self.p.throat_headway_sec)
+        return max(0.0, earliest - departure)
 
     def transit(self, train_id, from_station, to_station, corridor_id,
                 planned_total_sec, actual_departure, speed_choice=SpeedMode.CRUISE,
-                train_class="G"):
+                throat_conflict_group=None, priority=2):
         p = self.p
-        speeds = p.get_speeds(train_class)
+        speeds = p.get_speeds(priority)
         distance = self._distances.get(corridor_id, 0.0)
         if distance > 0:
             cruise = distance / speeds.cruise_mps
@@ -88,19 +109,35 @@ class L3Simulator:
             run = slow
         else:
             run = cruise
-        corridor_enter = actual_departure + p.throat_out_sec
+
+        # Throat headway check (before corridor entry)
+        throat_exit = actual_departure + p.throat_out_sec
+        if throat_conflict_group:
+            throat_id = f"{from_station}/{throat_conflict_group}"
+            earliest_throat = self._throats.earliest_exit(throat_id, self.p.throat_headway_sec)
+            if throat_exit < earliest_throat:
+                result.throat_delay_sec = earliest_throat - throat_exit
+                throat_exit = earliest_throat
+
+        corridor_enter = throat_exit  # throat-out feeds into corridor entry
         hw = self._headways.get(corridor_id, p.corridor_headway_sec)
         earliest = self._corridors.earliest_entry(corridor_id, hw)
         if corridor_enter < earliest:
             result.headway_delay_sec = earliest - corridor_enter
             corridor_enter = earliest
-        result.actual_transit_sec = (p.throat_out_sec + p.approach_sec +
-            result.headway_delay_sec + run + p.throat_in_sec)
+        result.actual_transit_sec = (p.throat_out_sec + result.throat_delay_sec +
+            p.approach_sec + result.headway_delay_sec + run + p.throat_in_sec)
         result.actual_arrival = actual_departure + result.actual_transit_sec
+
+        # Record throat exit and corridor entry
+        if throat_conflict_group:
+            self._throats.record_exit(throat_id, throat_exit)
         self._corridors.record_entry(corridor_id, corridor_enter)
         return result
 
-    def reset(self): self._corridors = L3CorridorState()
+    def reset(self):
+        self._corridors = L3CorridorState()
+        self._throats = L3ThroatState()
 
 def _parse_train_speeds(raw):
     result = {}
@@ -139,7 +176,7 @@ def compute_corridor_headway(trains, physics):
     return hw
 
 def compute_corridor_distances(trains, physics):
-    speeds = physics.get_speeds("G")
+    speeds = physics.get_speeds(2)  # priority 2 (Hexie) as reference
     overhead = physics.corridor_overhead_sec
     mt = {}
     for tid, t in trains.items():
