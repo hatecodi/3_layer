@@ -2198,3 +2198,17 @@ Evidence-based params (sources in plan_corridor_incident_scenario.md):
   speed_factor 0.4 (120km/h = 0.4 x 300 cruise) [HARD DATA], range [0.15,0.4];
   safety_factor 1.5 on moving_block_safety_m (wet-rail braking) [ESTIMATED].
 Then re-train + verify (protocol) + 20/25-train scalability arm.
+
+[2026-08-08 22:40]
+Task: 3-seed convergence verification (15t, team reward) — PASSED
+
+train_l3_convergence.py, 3 seeds x 2500ep, slope-criterion plateau check:
+  seed0: plateau(ontime/dep)=True/True, final 75.8%/18.9s
+  seed1: True/True, 77.2%/18.2s
+  seed2: True/True, 77.0%/18.3s
+  -> all seeds pass plateau; final variance small (ontime 76.7±0.7%, dep 18.5±0.4s)
+  => L3 training is converged and stable under the current disturbance.
+Figure: output/figures/l3v3_conv_15t_ms.png; checkpoints: output/l3v3_five_station_15t_seed{0,1,2}.pt
+This is the standard convergence evidence for the CURRENT (origin-bunching)
+scenario, where learned ~= SA. Tomorrow: corridor speed-restriction incident.
+HANDOFF.md rewritten with today's state + tomorrow's plan.
