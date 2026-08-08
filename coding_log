@@ -1905,3 +1905,53 @@ Task: Parameter tuning plan for Phase C joint training
   5. Write up: architecture diagram, training curves, ablation table
   4. 53s long dwell at C creates sustained platform contention that L2+L3 handle
   5. Strong scalability argument for paper: hierarchical MAPPO degrades gracefully
+
+[2026-08-08 12:20]
+Task: L3 training-signal + throat-delay fixes (A1+A2)
+
+Files:
+  src/env/five_station_env.py — L3Transition done=False→True; track _throat_delays, record in _advance_trains, pass to compute_layered_rewards, clear per step
+  src/env/reward.py — compute_layered_rewards(+throat_delays param); -0.02*throat_delay*prio_weight local term
+
+Rationale: L3 Worker makes one independent speed decision per corridor leg; the
+next leg is separated by an L2 station decision, so legs are NOT a Markov chain
+under the L3 policy. done=True collapses GAE to immediate-reward advantage,
+removing cross-train bootstrap contamination (previously hidden by buffer-size
+tuning). Throat delays (C-station shared out-throat 6s) were invisible to L2's
+dep_delay reward (which uses granted W_out[0]); surfacing them lets L2 learn to
+avoid too-close same-throat grants.
+
+Status: DONE. Smoke: heuristic episode runs 134 steps to truncation, no crash.
+
+[2026-08-08 13:10]
+Task: A3 L3 v2 block-section physics + calibration; A4 tests
+
+Files:
+  configs/five_station/l3_physics.yaml — corridor_sections (8 corridors × 4 block
+    sections), block_margin_sec=6, replan_max_headway_delay_sec=120
+  src/control/l3_sim.py — L3Section/L3SectionOccupancy; L3CorridorState
+    earliest_block_entry (fixed-block headway) + record_occupancy; transit()
+    block-section branch (per-section speeds, min with section.limit_mps);
+    speed_info/corridor_length/max_corridor_length/next_entry_earliest/
+    estimate_headway_gap; calibrate_corridor_sections (scale sections so CRUISE
+    reproduces reference P2 transit); _train_route fixes compute_corridor_headway/
+    distances/_reference_transit (were walking planned.keys(), inventing fake
+    legs via placeholder stations e.g. G1487 E/D zeros)
+  src/env/five_station_env.py — build L3Simulator with calibrated sections;
+    L3 obs honest: arrival_slack_ratio real, nxt_free from persistent_cal
+    (_free_platforms_at), n_sections in obs; guard threshold fixed 120s
+  src/env/observation_builder.py — build_l3_observation(n_sections), reserved
+    slot now = n_sections/8
+  tests/test_l3_physics.py — NEW: calibration reproduces reference transit;
+    fixed-block following respects margin; FAST-behind-CRUISE held more;
+    reference not polluted by placeholder legs; no-sections backward compat
+
+Rationale: S2 (L3 transit != timetable -> systematic early arrival), S4 (no
+block sections; dead 120s headway config), S5 (fake obs values) fixed by A3.
+Guard threshold moved from headway*4 (60s) to fixed 120s because block stacking
+of a 4-train bunch (~68s) previously triggered a hold->replan loop (seed0: 126
+guards). Verified: 21/21 pytest green; heuristic 10 seeds -> 8 success/2 truncated/
+0 deadlock/0 guard; L2+L3 worker smoke (obs 10-dim, done=True, PPO update ok).
+
+Status: DONE (A-line). Workstream B (L2 rolling rescheduling) deferred until L3
+training is stable, per user.

@@ -43,7 +43,11 @@ l3_physics:
 
   # Corridor headway
   corridor_headway_sec: 15.0
-  replan_threshold_headway_mult: 4   # hold/replan if headway delay > 4× headway
+  replan_threshold_headway_mult: 4   # legacy — see replan_max_headway_delay_sec
+  # L3 hard guard: hold/replan if headway delay exceeds this absolute threshold.
+  # Fixed, so block-section stacking of a few bunched trains does not loop
+  # through hold->replan (the 4-train bunch stacks ~68s, under this).
+  replan_max_headway_delay_sec: 120.0
 
   # Platform
   platform_min_gap_sec: 5.0
@@ -58,3 +62,54 @@ l3_physics:
     D_to_C: 13640
     D_to_E: 10240
     E_to_D: 10240
+
+  # Fixed-block signaling: minimum gap after the front train clears a section
+  # before the next train may enter it.
+  block_margin_sec: 6.0
+
+  # Corridor decomposed into configurable block sections.  Each section may
+  # carry an optional speed restriction (limit_mps) — together they form the
+  # piecewise running "speed curve".  Lengths are compressed (real_m/25).
+  # Calibration rescales them so CRUISE at the reference priority reproduces
+  # the timetable reference transit (see l3_sim.calibrate_corridor_sections).
+  corridor_sections:
+    A_to_B:
+      - {length_m: 1400}
+      - {length_m: 1400}
+      - {length_m: 1400}
+      - {length_m: 1400}
+    B_to_A:
+      - {length_m: 1400}
+      - {length_m: 1400}
+      - {length_m: 1400}
+      - {length_m: 1400}
+    B_to_C:
+      - {length_m: 1010}
+      - {length_m: 1010}
+      - {length_m: 1010}
+      - {length_m: 1010}
+    C_to_B:
+      - {length_m: 1010}
+      - {length_m: 1010}
+      - {length_m: 1010}
+      - {length_m: 1010}
+    C_to_D:
+      - {length_m: 3410}
+      - {length_m: 3410}
+      - {length_m: 3410}
+      - {length_m: 3410}
+    D_to_C:
+      - {length_m: 3410}
+      - {length_m: 3410}
+      - {length_m: 3410}
+      - {length_m: 3410}
+    D_to_E:
+      - {length_m: 2560}
+      - {length_m: 2560}
+      - {length_m: 2560}
+      - {length_m: 2560}
+    E_to_D:
+      - {length_m: 2560}
+      - {length_m: 2560}
+      - {length_m: 2560}
+      - {length_m: 2560}

@@ -292,6 +292,7 @@ def build_l3_observation(
     next_station_platforms_total: int,
     arrival_slack_ratio: float,
     throat_gap: float = 0.0,
+    n_sections: int = 0,
 ) -> List[float]:
     """Build a 10-dim observation for the L3 Worker.
 
@@ -307,5 +308,5 @@ def build_l3_observation(
         arrival_slack_ratio,                                   # urgency at next station
         next_station_platforms_free / max(next_station_platforms_total, 1),
         min(throat_gap / 30.0, 1.0),                           # throat headway wait
-        0.0,  # reserved
+        min(n_sections / 8.0, 1.0),                            # block-section count (headway granularity)
     ]

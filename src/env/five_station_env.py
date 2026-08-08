@@ -33,7 +33,14 @@ from ..control.action_mask import (
     is_legal_action,
 )
 from ..control.dispatch_bounds import DispatchBounds
-from ..control.l3_sim import L3Simulator, SpeedMode, compute_corridor_distances, compute_corridor_headway, load_l3_physics
+from ..control.l3_sim import (
+    L3Simulator,
+    SpeedMode,
+    calibrate_corridor_sections,
+    compute_corridor_distances,
+    compute_corridor_headway,
+    load_l3_physics,
+)
 from ..control.resource_manager import (
     GrantResult,
     ResourceCalendar,
@@ -151,15 +158,24 @@ class FiveStationEnv(BaseRailwayEnv):
                         p1_id = cfg.stations[st].platforms[0].id
                         train.candidate_platforms[st] = [p for p in plats if p != p1_id]
 
-        # L3 physical simulator — per-corridor headway derived from timetable
+        # L3 physical simulator — per-corridor headway derived from timetable.
+        # If config defines block sections, use calibrated block-section physics
+        # (fixed-block headway + per-section speed profile); else fall back to
+        # single-segment distance-based transit.
         l3_physics = load_l3_physics(cfg.project_root / "configs" / "five_station")
         corridor_hw = compute_corridor_headway(cfg.trains, l3_physics)
-        if l3_physics.corridor_distances_m:
+        sections = None
+        if l3_physics.corridor_sections:
+            sections = calibrate_corridor_sections(cfg.trains, l3_physics)
+            corridor_dist = {}
+        elif l3_physics.corridor_distances_m:
             corridor_dist = dict(l3_physics.corridor_distances_m)
         else:
             corridor_dist = compute_corridor_distances(cfg.trains, l3_physics)
-        self._l3_sim = L3Simulator(l3_physics, corridor_hw, corridor_dist)
+        self._l3_sim = L3Simulator(l3_physics, corridor_hw, corridor_dist,
+                                   sections=sections)
         self._corridor_delays: Dict[str, float] = {}  # train_id -> headway delay
+        self._throat_delays: Dict[str, float] = {}    # train_id -> throat delay
         self._hard_guard_violations = 0
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
@@ -201,6 +217,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._completed_ids = []
         self._held_steps = {}
         self._corridor_delays = {}
+        self._throat_delays = {}
         self._hard_guard_violations = 0
         self._l3_sim.reset()
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
@@ -311,6 +328,7 @@ class FiveStationEnv(BaseRailwayEnv):
             retried_train_ids=retried,
             lambda_team=lambda_team,
             corridor_delays=dict(self._corridor_delays),
+            throat_delays=dict(self._throat_delays),
         )
         metrics = compute_metrics(
             self.cfg, effective_grants, held,
@@ -364,6 +382,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._last_grants = grants
         self._last_held = held
         self._corridor_delays.clear()
+        self._throat_delays.clear()
 
         terminated = self._episode_status in (EpisodeStatus.SUCCESS, EpisodeStatus.DEADLOCK)
         truncated = self._episode_status == EpisodeStatus.TRUNCATED
@@ -738,6 +757,30 @@ class FiveStationEnv(BaseRailwayEnv):
                 f"{station_id}/{g.platform}", g.train_id, g.W_plat[0], g.W_plat[1])
         return grants
 
+    def _free_platforms_at(self, station_id: str, est_arrival: float,
+                           dwell_est: float = 20.0) -> int:
+        """Count platforms at a station that are free around an arrival window,
+        based on the persistent calendar and visitor bookings.  Honest L3 obs
+        input (replaces the previous max(total-1,1) guess)."""
+        station = self.cfg.stations.get(station_id)
+        if station is None:
+            return 0
+        cal = ResourceCalendar(min_gap_sec=5.0)
+        for rid, ws in self._persistent_cal._windows.items():
+            if rid.startswith(f"{station_id}/"):
+                for w in ws:
+                    cal.book(rid, w.train_id, w.start, w.end)
+        if self._visitor_enabled:
+            for rid, (s, e) in self._visitor_windows.items():
+                if rid.startswith(f"{station_id}/"):
+                    cal.book(rid, "PARKED", s, e)
+        free = 0
+        for plat in station.platforms:
+            rid = f"{station_id}/{plat.id}"
+            if cal.is_free(rid, est_arrival, est_arrival + dwell_est):
+                free += 1
+        return free
+
     def _advance_trains(self, grants: List[GrantResult]) -> int:
         """Move granted trains to their next station, setting arrival time.
 
@@ -769,7 +812,7 @@ class FiveStationEnv(BaseRailwayEnv):
 
             planned_transit = max(train_plan[nxt].arr - train_plan[cur].dep, 1.0)
             p = self._l3_sim.p
-            distance = self._l3_sim._distances.get(corridor_key, 0.0)
+            distance = self._l3_sim.corridor_length(corridor_key)
 
             # L3 Worker: sample speed_choice or default to CRUISE
             train_prio = self.cfg.trains[g.train_id].priority
@@ -792,10 +835,10 @@ class FiveStationEnv(BaseRailwayEnv):
                 from ..env.reward import compute_l3_reward
                 cumulative_delay = max(0.0, g.W_out[0] - train_plan[cur].dep)
                 planned_arrival = train_plan[nxt].arr
-                headway_gap = max(0.0,
-                    self._l3_sim._corridors.earliest_entry(corridor_key, self._l3_sim._headways.get(corridor_key, p.corridor_headway_sec))
-                    - (g.W_out[0] + p.throat_out_sec))
-                recovery_margin = max(distance / speeds.cruise_mps - distance / speeds.max_mps, 0.0)
+                estimated_arrival = g.W_out[0] + planned_transit
+                headway_gap = self._l3_sim.estimate_headway_gap(
+                    corridor_key, g.W_out[0], train_prio)
+                _dist, recovery_margin = self._l3_sim.speed_info(corridor_key, train_prio)
 
                 # Throat gap for L3 observation
                 throat_id = f"{cur}/{throat_group}" if throat_group else None
@@ -803,20 +846,22 @@ class FiveStationEnv(BaseRailwayEnv):
 
                 nxt_station = self.cfg.stations.get(nxt)
                 nxt_total = len(nxt_station.platforms) if nxt_station else 4
-                nxt_free = max(nxt_total - 1, 1)
+                nxt_free = self._free_platforms_at(nxt, estimated_arrival)
+                n_sections = len(self._l3_sim._sections.get(corridor_key, []))
                 l3_obs_vec = build_l3_observation(
                     corridor_id=corridor_key, headway_gap=headway_gap,
                     recovery_margin=recovery_margin, cumulative_delay=cumulative_delay,
                     distance_m=distance,
-                    max_distance_m=max(self._l3_sim._distances.values()) if self._l3_sim._distances else 5000.0,
+                    max_distance_m=self._l3_sim.max_corridor_length(),
                     planned_arrival=planned_arrival,
-                    estimated_arrival=g.W_out[0] + planned_transit,
+                    estimated_arrival=estimated_arrival,
                     planned_transit=planned_transit,
                     speed_ratio=speeds.cruise_mps / max(speeds.max_mps, 1.0),
                     next_station_platforms_free=nxt_free,
                     next_station_platforms_total=nxt_total,
-                    arrival_slack_ratio=0.5,
-                    throat_gap=throat_gap)
+                    arrival_slack_ratio=max(0.0, planned_arrival - estimated_arrival) / max(planned_transit, 1.0),
+                    throat_gap=throat_gap,
+                    n_sections=n_sections)
                 l3_obs_t = torch.tensor(l3_obs_vec, dtype=torch.float32)
                 l3_action, l3_logprob, l3_value = self._l3_worker.select_action(l3_obs_t)
                 speed_choice = SpeedMode(l3_action)
@@ -831,10 +876,12 @@ class FiveStationEnv(BaseRailwayEnv):
             t_corridor_exit = l3_result.actual_arrival
             if l3_result.headway_delay_sec > 1e-6:
                 self._corridor_delays[g.train_id] = l3_result.headway_delay_sec
+            if l3_result.throat_delay_sec > 1e-6:
+                self._throat_delays[g.train_id] = l3_result.throat_delay_sec
 
-            # L3 hard guard
-            corridor_hw = self._l3_sim._headways.get(corridor_key, p.corridor_headway_sec)
-            replan_limit = corridor_hw * p.replan_threshold_headway_mult
+            # L3 hard guard: hold for replan only when headway delay is excessive
+            # (fixed threshold, independent of per-corridor timetable-derived headway)
+            replan_limit = p.replan_max_headway_delay_sec
             if l3_result.headway_delay_sec > replan_limit:
                 self._hard_guard_violations += 1
                 hard_guard_held.append(g.train_id)
@@ -850,9 +897,15 @@ class FiveStationEnv(BaseRailwayEnv):
                     l3_result.headway_delay_sec, arrival_dev,
                     l3_result.recovery_used_sec, l3_result.throat_delay_sec)
                 from ..marl.l3_worker import L3Transition
+                # done=True: the L3 Worker makes one independent speed decision
+                # per corridor leg. The next leg is separated by an L2 station
+                # decision, so legs are NOT a Markov chain under the L3 policy.
+                # Treating each transit as its own episode makes GAE collapse to
+                # immediate-reward advantage instead of bootstrapping across
+                # unrelated trains' transitions.
                 self._l3_worker.buffer.add(L3Transition(
                     obs=l3_obs_t, action=l3_action, logprob=l3_logprob,
-                    reward=l3_reward, value=l3_value, done=False))
+                    reward=l3_reward, value=l3_value, done=True))
 
             journey.advance()
             journey.set_arrival(t_corridor_exit)

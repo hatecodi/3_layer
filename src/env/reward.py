@@ -125,6 +125,7 @@ def compute_layered_rewards(
     visitor_windows: Optional[Dict[str, Tuple[float, float]]] = None,
     retried_train_ids: Optional[Iterable[str]] = None,
     corridor_delays: Optional[Dict[str, float]] = None,
+    throat_delays: Optional[Dict[str, float]] = None,
 ) -> Dict[str, RewardBreakdown]:
     layer1 = DispatchBounds(cfg)
     held = set(held_train_ids)
@@ -133,6 +134,7 @@ def compute_layered_rewards(
     retried = set(retried_train_ids or [])
     visitor_windows = visitor_windows or {}
     corridor_delays = corridor_delays or {}
+    throat_delays = throat_delays or {}
     metrics = compute_metrics(
         cfg,
         grants,
@@ -181,6 +183,12 @@ def compute_layered_rewards(
             hw_delay = corridor_delays.get(train_id, 0.0)
             if hw_delay > 1e-6:
                 local += -0.02 * hw_delay * prio_weight
+            # Throat delay penalty: shared out-throat (e.g. C station) serialisation
+            # is invisible to dep_delay (which uses the granted W_out[0]); surfacing
+            # it lets L2 learn to avoid granting same-throat departures too close.
+            thr_delay = throat_delays.get(train_id, 0.0)
+            if thr_delay > 1e-6:
+                local += -0.02 * thr_delay * prio_weight
         total = local + lambda_team * global_reward
         rewards[train_id] = RewardBreakdown(local, global_reward, total)
     return rewards
