@@ -180,6 +180,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._throat_delays: Dict[str, float] = {}    # train_id -> throat delay
         self._hard_guard_violations = 0
         self._l3_action_counts: Dict[int, int] = {}   # per-section speed choices (episode)
+        self._l3_ep_reward: float = 0.0               # cumulative L3 worker reward this episode
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
         # State
@@ -223,6 +224,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._throat_delays = {}
         self._hard_guard_violations = 0
         self._l3_action_counts = {}
+        self._l3_ep_reward = 0.0
         self._l3_sim.reset()
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
@@ -927,6 +929,7 @@ class FiveStationEnv(BaseRailwayEnv):
                         reward_k = compute_l3_terminal_reward(
                             arrival_dev, platform_free,
                             global_delay_sec=self._system_delay())
+                        self._l3_ep_reward += reward_k
                     # done=False between sections (sections ARE a Markov chain under
                     # the worker's policy); done=True only at the corridor end.
                     self._l3_worker.buffer.add(L3Transition(

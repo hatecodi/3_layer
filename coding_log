@@ -2083,3 +2083,30 @@ Next (user plan): commit this milestone, then ADD TRAINS to create congestion �
   coordination value should let learned beat greedy-SA; also the scalability arm.
 Checkpoints saved (gitignored): output/l3v3_global_l3_coef006_ent05.pt (best),
   output/l3v3_convergence_coef006_ent05.log (convergence curve).
+
+[2026-08-08 16:50]
+Task: L3 v3.6 — reward-noise diagnostics + paper plot + per-episode reward accumulator
+
+Files:
+  src/env/reward.py — global_coef default 0.006 -> 0.002 (weaker team term = less
+    reward noise; the global system_delay is the main source of reward oscillation).
+  src/env/five_station_env.py — _l3_ep_reward: per-episode cumulative L3 worker
+    reward (reset each reset, accumulated in _advance_trains) for convergence logging.
+  scripts/plot_l3v3_convergence.py — NEW paper-quality convergence plot: 4 panels
+    (L3 reward, total reward, ontime%, mean_dep), dense per-seed scatter + rolling-
+    mean smoothing + mean±1std multi-seed shaded band, serif, 300 dpi, ontime ylim
+    60-80 (was 0-100, flattened 75-77% into a horizontal line).
+
+Multi-seed convergence run (3 seeds x 2500ep, coef006+ent05, reward every 25ep):
+  cross-seed mean: L3 reward -31 -> -16 by ep500 then oscillates -16..-29 (bounded,
+  not diverging); ontime -> 77% plateau; mean_dep -> ~20s plateau; entropy stays
+  0.6-0.95 (held by entropy_coef=0.05 — NOT natural decay).
+
+Decisions (user discussion):
+  - ontime is capped by the injected bunched delay (60-160s at origin >> 15s
+    ontime threshold; L3 max recovery ~38s/trip) — not an L3 weakness. Use
+    mean_dep (19.1->14.7s) as the primary L3-vs-baseline metric, ontime auxiliary.
+  - Reward flattening is NOT pursued: eval converges + reward is bounded; the
+    noise is inherent to the global/team reward (needed for coordination).
+  - Proceed to ADD-TRAINS (scalability arm): congestion -> coordination value ->
+    learned may beat greedy-SA; also the paper's scalability claim.

@@ -256,7 +256,7 @@ def compute_l3_terminal_reward(arrival_deviation_sec: float, platform_free: bool
                                late_coef: float = 0.05,
                                early_coef: float = 0.05,
                                global_delay_sec: float = 0.0,
-                               global_coef: float = 0.006) -> float:
+                               global_coef: float = 0.002) -> float:
     """Terminal reward at corridor end.
 
     - ontime: +bonus
