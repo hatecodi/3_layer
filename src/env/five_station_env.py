@@ -127,6 +127,7 @@ class FiveStationEnv(BaseRailwayEnv):
         enable_initial_delay: bool = True,
         l3_worker: Optional[object] = None,  # L3WorkerTrainer or None for rule-based
         l3_sa: bool = False,                 # SA per-transit baseline (eval only)
+        l3_team_lambda: float = 0.3,         # L3 episode-level team-reward weight
     ):
         self.cfg = cfg
         self.layer1 = DispatchBounds(cfg)
@@ -136,6 +137,12 @@ class FiveStationEnv(BaseRailwayEnv):
         self._enable_initial_delay = enable_initial_delay
         self._l3_worker = l3_worker  # None = rule-based cruise
         self._l3_sa = l3_sa
+        self._l3_team_lambda = l3_team_lambda
+        # Running episode system stats (for the L3 team reward): cumulative
+        # over the episode, reset each reset().
+        self._l3_ep_grants = 0
+        self._l3_ep_ontime = 0
+        self._l3_ep_delay = 0.0
         # Visitor trains: config-driven, can be disabled per experiment.
         self._visitor_config = cfg.time_generation.get("visitors", {})
         self._visitor_enabled = self._visitor_config.get("enabled", True) and enable_vt
@@ -225,6 +232,9 @@ class FiveStationEnv(BaseRailwayEnv):
         self._hard_guard_violations = 0
         self._l3_action_counts = {}
         self._l3_ep_reward = 0.0
+        self._l3_ep_grants = 0
+        self._l3_ep_ontime = 0
+        self._l3_ep_delay = 0.0
         self._l3_sim.reset()
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
@@ -343,6 +353,10 @@ class FiveStationEnv(BaseRailwayEnv):
             hard_bound_infeasible_count=infeasible + self._hard_guard_violations,
             station_map=grant_station,
         )
+        # Accumulate running episode system stats (L3 team reward signal)
+        self._l3_ep_grants += metrics.n_granted
+        self._l3_ep_ontime += metrics.n_ontime_dep
+        self._l3_ep_delay += metrics.total_dep_delay
 
         # 8. Advance time (single unified block)
         self._step_idx += 1
@@ -881,7 +895,7 @@ class FiveStationEnv(BaseRailwayEnv):
                 # reward term); the worker optimises terminal punctuality + a
                 # global team term (no energy objective).
                 from ..env.observation_builder import build_l3_section_observation
-                from ..env.reward import compute_l3_terminal_reward
+                from ..env.reward import compute_l3_terminal_reward, compute_l3_team_reward
                 from ..marl.l3_worker import L3Transition
                 t = throat_exit
                 accumulated_wait = 0.0
@@ -932,9 +946,13 @@ class FiveStationEnv(BaseRailwayEnv):
                     if done:
                         arrival_dev = t + p.approach_sec + p.throat_in_sec - planned_arrival
                         platform_free = self._free_platforms_at(nxt, t) > 0
-                        reward_k = compute_l3_terminal_reward(
-                            arrival_dev, platform_free,
-                            global_delay_sec=self._system_delay())
+                        # local punctuality/delay + episode-level team reward
+                        reward_k = compute_l3_terminal_reward(arrival_dev, platform_free)
+                        if self._l3_ep_grants > 0:
+                            running_ontime = self._l3_ep_ontime / self._l3_ep_grants
+                            running_dep = self._l3_ep_delay / self._l3_ep_grants
+                            reward_k += self._l3_team_lambda * compute_l3_team_reward(
+                                running_ontime, running_dep)
                         self._l3_ep_reward += reward_k
                     # done=False between sections (sections ARE a Markov chain under
                     # the worker's policy); done=True only at the corridor end.

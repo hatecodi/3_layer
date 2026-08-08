@@ -2155,3 +2155,46 @@ Eval learned-vs-SA at 15t (full hierarchical ckpt, same L2, 30ep):
   FAST recovers the very-late tail (lowers mean_dep but not ontime). The 0-CRUISE
   FAST/SLOW binary is a degenerate speed policy, not a calibrated curve — a real
   limitation to address (reward tuning) or accept with mean_dep as primary.
+
+[2026-08-08 22:01] — Session end (part 1 of corridor-incident workstream)
+Task: Standard convergence protocol + team reward + evidence-based incident params
+
+== This session's trajectory (L3 v3 -> verification protocol) ==
+- L3 v3: sequential per-section speed-curve learning (worker decides speed per
+  block section, moving-block headway hard). Collapsed to CRUISE originally;
+  fixed by smooth ontime reward + late_coef tuning + entropy schedule.
+- Team reward (episode-level, λ=0.3) added to L3 so the worker sees the SYSTEM
+  outcome (episode ontime_rate, mean_dep) -> coordination incentive. Still MAPPO
+  (PPO + centralised critic + team reward).
+- Safety fix: platform min_gap was violated for zero-length terminating-train
+  bookings; fixed by holding the booking for min_gap after departure
+  (w.end + min_gap > t_now). Full L1/L2 boundary audit: dwell_min 0, arr_min 0,
+  early_sched 0, throat safe (hard headway).
+- Training-log sampling fixed: rolling-window mean over 450 ep instead of single
+  sampled episodes (which hit only non-bunched seeds -> fake 2.3s/96%).
+
+== Key finding (protocol exposed) ==
+- At 15t, learned ~= SA on bunched episodes (coordination value small): the
+  origin-bunching disturbance (60-160s) is unrecoverable and swamps everything;
+  the worker's behavior is delay-driven (late->FAST), NOT congestion-coordinating
+  (still FAST 100% into congested next stations), even with the team reward.
+- Honest conclusion: the L3 speed-coordination lever has limited value under the
+  origin-bunching disturbance -> redesign the DISTURBANCE to make coordination
+  space larger.
+
+== Convergence protocol (standard, built this session) ==
+- scripts/train_l3_convergence.py: multi-seed (3) L3 training, logs entropy/L3
+  loss/reward + eval on a FIXED held-out seed set, slope-criterion plateau check.
+- scripts/plot_l3_conv_protocol.py: paper-quality convergence figure (mean±std).
+- scripts/analyze_l3_behavior.py: action-vs-state (delay, next_platforms_free,
+  headway_gap) to prove the policy is state-dependent / meaningful.
+- scripts/eval_protocol.py: held-out 30-seed eval, stratified by bunched/non-
+  bunched, full distribution (mean/p50/p90/p95/max, delay>60s), learned/SA/CRUISE.
+
+== Tomorrow's plan (part 2): corridor speed-restriction incident ==
+Redesign the disturbance so coordination matters: a random corridor gets a
+temporary speed limit (暴雨), trains form a platoon behind it and must re-disperse.
+Evidence-based params (sources in plan_corridor_incident_scenario.md):
+  speed_factor 0.4 (120km/h = 0.4 x 300 cruise) [HARD DATA], range [0.15,0.4];
+  safety_factor 1.5 on moving_block_safety_m (wet-rail braking) [ESTIMATED].
+Then re-train + verify (protocol) + 20/25-train scalability arm.

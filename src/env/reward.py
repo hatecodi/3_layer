@@ -251,7 +251,7 @@ def compute_l3_reward(
 # ---------------------------------------------------------------------------
 
 def compute_l3_terminal_reward(arrival_deviation_sec: float, platform_free: bool,
-                               ontime_threshold: float = 15.0,
+                               ontime_sigma: float = 10.0,
                                ontime_bonus: float = 2.0,
                                late_coef: float = 0.05,
                                early_coef: float = 0.05,
@@ -259,25 +259,37 @@ def compute_l3_terminal_reward(arrival_deviation_sec: float, platform_free: bool
                                global_coef: float = 0.002) -> float:
     """Terminal reward at corridor end.
 
-    - ontime: +bonus
-    - late: -late_coef * late seconds
-    - early: only penalised when the destination platform is NOT free yet
-      (arriving early = occupying a still-busy bottleneck platform); early with
-      a free platform is harmless.
-    - GLOBAL team term: -global_coef * system_delay (sum of all trains' current
-      cumulative delay).  Shared across workers, this lets the worker learn
-      cross-train coordination: a locally-suboptimal speed choice that reduces
-      overall system delay is rewarded.  This is the mechanism that lets the
-      learned policy beat a greedy per-transit optimizer (SA) on global metrics.
+    - SMOOTH ontime bonus: ontime_bonus * exp(-(dev/ontime_sigma)^2) — a Gaussian
+      around dev=0 gives a continuous gradient that pulls MARGINAL trains (the
+      5-15s boundary) back toward on-time, instead of a binary threshold that the
+      coarse FAST/SLOW modes could only overshoot.  Near-on-time trains are best
+      served by CRUISE (stays in the window), matching SA's behaviour.
+    - late: -late_coef * late seconds (dominates beyond ~sigma).
+    - early: only penalised when the destination platform is NOT free yet.
+    - GLOBAL team term: -global_coef * system_delay for cross-train coordination.
     """
-    r = 0.0
-    if abs(arrival_deviation_sec) <= ontime_threshold:
-        r += ontime_bonus
-    elif arrival_deviation_sec > 0:
+    r = ontime_bonus * math.exp(-(arrival_deviation_sec / ontime_sigma) ** 2)
+    if arrival_deviation_sec > 0:
         r -= late_coef * arrival_deviation_sec
-    else:
-        if not platform_free:
-            r -= early_coef * abs(arrival_deviation_sec)
+    elif not platform_free:
+        r -= early_coef * abs(arrival_deviation_sec)
     if global_delay_sec > 0:
         r -= global_coef * global_delay_sec
     return r
+
+
+def compute_l3_team_reward(episode_ontime_rate: float, episode_mean_dep: float,
+                           ontime_bonus: float = 2.0,
+                           delay_coef: float = 0.02) -> float:
+    """Episode-level team reward for L3 coordination.
+
+    Rewards the SYSTEM's running ontime rate and penalises the SYSTEM's mean
+    departure delay (cumulative episode averages — smooth, low-variance).  Shared
+    across workers via the env's running episode stats, it gives the learner an
+    incentive to coordinate (e.g. slow into a congested downstream station to
+    protect system punctuality / reduce system delay) rather than only optimising
+    its own arrival.  This is what lets the learned policy beat the greedy
+    per-transit SA baseline under congestion.  Still MAPPO: PPO + centralised
+    critic + a team reward, standard for cooperative MARL.
+    """
+    return ontime_bonus * episode_ontime_rate - delay_coef * episode_mean_dep
