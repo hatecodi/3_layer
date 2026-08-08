@@ -1,0 +1,118 @@
+# L3 physical parameters.
+# All times in simulation seconds (real_s / 25).
+# Distances: real_km * 1000 / 25 (same /25 compression as time).
+# Speeds: real m/s — NOT compressed (transit = dist/speed auto-scales).
+#
+# Sources:
+#   Distances — 沪昆高铁/宁杭高铁 运价里程 (Wikipedia)
+#     A→B 南昌西→鹰潭北: 140km → 5600m
+#     B→C 鹰潭北→上饶:   101km → 4040m
+#     C→D 上饶→杭州东:   341km → 13640m
+#     D→E 杭州东→南京南: 256km → 10240m
+#   G speeds — 沪昆高铁杭长段 350km/h 常态化 (人民日报 2025.06)
+#     Cruise 300km/h=83.3m/s, Max 350km/h=97.2m/s
+#   K speeds — 中国铁路列车速度等级 (百度百科)
+#     Max 120km/h=33.3m/s, no FAST mode (same as cruise)
+
+l3_physics:
+  # Station overhead (operational, not purely physical)
+  throat_in_sec: 3.0
+  throat_out_sec: 3.0
+  approach_sec: 3.0
+
+  # Speed by train priority (real m/s, NOT compressed)
+  # P1/Fuxing (复兴号): 350 cruise / 400 max — fastest, recovery margin ~7s
+  # P2/Hexie (和谐号): 300 cruise / 350 max
+  # P3/K (普速):      120 cruise / 120 max — no recovery margin
+  # Priority is already in L2 observation (prio_i/3.0), so L2 implicitly
+  # knows train speed without needing a new observation feature.
+  train_speeds:
+    "1":
+      cruise_mps: 97.22    # 350 km/h (复兴号)
+      max_mps: 111.11      # 400 km/h
+    "2":
+      cruise_mps: 83.33    # 300 km/h (和谐号)
+      max_mps: 97.22       # 350 km/h
+    "3":
+      cruise_mps: 33.33    # 120 km/h (普速)
+      max_mps: 33.33       # no recovery margin
+
+  # Default speeds (used when train class not found above)
+  default_cruise_mps: 25.0
+  default_max_mps: 30.0
+
+  # Corridor headway: absolute floor on the entry spacing.  Moving-block gives
+  # the real headway; this is only a safety lower bound so the gap never gets
+  # absurdly small at very high speeds.
+  corridor_headway_sec: 5.0
+  replan_threshold_headway_mult: 4   # legacy — see replan_max_headway_delay_sec
+  # L3 hard guard: hold/replan if headway delay exceeds this absolute threshold.
+  replan_max_headway_delay_sec: 120.0
+
+  # Platform
+  platform_min_gap_sec: 5.0
+
+  # Corridor distances (real_km * 1000 / 25, same compression as time)
+  corridor_distances_m:
+    A_to_B: 5600
+    B_to_A: 5600
+    B_to_C: 4040
+    C_to_B: 4040
+    C_to_D: 13640
+    D_to_C: 13640
+    D_to_E: 10240
+    E_to_D: 10240
+
+  # Moving-block signalling (ETCS L3 style): the following train keeps a
+  # continuous safety distance behind the front train's tail — it does NOT wait
+  # for whole-section clearance.  Sections (corridor_sections) are used only as
+  # SPEED ZONES (piecewise speed curve), not occupancy blocks.
+  moving_block_safety_m: 500.0    # compressed m — braking + safety distance
+  moving_block_margin_sec: 3.0    # communication/reaction delay
+
+  # Corridor decomposed into configurable speed zones.  Each zone may carry an
+  # optional speed restriction (limit_mps) — together they form the piecewise
+  # running "speed curve".  Lengths are compressed (real_m/25).  Calibration
+  # rescales them so CRUISE at the reference priority reproduces the timetable
+  # reference transit (see l3_sim.calibrate_corridor_sections).
+  corridor_sections:
+    A_to_B:
+      - {length_m: 1400}
+      - {length_m: 1400}
+      - {length_m: 1400}
+      - {length_m: 1400}
+    B_to_A:
+      - {length_m: 1400}
+      - {length_m: 1400}
+      - {length_m: 1400}
+      - {length_m: 1400}
+    B_to_C:
+      - {length_m: 1010}
+      - {length_m: 1010}
+      - {length_m: 1010}
+      - {length_m: 1010}
+    C_to_B:
+      - {length_m: 1010}
+      - {length_m: 1010}
+      - {length_m: 1010}
+      - {length_m: 1010}
+    C_to_D:
+      - {length_m: 3410}
+      - {length_m: 3410}
+      - {length_m: 3410}
+      - {length_m: 3410}
+    D_to_C:
+      - {length_m: 3410}
+      - {length_m: 3410}
+      - {length_m: 3410}
+      - {length_m: 3410}
+    D_to_E:
+      - {length_m: 2560}
+      - {length_m: 2560}
+      - {length_m: 2560}
+      - {length_m: 2560}
+    E_to_D:
+      - {length_m: 2560}
+      - {length_m: 2560}
+      - {length_m: 2560}
+      - {length_m: 2560}

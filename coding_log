@@ -2110,3 +2110,29 @@ Decisions (user discussion):
     noise is inherent to the global/team reward (needed for coordination).
   - Proceed to ADD-TRAINS (scalability arm): congestion -> coordination value ->
     learned may beat greedy-SA; also the paper's scalability claim.
+
+[2026-08-08 17:40]
+Task: FIX platform min_gap overlap bug + full L1/L2 hard-boundary audit
+
+Bug (real, pre-existing): platform min_gap (5s) violated 1-9x per 20 ep across
+ALL modes (learned/SA/CRUISE). Root cause: terminating trains get zero-length
+W_plat (e.g. [703,703]); their persistent_cal booking (end=703) was filtered by
+`w.end > t_now` as t_now passed 703, so a following train entering 706 didn't see
+it -> min_gap not enforced (e.g. G1380[703,703] vs G7629[706,711] gap=3s).
+
+Fix (five_station_env.py): persistent_cal expiry filters changed to
+`w.end + min_gap > t_now` in _build_requests (station_cal seeding) and
+_resolve_requests (parked_windows). Platform is now held for min_gap after the
+train leaves, including zero-length windows.
+
+Audit (15t, corrected station derivation from platform prefix — the earlier
+`current_station` after _advance_trains was the NEXT station, invalidating
+station-based checks):
+  platform_overlap: 0 (learned/SA/CRUISE) after fix
+  dwell_min:        0 violations (earlier 165 were audit artifacts from wrong station)
+  origin arr_min:   0 violations
+  early scheduling: 0
+  throat:           no real overlaps — 5-6s gaps on shared C groups absorbed as
+                    0-1s throat_delay by the L3 hard throat headway (not overlaps)
+Checkers: output/audit_15t_boundaries.py, output/check_throat_15t.py,
+          output/check_platform_overlap.py

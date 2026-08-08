@@ -581,10 +581,14 @@ class FiveStationEnv(BaseRailwayEnv):
             station_cal = ResourceCalendar(min_gap_sec=5.0)
             # Seed with cross-step persistent bookings (skip self)
             pending_set = set(station_trains)
+            # Hold each platform booking for min_gap AFTER the train leaves, so a
+            # following train can't enter within the safety gap even when the
+            # occupying train's window is zero-length / already in the past.
+            cal_gap = self._persistent_cal._min_gap
             for rid, windows in self._persistent_cal._windows.items():
                 if rid.startswith(f"{station_id}/"):
                     for w in windows:
-                        if w.end > self._t_now and w.train_id not in pending_set:
+                        if w.end + cal_gap > self._t_now and w.train_id not in pending_set:
                             station_cal.book(rid, w.train_id, w.start, w.end)
 
             for train_id in station_trains:
@@ -728,11 +732,13 @@ class FiveStationEnv(BaseRailwayEnv):
 
     def _resolve_requests(self, requests: List[WindowRequest]) -> List[GrantResult]:
         grants: List[GrantResult] = []
-        # Build parked windows from persistent calendar
+        # Build parked windows from persistent calendar. Hold each platform for
+        # min_gap after the train leaves (same fix as _build_requests).
         parked: Dict[str, Tuple[float, float]] = {}
+        cal_gap = self._persistent_cal._min_gap
         for rid, windows in self._persistent_cal._windows.items():
             for w in windows:
-                if w.end > self._t_now:
+                if w.end + cal_gap > self._t_now:
                     parked[rid] = (w.start, w.end)
         if self._visitor_enabled:
             for rid, (s, e) in self._visitor_windows.items():
