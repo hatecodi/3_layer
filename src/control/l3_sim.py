@@ -311,6 +311,22 @@ class L3Simulator:
         eff = min(v, lim) if lim else v
         return section.length_m / max(eff, 1e-6)
 
+    def section_progress(self, corridor_id: str, t: float, pos_k: float,
+                         section: L3Section, speed_mode: SpeedMode,
+                         priority: int) -> Tuple[float, float]:
+        """(wait, run) to traverse one section starting at position pos_k at
+        absolute time t.  Headway is a HARD moving-block boundary: the train
+        waits until the front occupant is a safety distance ahead of pos_k.
+        Used by both the learned worker loop and the SA baseline so the physics
+        stays in one place."""
+        front_at = self._corridors.front_time_at(
+            corridor_id, pos_k + self.p.moving_block_safety_m,
+            self._sec_bounds.get(corridor_id, []))
+        wait = 0.0 if front_at == float("inf") else max(
+            0.0, front_at + self.p.moving_block_margin_sec - t)
+        run = self.section_run_time(section, speed_mode, priority)
+        return wait, run
+
     def speed_info(self, corridor_id: str, priority: int) -> Tuple[float, float]:
         """Return (distance_m, recovery_margin_sec) for observations."""
         speeds = self.p.get_speeds(priority)

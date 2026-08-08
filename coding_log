@@ -2048,3 +2048,38 @@ Status: DONE (L3 v3 core). Committed as part of A-line followup.
 Next (user-approved): remove fuel from L3 reward + add global/team punctuality
 component (L3 sees global => cross-train coordination => beat greedy-SA); then
 SA per-transit baseline; then one-paper two-pillar (rescheduling + scalability).
+
+[2026-08-08 16:10]
+Task: L3 v3.5 — remove energy, global coordination reward, SA baseline, convergence tuning
+
+Files:
+  src/env/reward.py — removed compute_l3_section_reward/fuel (no energy objective);
+    compute_l3_terminal_reward adds global team term -global_coef*system_delay
+    (default 0.006) so the worker learns cross-train coordination.
+  src/env/five_station_env.py — per-section reward=0; terminal = local + global
+    (self._system_delay()); worker loop uses L3Simulator.section_progress for the
+    hard headway wait; new l3_sa=True mode runs the SA baseline per transit.
+  src/control/l3_sim.py — section_progress(corridor_id,t,pos_k,sec,mode,prio)
+    -> (wait,run): single source of the hard moving-block headway for worker+SA.
+  src/control/l3_sa.py — NEW: sa_optimize_profile (Metropolis over per-section
+    3-way modes, objective = worker's local terminal reward, headway hard).
+
+Convergence tuning (global team reward is noisy -> three experiments):
+  coef=0.001: uses FAST (non-degenerate) but oscillates (entropy 0.03-0.8),
+    ontime 71-77% / 20-24s — does NOT converge.
+  coef=0.003: CONVERGES (entropy->0, ontime stable 82.9%) but COLLAPSES to 100%
+    CRUISE — entropy too weak (0.01) -> premature argmax collapse.
+  coef=0.006 + L3 entropy_coef=0.05 (2500ep): CONVERGES AND non-degenerate
+    (entropy 0.5-1.1, C40/F43/S17, ontime bounded 74-81% / 15-18s). BEST.
+
+Final eval (30ep, delay, seed s+10000, MAPPO-L2 frozen):
+  learned-L3 (coef006+ent05): ontime=83.7% mean_dep=14.7s  (C308 F265 S147)
+  SA-L3 (greedy per-transit) : ontime=85.8% mean_dep=13.5s  (C529 F142 S49)
+  CRUISE L3                  : ontime=70.1% mean_dep=19.1s
+  => learned ~= SA > CRUISE (SA ahead ~1.2s). learned not yet > SA: sparse
+     11-train timetable leaves little congestion for coordination to pay off.
+
+Next (user plan): commit this milestone, then ADD TRAINS to create congestion —
+  coordination value should let learned beat greedy-SA; also the scalability arm.
+Checkpoints saved (gitignored): output/l3v3_global_l3_coef006_ent05.pt (best),
+  output/l3v3_convergence_coef006_ent05.log (convergence curve).

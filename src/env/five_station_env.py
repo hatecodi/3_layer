@@ -126,6 +126,7 @@ class FiveStationEnv(BaseRailwayEnv):
         enable_vt: bool = True,
         enable_initial_delay: bool = True,
         l3_worker: Optional[object] = None,  # L3WorkerTrainer or None for rule-based
+        l3_sa: bool = False,                 # SA per-transit baseline (eval only)
     ):
         self.cfg = cfg
         self.layer1 = DispatchBounds(cfg)
@@ -134,6 +135,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self.batch_window_sec = batch_window_sec
         self._enable_initial_delay = enable_initial_delay
         self._l3_worker = l3_worker  # None = rule-based cruise
+        self._l3_sa = l3_sa
         # Visitor trains: config-driven, can be disabled per experiment.
         self._visitor_config = cfg.time_generation.get("visitors", {})
         self._visitor_enabled = self._visitor_config.get("enabled", True) and enable_vt
@@ -784,6 +786,20 @@ class FiveStationEnv(BaseRailwayEnv):
                 free += 1
         return free
 
+    def _system_delay(self) -> float:
+        """Sum of all trains' current cumulative delay (live global signal for the
+        L3 team reward, so the worker learns cross-train coordination)."""
+        total = 0.0
+        for tid, j in self._journeys.items():
+            if j.is_done:
+                continue
+            train = self.cfg.trains[tid]
+            planned = train.planned.get(j.current_station)
+            if planned:
+                ref = planned.dep if j.current_idx == 0 else planned.arr
+                total += max(0.0, j.arrival_at_current - ref)
+        return total
+
     def _advance_trains(self, grants: List[GrantResult]) -> int:
         """Move granted trains to their next station, setting arrival time.
 
@@ -848,14 +864,16 @@ class FiveStationEnv(BaseRailwayEnv):
                 flat_mode = SpeedMode(flat_speeds[g.train_id])
 
             use_worker = self._l3_worker is not None and sections and distance > 0
+            use_sa = (not use_worker) and self._l3_sa and sections and distance > 0
             t_corridor_exit = None
 
             if use_worker:
                 # ---- L3 v3: sequential per-section speed-curve learning ----
                 # headway is a HARD moving-block boundary (enforced below, never a
-                # reward term); the worker optimises fuel + terminal punctuality.
+                # reward term); the worker optimises terminal punctuality + a
+                # global team term (no energy objective).
                 from ..env.observation_builder import build_l3_section_observation
-                from ..env.reward import compute_l3_section_reward, compute_l3_terminal_reward
+                from ..env.reward import compute_l3_terminal_reward
                 from ..marl.l3_worker import L3Transition
                 t = throat_exit
                 accumulated_wait = 0.0
@@ -870,14 +888,13 @@ class FiveStationEnv(BaseRailwayEnv):
                 last_action = 0
                 for k, sec in enumerate(sections):
                     pos_k = bounds[k] if k < len(bounds) else 0.0
-                    front_at = self._l3_sim._corridors.front_time_at(
-                        corridor_key, pos_k + p.moving_block_safety_m, bounds)
-                    gap_sec = 0.0 if front_at == float("inf") else max(
-                        0.0, front_at + p.moving_block_margin_sec - t)
+                    # HARD moving-block wait at this section (mode-independent)
+                    wait_k, _ = self._l3_sim.section_progress(
+                        corridor_key, t, pos_k, sec, SpeedMode.CRUISE, train_prio)
                     cum_delay = max(0.0, g.W_out[0] - train_plan[cur].dep) + accumulated_wait
                     nxt_free = self._free_platforms_at(nxt, t + planned_transit)
                     obs_k = build_l3_section_observation(
-                        headway_gap_sec=gap_sec,
+                        headway_gap_sec=wait_k,
                         accumulated_wait_sec=accumulated_wait,
                         cumulative_delay=cum_delay,
                         section_idx=k, n_sections=n_sections,
@@ -894,9 +911,6 @@ class FiveStationEnv(BaseRailwayEnv):
                     last_action = int(action_k)
                     self._l3_action_counts[last_action] = self._l3_action_counts.get(last_action, 0) + 1
 
-                    # HARD moving-block boundary: wait until the front is safe ahead
-                    wait_k = 0.0 if front_at == float("inf") else max(
-                        0.0, front_at + p.moving_block_margin_sec - t)
                     run_k = self._l3_sim.section_run_time(sec, SpeedMode(action_k), train_prio)
 
                     entry_times.append(t)
@@ -906,11 +920,13 @@ class FiveStationEnv(BaseRailwayEnv):
                     total_run += run_k
 
                     done = (k == n_sections - 1)
-                    reward_k = compute_l3_section_reward(SpeedMode(action_k), sec.length_m)
+                    reward_k = 0.0  # no per-section reward (no energy objective)
                     if done:
                         arrival_dev = t + p.approach_sec + p.throat_in_sec - planned_arrival
                         platform_free = self._free_platforms_at(nxt, t) > 0
-                        reward_k += compute_l3_terminal_reward(arrival_dev, platform_free)
+                        reward_k = compute_l3_terminal_reward(
+                            arrival_dev, platform_free,
+                            global_delay_sec=self._system_delay())
                     # done=False between sections (sections ARE a Markov chain under
                     # the worker's policy); done=True only at the corridor end.
                     self._l3_worker.buffer.add(L3Transition(
@@ -919,6 +935,35 @@ class FiveStationEnv(BaseRailwayEnv):
                 headway_delay = accumulated_wait
                 t_corridor_exit = t + p.approach_sec + p.throat_in_sec
                 self._l3_speed_choices[g.train_id] = last_action
+                self._l3_sim._corridors.record_occupancy_abs(
+                    corridor_key, g.train_id, entry_times, exit_times)
+            elif use_sa:
+                # ---- SA baseline: per-transit simulated annealing over the SAME
+                # per-section speed space, SAME local objective (own arrival
+                # deviation, headway hard). Greedy local upper bound for the eval.
+                from ..control.l3_sa import sa_optimize_profile
+                from ..env.reward import compute_l3_terminal_reward
+                planned_arrival = train_plan[nxt].arr
+                reward_fn = lambda dev, t: compute_l3_terminal_reward(
+                    dev, self._free_platforms_at(nxt, t) > 0)
+                modes, _ = sa_optimize_profile(
+                    self._l3_sim, corridor_key, throat_exit, train_prio,
+                    sections, bounds, planned_arrival, reward_fn)
+                t = throat_exit
+                accumulated_wait = 0.0
+                entry_times: List[float] = []
+                exit_times: List[float] = []
+                for k, sec in enumerate(sections):
+                    pos_k = bounds[k] if k < len(bounds) else 0.0
+                    wait_k, run_k = self._l3_sim.section_progress(
+                        corridor_key, t, pos_k, sec, SpeedMode(modes[k]), train_prio)
+                    entry_times.append(t)
+                    t += wait_k + run_k
+                    exit_times.append(t)
+                    accumulated_wait += wait_k
+                headway_delay = accumulated_wait
+                t_corridor_exit = t + p.approach_sec + p.throat_in_sec
+                self._l3_speed_choices[g.train_id] = modes[-1]
                 self._l3_sim._corridors.record_occupancy_abs(
                     corridor_key, g.train_id, entry_times, exit_times)
             else:
