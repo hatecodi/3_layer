@@ -14,7 +14,7 @@ import argparse
 import csv
 import json
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -127,6 +127,13 @@ def train_hierarchical(
     episode_metrics: List[Dict] = []
     total_ep = 0
     best_reward = -float("inf")
+    # Rolling window so reported metrics average over bunched + non-bunched
+    # episodes (single-episode sampling hit only non-bunched seeds and looked
+    # unrealistically on-time).
+    _WIN = max(50, sum(p["episodes"] for p in PHASES.values()) // 20)
+    win_reward = deque(maxlen=_WIN)
+    win_dep = deque(maxlen=_WIN)
+    win_ontime = deque(maxlen=_WIN)
 
     for phase_name, phase_cfg in PHASES.items():
         print(f"\n{'='*60}")
@@ -271,11 +278,17 @@ def train_hierarchical(
                 "l3_updates": l3_update_count,
             }
             episode_metrics.append(ep_summary)
+            win_reward.append(mean_r)
+            win_dep.append(ep_mean_dep)
+            win_ontime.append(ep_ontime)
 
-            if (total_ep + 1) % max(1, sum(p["episodes"] for p in PHASES.values()) // 20) == 0 or total_ep < 5:
+            # Report rolling-window MEAN (not a single sampled episode), so the
+            # logged delay/ontime reflect the mixed bunched + non-bunched mix.
+            if (total_ep + 1) % _WIN == 0 or total_ep < 5:
                 print(
-                    f"  ep {total_ep:>5} [{phase_name}] | reward={mean_r:>7.2f} | "
-                    f"dep_dly={ep_mean_dep:>6.1f}s | ontime={ep_ontime:.2f} | "
+                    f"  ep {total_ep:>5} [{phase_name}] | reward={sum(win_reward)/len(win_reward):>7.2f} | "
+                    f"dep_dly={sum(win_dep)/len(win_dep):>6.1f}s | "
+                    f"ontime={sum(win_ontime)/len(win_ontime):.2f} | "
                     f"l3_upd={l3_update_count:>2} | "
                     f"{info.get('episode_status', '?'):>12}"
                 )
@@ -350,7 +363,7 @@ def main():
     from src.env.five_station_env import FiveStationEnv
     from src.experiment.scenario_loader import load_scenario
 
-    cfg = load_scenario(scenario_name="five_station")
+    cfg = load_scenario(scenario_name=args.env)
     obs_dim = get_obs_dim(cfg)
 
     def env_factory(seed: int, l3_worker=None) -> FiveStationEnv:

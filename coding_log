@@ -2136,3 +2136,22 @@ station-based checks):
                     0-1s throat_delay by the L3 hard throat headway (not overlaps)
 Checkers: output/audit_15t_boundaries.py, output/check_throat_15t.py,
           output/check_platform_overlap.py
+
+[2026-08-08 18:20]
+Task: Fix training-log sampling (rolling window) + explain learned-vs-SA ontime
+
+run_train_hierarchical.py: reported single sampled episode every 450ep — sampled
+mostly NON-bunched seeds (3000-3019: only 6/20 bunched), showing dep_dly 2.3s /
+ontime 96% which is unrealistically good. Changed to rolling-window MEAN over the
+last 450 episodes (covers bunched + non-bunched), so logged metrics are
+representative. Verified: on bunched episodes the trained policy gets 15-37s /
+60-78%; the injected delay dominates (as the ontime-cap analysis predicted).
+
+Eval learned-vs-SA at 15t (full hierarchical ckpt, same L2, 30ep):
+  learned: mean_dep 17.7s, ontime 78.6%, L3=FAST271/SLOW779 (0 CRUISE)
+  SA:      mean_dep 19.1s, ontime 79.7%, L3=CRUISE731/FAST266/SLOW53
+  learned wins mean_dep (primary), loses ontime. Cause: learned's SLOW-heavy
+  (74%) pushes near-boundary (5-15s-late) trains over the 15s ontime line, while
+  FAST recovers the very-late tail (lowers mean_dep but not ontime). The 0-CRUISE
+  FAST/SLOW binary is a degenerate speed policy, not a calibrated curve — a real
+  limitation to address (reward tuning) or accept with mean_dep as primary.
