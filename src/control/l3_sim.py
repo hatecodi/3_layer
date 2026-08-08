@@ -72,6 +72,27 @@ class L3CorridorState:
     def earliest_entry(self, corridor_id: str, headway: float) -> float:
         return self._last_entry.get(corridor_id, -float("inf")) + headway
 
+    def front_time_at(self, corridor_id: str, x: float,
+                      sec_bounds: List[float]) -> float:
+        """Absolute time the front occupant reaches position x (linear interp).
+        +inf when the corridor is empty (no constraint)."""
+        occs = self._occupants.get(corridor_id, [])
+        if not occs or not sec_bounds:
+            return float("inf")
+        front = occs[-1]
+        total = sec_bounds[-1]
+        x = min(max(x, 0.0), total)
+        for k in range(len(sec_bounds) - 1):
+            a, b = sec_bounds[k], sec_bounds[k + 1]
+            if a <= x <= b:
+                span = b - a
+                if span <= 1e-9:
+                    return front.entry_times[k]
+                frac = (x - a) / span
+                return front.entry_times[k] + frac * (
+                    front.exit_times[k] - front.entry_times[k])
+        return front.exit_times[-1]
+
     def earliest_moving_entry(self, corridor_id: str, run_times: List[float],
                               sec_bounds: List[float], safety_m: float,
                               margin_sec: float) -> float:
@@ -86,22 +107,7 @@ class L3CorridorState:
         occs = self._occupants.get(corridor_id, [])
         if not occs or not sec_bounds:
             return -float("inf")
-        front = occs[-1]
         total = sec_bounds[-1]
-
-        def front_time_at(x: float) -> float:
-            """Absolute time the front reaches position x (linear interpolate)."""
-            x = min(max(x, 0.0), total)
-            for k in range(len(sec_bounds) - 1):
-                a, b = sec_bounds[k], sec_bounds[k + 1]
-                if a <= x <= b:
-                    span = b - a
-                    if span <= 1e-9:
-                        return front.entry_times[k]
-                    frac = (x - a) / span
-                    return front.entry_times[k] + frac * (
-                        front.exit_times[k] - front.entry_times[k])
-            return front.exit_times[-1]
 
         def our_time_to(pos: float) -> float:
             """Our run time (from corridor entry) to reach position pos."""
@@ -128,7 +134,9 @@ class L3CorridorState:
         earliest = -float("inf")
         for pos in positions:
             pos = min(max(pos, 0.0), total)
-            earliest = max(earliest, front_time_at(pos + safety_m) - our_time_to(pos))
+            earliest = max(earliest,
+                           self.front_time_at(corridor_id, pos + safety_m, sec_bounds)
+                           - our_time_to(pos))
         return earliest + margin_sec
 
     def record_occupancy(self, corridor_id: str, train_id: str,
@@ -142,6 +150,14 @@ class L3CorridorState:
             exits.append(cum)
         self._occupants.setdefault(corridor_id, []).append(
             L3SectionOccupancy(train_id, entries, exits))
+
+    def record_occupancy_abs(self, corridor_id: str, train_id: str,
+                             entry_times: List[float],
+                             exit_times: List[float]) -> None:
+        """Record per-section occupancy with explicit absolute entry/exit times
+        (used by the stepwise path where headway waits shift each section)."""
+        self._occupants.setdefault(corridor_id, []).append(
+            L3SectionOccupancy(train_id, list(entry_times), list(exit_times)))
 
     def record_entry(self, corridor_id: str, entry_time: float) -> None:
         self._last_entry[corridor_id] = entry_time
@@ -280,6 +296,20 @@ class L3Simulator:
             eff = min(v, lim) if lim else v
             times.append(s.length_m / max(eff, 1e-6))
         return times
+
+    def section_run_time(self, section: L3Section, speed_mode: SpeedMode,
+                         priority: int) -> float:
+        """Traverse time for one section at a speed mode (min with section limit)."""
+        speeds = self.p.get_speeds(priority)
+        if speed_mode == SpeedMode.FAST:
+            v = speeds.max_mps
+        elif speed_mode == SpeedMode.SLOW:
+            v = speeds.cruise_mps / 1.2
+        else:
+            v = speeds.cruise_mps
+        lim = section.limit_mps
+        eff = min(v, lim) if lim else v
+        return section.length_m / max(eff, 1e-6)
 
     def speed_info(self, corridor_id: str, priority: int) -> Tuple[float, float]:
         """Return (distance_m, recovery_margin_sec) for observations."""

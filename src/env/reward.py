@@ -244,3 +244,50 @@ def compute_l3_reward(
         + 0.01 * effective_recovery
         - fuel_penalty
     )
+
+
+# ---------------------------------------------------------------------------
+# L3 v3 sequential per-section reward (headway is a HARD boundary, not a reward)
+# ---------------------------------------------------------------------------
+
+# fuel per metre by speed mode (CRUISE=0, FAST=1, SLOW=2); FAST costs more, SLOW less
+_L3_FUEL_FACTOR = {0: 1.0, 1: 1.6, 2: 0.7}
+
+
+def compute_l3_section_reward(speed_mode, section_len_m: float,
+                              fuel_coef: float = 5e-6) -> float:
+    """Fuel cost for one section at a speed mode.
+
+    Headway is a hard boundary enforced by the simulator (never a reward term):
+    the cost of catching up already shows up in the terminal arrival deviation,
+    so the per-section reward is fuel only.  This lets the worker optimise
+    punctuality/fuel in a world where safety is always satisfied.
+    """
+    factor = _L3_FUEL_FACTOR.get(int(speed_mode), 1.0)
+    return -fuel_coef * factor * max(section_len_m, 0.0)
+
+
+def compute_l3_terminal_reward(arrival_deviation_sec: float, platform_free: bool,
+                               ontime_threshold: float = 15.0,
+                               ontime_bonus: float = 2.0,
+                               late_coef: float = 0.05,
+                               early_coef: float = 0.05) -> float:
+    """Terminal reward at corridor end.
+
+    - ontime: +bonus
+    - late: -late_coef * late seconds
+    - early: only penalised when the destination platform is NOT free yet
+      (arriving early = occupying a still-busy bottleneck platform); early with
+      a free platform is harmless.
+    This makes corridor speed timing matter for the downstream throat/platform
+    bottleneck alignment.
+    """
+    r = 0.0
+    if abs(arrival_deviation_sec) <= ontime_threshold:
+        r += ontime_bonus
+    elif arrival_deviation_sec > 0:
+        r -= late_coef * arrival_deviation_sec
+    else:
+        if not platform_free:
+            r -= early_coef * abs(arrival_deviation_sec)
+    return r

@@ -310,3 +310,38 @@ def build_l3_observation(
         min(throat_gap / 30.0, 1.0),                           # throat headway wait
         min(n_sections / 8.0, 1.0),                            # block-section count (headway granularity)
     ]
+
+
+def build_l3_section_observation(
+    headway_gap_sec: float,
+    accumulated_wait_sec: float,
+    cumulative_delay: float,
+    section_idx: int,
+    n_sections: int,
+    section_len_m: float,
+    total_len_m: float,
+    remaining_m: float,
+    max_distance_m: float,
+    speed_ratio: float,
+    next_platforms_free: int,
+    next_platforms_total: int,
+    throat_gap: float = 0.0,
+) -> List[float]:
+    """Build a 10-dim per-section observation for the sequential L3 Worker.
+
+    Headway-centric: the worker sees the predicted headway wait at this section
+    and the waits already accumulated, so it can condition its speed choice on
+    the moving-block interval to the front train.
+    """
+    return [
+        min(headway_gap_sec / 60.0, 1.0),                      # predicted wait at this section
+        min(accumulated_wait_sec / 60.0, 1.0),                 # waits so far this corridor
+        min(cumulative_delay / 300.0, 1.0),                    # current delay
+        min(section_idx / max(n_sections, 1), 1.0),            # how far along the corridor
+        min(section_len_m / max(total_len_m, 1.0), 1.0),       # this section's share
+        min(remaining_m / max(max_distance_m, 1.0), 1.0),      # distance still ahead
+        speed_ratio,                                           # cruise/max
+        next_platforms_free / max(next_platforms_total, 1),
+        min(throat_gap / 30.0, 1.0),                           # throat headway wait
+        0.0,                                                   # reserved
+    ]

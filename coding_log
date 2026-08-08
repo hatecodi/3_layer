@@ -1980,3 +1980,71 @@ entry gap 23s -> ~9s; FAST catch-up delay 19.9s -> 7.7s (10s gap). Preserves the
 speed-curve + calibration work from the committed A-line.
 
 Status: DONE. 21/21 pytest green; heuristic 10 seeds 8 success/2 truncated/0 guard.
+
+[2026-08-08 14:10]
+Task: Train delay-only (no VT) with L3 v2 + eval verdict — L3 Worker collapsed to CRUISE
+
+Run: output/five_station_hierarchical/20260808_132622 (9000ep, cuda, --delay only)
+  Phase A (L2): converges dep_dly 4.8s / ontime 94%
+  Phase B (L3, frozen L2): L3 reward improves -6.31 -> -3.32 but L2 metric frozen
+  Phase C (joint): noisy spikes (30-50s), last-300 mean 20.6s (median 4.8s)
+  No deadlock, no crashes. Pipeline is code-stable.
+
+Eval (best.pt ep=5399 and final.pt, 10-30ep, delay):
+  MAPPO L2+L3: mean_dep ~9.6-11.2s, ontime 96-100%
+  Heuristic:   mean_dep ~9.6s, ontime 100%
+  L3 speed distribution: CRUISE=100% (0 FAST, 0 SLOW) in BOTH checkpoints
+
+== Root cause ==
+L3 Worker learned nothing. Three forces flattened its reward signal:
+  1. A3 calibration: CRUISE now reproduces the timetable exactly, so on-time
+     departure + CRUISE = on-time arrival -> late≈0, no correction gradient.
+  2. Moving-block: headway delays collapsed (~9s gap, rarely trigger) -> the
+     main L3 reward term (headway penalty) rarely fires.
+  3. Recovery margin (~9.5s per corridor) is small vs bunched delay (60-120s);
+     FAST net benefit ~+0.16/transit is lost in PPO noise -> policy collapses
+     to safe CRUISE default.
+
+== Implication ==
+Prior -21~-28% hierarchical advantage relied on (a) uncalibrated transit early-
+arrival bias and (b) headway-heavy regime. Under honest calibration + moving-
+block, per-corridor speed control has weak standalone value. MAPPO ≈ heuristic.
+
+== Open (user decision) ==
+Whether to (1) strengthen L3 recovery incentive (bigger max_mps/recovery margin,
+higher late/recovery coefficients, catch-up objective), (2) accept L3 as rule-
+based (original spec) and drop the learned-worker claim, or (3) reframe around
+moving-block capacity / scalability. Workstream B is DEFERRED pending this.
+
+[2026-08-08 15:10]
+Task: L3 v3 — sequential per-section speed-curve learning (headway hard boundary)
+
+Files:
+  src/control/l3_sim.py — extract L3CorridorState.front_time_at; add
+    record_occupancy_abs (explicit per-section times with waits); L3Simulator
+    section_run_time (per-section traverse at a mode, min with limit); refactor
+    earliest_moving_entry to reuse front_time_at.
+  src/env/observation_builder.py — build_l3_section_observation (10-dim,
+    headway-centric: predicted wait, accumulated wait, delay, section idx/len/
+    remaining, speed_ratio, next platforms free, throat_gap).
+  src/env/five_station_env.py — _advance_trains: replace single transit with
+    compressed stepwise per-section loop (worker decides speed per section;
+    HARD moving-block wait enforced; per-section fuel+terminal transitions with
+    done=False between sections / done=True at end; record_occupancy_abs);
+    throat headway serialization before corridor entry; l3_action_counts in info.
+    Backward-compat: no worker => single-shot transit (CRUISE/flat).
+  src/env/reward.py — compute_l3_section_reward (fuel, no safety term) +
+    compute_l3_terminal_reward (ontime bonus - late - early_wait for platform
+    alignment). Tuned: fuel_coef 5e-6, late_coef 0.05, early_coef 0.05.
+
+Validation (short Phase B, frozen trained L2):
+  With fuel+late_coef=0.05: L3 eval distribution C=74 F=26 S=0 (non-degenerate;
+    was 100% CRUISE with the old single 3-way + weak late_coef=0.01).
+  Eval (30ep delay): MAPPO-L2 + learned-L3 ontime=77.2% mean_dep=19.7s
+    vs CRUISE 63.5%/26.4s. Learned per-section L3 beats CRUISE (-25% delay,
+    +13.7pt ontime). SLOW ~0 (correct: delays dominate, slowing makes late).
+
+Status: DONE (L3 v3 core). Committed as part of A-line followup.
+Next (user-approved): remove fuel from L3 reward + add global/team punctuality
+component (L3 sees global => cross-train coordination => beat greedy-SA); then
+SA per-transit baseline; then one-paper two-pillar (rescheduling + scalability).

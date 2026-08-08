@@ -177,6 +177,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._corridor_delays: Dict[str, float] = {}  # train_id -> headway delay
         self._throat_delays: Dict[str, float] = {}    # train_id -> throat delay
         self._hard_guard_violations = 0
+        self._l3_action_counts: Dict[int, int] = {}   # per-section speed choices (episode)
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
         # State
@@ -219,6 +220,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._corridor_delays = {}
         self._throat_delays = {}
         self._hard_guard_violations = 0
+        self._l3_action_counts = {}
         self._l3_sim.reset()
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
@@ -401,6 +403,7 @@ class FiveStationEnv(BaseRailwayEnv):
             "episode_status": self._episode_status.value,
             "deadlock_counter": self._deadlock_counter,
             "l3_speed_choices": getattr(self, "_l3_speed_choices", {}),
+            "l3_action_counts": dict(getattr(self, "_l3_action_counts", {})),
             "retried_train_ids": retried,  # trains whose platform was changed by resolver
             "hard_guard_violations": self._hard_guard_violations,
             "hard_guard_held": hard_guard_held,
@@ -812,100 +815,141 @@ class FiveStationEnv(BaseRailwayEnv):
 
             planned_transit = max(train_plan[nxt].arr - train_plan[cur].dep, 1.0)
             p = self._l3_sim.p
-            distance = self._l3_sim.corridor_length(corridor_key)
+            sections = self._l3_sim._sections.get(corridor_key)
+            bounds = self._l3_sim._sec_bounds.get(corridor_key, [0.0])
+            distance = (sum(s.length_m for s in sections) if sections
+                        else self._l3_sim.corridor_length(corridor_key))
 
-            # L3 Worker: sample speed_choice or default to CRUISE
             train_prio = self.cfg.trains[g.train_id].priority
             speeds = p.get_speeds(train_prio)
-            speed_choice = SpeedMode.CRUISE
-            l3_action = 0; l3_logprob = 0.0; l3_value = 0.0
 
             # Throat conflict group for this platform+direction
             station_cfg = self.cfg.stations[cur]
             dir_cfg = station_cfg.up if self.cfg.trains[g.train_id].direction == "up" else station_cfg.down
             out_route = next((r for r in dir_cfg.out_routes if r.platform == g.platform), None)
             throat_group = out_route.conflict_group if out_route else None
+            throat_id = f"{cur}/{throat_group}" if throat_group else None
 
-            # Flat MAPPO: speed pre-selected during station decision
+            # Throat headway (before corridor entry) — hard serialization at the throat
+            throat_exit = g.W_out[0] + p.throat_out_sec
+            throat_delay = 0.0
+            if throat_group:
+                earliest_throat = self._l3_sim._throats.earliest_exit(
+                    throat_id, p.throat_headway_sec)
+                if throat_exit < earliest_throat:
+                    throat_delay = earliest_throat - throat_exit
+                    throat_exit = earliest_throat
+                self._l3_sim._throats.record_exit(throat_id, throat_exit)
+
+            headway_delay = 0.0
             flat_speeds = getattr(self, '_flat_speed_choices', {})
+            flat_mode = None
             if g.train_id in flat_speeds and self._l3_worker is None:
-                speed_choice = SpeedMode(flat_speeds[g.train_id])
-            elif self._l3_worker is not None and distance > 0:
-                from ..env.observation_builder import build_l3_observation
-                from ..env.reward import compute_l3_reward
-                cumulative_delay = max(0.0, g.W_out[0] - train_plan[cur].dep)
-                planned_arrival = train_plan[nxt].arr
-                estimated_arrival = g.W_out[0] + planned_transit
-                headway_gap = self._l3_sim.estimate_headway_gap(
-                    corridor_key, g.W_out[0], train_prio)
-                _dist, recovery_margin = self._l3_sim.speed_info(corridor_key, train_prio)
+                flat_mode = SpeedMode(flat_speeds[g.train_id])
 
-                # Throat gap for L3 observation
-                throat_id = f"{cur}/{throat_group}" if throat_group else None
-                throat_gap = self._l3_sim.throat_gap(throat_id, g.W_out[0]) if throat_id else 0.0
+            use_worker = self._l3_worker is not None and sections and distance > 0
+            t_corridor_exit = None
 
+            if use_worker:
+                # ---- L3 v3: sequential per-section speed-curve learning ----
+                # headway is a HARD moving-block boundary (enforced below, never a
+                # reward term); the worker optimises fuel + terminal punctuality.
+                from ..env.observation_builder import build_l3_section_observation
+                from ..env.reward import compute_l3_section_reward, compute_l3_terminal_reward
+                from ..marl.l3_worker import L3Transition
+                t = throat_exit
+                accumulated_wait = 0.0
+                total_run = 0.0
+                entry_times: List[float] = []
+                exit_times: List[float] = []
+                n_sections = len(sections)
                 nxt_station = self.cfg.stations.get(nxt)
                 nxt_total = len(nxt_station.platforms) if nxt_station else 4
-                nxt_free = self._free_platforms_at(nxt, estimated_arrival)
-                n_sections = len(self._l3_sim._sections.get(corridor_key, []))
-                l3_obs_vec = build_l3_observation(
-                    corridor_id=corridor_key, headway_gap=headway_gap,
-                    recovery_margin=recovery_margin, cumulative_delay=cumulative_delay,
-                    distance_m=distance,
-                    max_distance_m=self._l3_sim.max_corridor_length(),
-                    planned_arrival=planned_arrival,
-                    estimated_arrival=estimated_arrival,
-                    planned_transit=planned_transit,
-                    speed_ratio=speeds.cruise_mps / max(speeds.max_mps, 1.0),
-                    next_station_platforms_free=nxt_free,
-                    next_station_platforms_total=nxt_total,
-                    arrival_slack_ratio=max(0.0, planned_arrival - estimated_arrival) / max(planned_transit, 1.0),
-                    throat_gap=throat_gap,
-                    n_sections=n_sections)
-                l3_obs_t = torch.tensor(l3_obs_vec, dtype=torch.float32)
-                l3_action, l3_logprob, l3_value = self._l3_worker.select_action(l3_obs_t)
-                speed_choice = SpeedMode(l3_action)
+                planned_arrival = train_plan[nxt].arr
+                speed_ratio = speeds.cruise_mps / max(speeds.max_mps, 1.0)
+                last_action = 0
+                for k, sec in enumerate(sections):
+                    pos_k = bounds[k] if k < len(bounds) else 0.0
+                    front_at = self._l3_sim._corridors.front_time_at(
+                        corridor_key, pos_k + p.moving_block_safety_m, bounds)
+                    gap_sec = 0.0 if front_at == float("inf") else max(
+                        0.0, front_at + p.moving_block_margin_sec - t)
+                    cum_delay = max(0.0, g.W_out[0] - train_plan[cur].dep) + accumulated_wait
+                    nxt_free = self._free_platforms_at(nxt, t + planned_transit)
+                    obs_k = build_l3_section_observation(
+                        headway_gap_sec=gap_sec,
+                        accumulated_wait_sec=accumulated_wait,
+                        cumulative_delay=cum_delay,
+                        section_idx=k, n_sections=n_sections,
+                        section_len_m=sec.length_m,
+                        total_len_m=distance,
+                        remaining_m=max(0.0, distance - pos_k),
+                        max_distance_m=self._l3_sim.max_corridor_length(),
+                        speed_ratio=speed_ratio,
+                        next_platforms_free=nxt_free,
+                        next_platforms_total=nxt_total,
+                        throat_gap=self._l3_sim.throat_gap(throat_id, g.W_out[0]) if throat_id else 0.0)
+                    obs_t = torch.tensor(obs_k, dtype=torch.float32)
+                    action_k, logprob_k, value_k = self._l3_worker.select_action(obs_t)
+                    last_action = int(action_k)
+                    self._l3_action_counts[last_action] = self._l3_action_counts.get(last_action, 0) + 1
 
-            self._l3_speed_choices[g.train_id] = int(speed_choice)
-            l3_result = self._l3_sim.transit(
-                g.train_id, cur, nxt, corridor_key,
-                planned_total_sec=planned_transit,
-                actual_departure=g.W_out[0], speed_choice=speed_choice,
-                throat_conflict_group=throat_group,
-                priority=self.cfg.trains[g.train_id].priority)
-            t_corridor_exit = l3_result.actual_arrival
-            if l3_result.headway_delay_sec > 1e-6:
-                self._corridor_delays[g.train_id] = l3_result.headway_delay_sec
-            if l3_result.throat_delay_sec > 1e-6:
-                self._throat_delays[g.train_id] = l3_result.throat_delay_sec
+                    # HARD moving-block boundary: wait until the front is safe ahead
+                    wait_k = 0.0 if front_at == float("inf") else max(
+                        0.0, front_at + p.moving_block_margin_sec - t)
+                    run_k = self._l3_sim.section_run_time(sec, SpeedMode(action_k), train_prio)
+
+                    entry_times.append(t)
+                    t += wait_k + run_k
+                    exit_times.append(t)
+                    accumulated_wait += wait_k
+                    total_run += run_k
+
+                    done = (k == n_sections - 1)
+                    reward_k = compute_l3_section_reward(SpeedMode(action_k), sec.length_m)
+                    if done:
+                        arrival_dev = t + p.approach_sec + p.throat_in_sec - planned_arrival
+                        platform_free = self._free_platforms_at(nxt, t) > 0
+                        reward_k += compute_l3_terminal_reward(arrival_dev, platform_free)
+                    # done=False between sections (sections ARE a Markov chain under
+                    # the worker's policy); done=True only at the corridor end.
+                    self._l3_worker.buffer.add(L3Transition(
+                        obs=obs_t, action=action_k, logprob=logprob_k,
+                        reward=reward_k, value=value_k, done=done))
+                headway_delay = accumulated_wait
+                t_corridor_exit = t + p.approach_sec + p.throat_in_sec
+                self._l3_speed_choices[g.train_id] = last_action
+                self._l3_sim._corridors.record_occupancy_abs(
+                    corridor_key, g.train_id, entry_times, exit_times)
+            else:
+                # ---- backward compat: single-shot transit (CRUISE / flat) ----
+                speed_choice = flat_mode or SpeedMode.CRUISE
+                self._l3_speed_choices[g.train_id] = int(speed_choice)
+                l3_result = self._l3_sim.transit(
+                    g.train_id, cur, nxt, corridor_key,
+                    planned_total_sec=planned_transit,
+                    actual_departure=g.W_out[0], speed_choice=speed_choice,
+                    throat_conflict_group=throat_group,
+                    priority=train_prio)
+                t_corridor_exit = l3_result.actual_arrival
+                headway_delay = l3_result.headway_delay_sec
+                throat_delay = l3_result.throat_delay_sec
+
+            if headway_delay > 1e-6:
+                self._corridor_delays[g.train_id] = headway_delay
+            if throat_delay > 1e-6:
+                self._throat_delays[g.train_id] = throat_delay
 
             # L3 hard guard: hold for replan only when headway delay is excessive
             # (fixed threshold, independent of per-corridor timetable-derived headway)
             replan_limit = p.replan_max_headway_delay_sec
-            if l3_result.headway_delay_sec > replan_limit:
+            if headway_delay > replan_limit:
                 self._hard_guard_violations += 1
                 hard_guard_held.append(g.train_id)
                 journey.arrival_at_current = max(
                     journey.arrival_at_current,
                     self._t_now + self.decision_interval_sec)
                 continue
-
-            if self._l3_worker is not None and distance > 0:
-                planned_arrival = train_plan[nxt].arr
-                arrival_dev = l3_result.actual_arrival - planned_arrival
-                l3_reward = compute_l3_reward(
-                    l3_result.headway_delay_sec, arrival_dev,
-                    l3_result.recovery_used_sec, l3_result.throat_delay_sec)
-                from ..marl.l3_worker import L3Transition
-                # done=True: the L3 Worker makes one independent speed decision
-                # per corridor leg. The next leg is separated by an L2 station
-                # decision, so legs are NOT a Markov chain under the L3 policy.
-                # Treating each transit as its own episode makes GAE collapse to
-                # immediate-reward advantage instead of bootstrapping across
-                # unrelated trains' transitions.
-                self._l3_worker.buffer.add(L3Transition(
-                    obs=l3_obs_t, action=l3_action, logprob=l3_logprob,
-                    reward=l3_reward, value=l3_value, done=True))
 
             journey.advance()
             journey.set_arrival(t_corridor_exit)

@@ -68,8 +68,8 @@ python scripts/validate_l3_schedule.py \
   --n-episodes 10
 
 # 训练
-python -m src.experiment.run_train_hierarchical --env five_station          # clean
-python -m src.experiment.run_train_hierarchical --env five_station --delay  # +initial delay
+python -u -m src.experiment.run_train_hierarchical --env five_station          # clean
+python -u -m src.experiment.run_train_hierarchical --env five_station --delay  # +initial delay
 
 # VT 鲁棒性对比
 python scripts/compare_vt.py
