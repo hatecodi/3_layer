@@ -1,4 +1,4 @@
-"""L3 v2 block-section physics tests: calibration + fixed-block headway.
+"""L3 v2 physics tests: calibration + moving-block headway (sections as speed zones).
 
 Run:
     python -m pytest tests/test_l3_physics.py -v
@@ -65,33 +65,36 @@ class TestCalibration:
 
 
 # ---------------------------------------------------------------------------
-# fixed-block headway
+# moving-block headway
 # ---------------------------------------------------------------------------
 
-class TestFixedBlockHeadway:
+class TestMovingBlockHeadway:
     def _sim(self):
         cfg, physics, sections = _physics_and_sections()
         hw = compute_corridor_headway(cfg.trains, physics)
         return L3Simulator(physics, hw, {}, sections=sections), sections
 
-    def test_same_speed_following_respects_block_margin(self):
-        sim, sections = self._sim()
-        sec0_len = sections["A_to_B"][0].length_m
+    def test_same_speed_following_respects_safety_distance(self):
+        """Moving-block: a same-speed follower may enter once the front train is
+        a safety distance ahead of the entry point (NOT after clearing a whole
+        section).  Entry gap = safety_m/v + margin, much tighter than fixed-block."""
+        sim, _ = self._sim()
         speeds = sim.p.get_speeds(2)
-        sec0_time = sec0_len / speeds.cruise_mps
-        # T1 enters at t=100+3=103; front clears section0 at 103+sec0_time.
+        safety_time = sim.p.moving_block_safety_m / speeds.cruise_mps
+        # T1 enters corridor at 100+3=103; it is a safety distance ahead at
+        # 103 + safety_time; T2 may enter then, plus the reaction margin.
         sim.transit("T1", "A", "B", "A_to_B", 76, 100.0, SpeedMode.CRUISE, None, 2)
-        r2 = sim.transit("T2", "A", "B", "A_to_B", 76, 110.0, SpeedMode.CRUISE, None, 2)
-        # T2 corridor_enter must be >= front section0 exit + margin
-        front_clear_sec0 = 100.0 + 3.0 + sec0_time
-        entry2 = 110.0 + 3.0 + r2.headway_delay_sec
-        assert entry2 >= front_clear_sec0 + sim.p.block_margin_sec - 1e-6, (
-            f"entry2 {entry2:.2f} < front clear+margin "
-            f"{front_clear_sec0 + sim.p.block_margin_sec:.2f}")
+        earliest = 103.0 + safety_time + sim.p.moving_block_margin_sec
+        r2 = sim.transit("T2", "A", "B", "A_to_B", 76, 100.0, SpeedMode.CRUISE, None, 2)
+        entry2 = 100.0 + 3.0 + r2.headway_delay_sec
+        assert abs(entry2 - earliest) < 1e-6, (
+            f"entry2 {entry2:.3f} != earliest {earliest:.3f}")
+        # much tighter than fixed-block's whole-section0 wait (~16.75s + margin)
+        assert r2.headway_delay_sec < 10.0
 
     def test_fast_behind_cruise_held_more(self):
-        """A FAST train behind a CRUISE train accumulates a larger block delay
-        than a same-speed follower (it would catch up mid-corridor)."""
+        """A FAST follower behind a CRUISE train is held more than a same-speed
+        follower (it would catch up mid-corridor)."""
         # both followers face the SAME single front train; only mode differs
         sim_fast, _ = self._sim()
         sim_fast.transit("T1", "A", "B", "A_to_B", 76, 100.0, SpeedMode.CRUISE, None, 2)

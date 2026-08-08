@@ -1955,3 +1955,28 @@ guards). Verified: 21/21 pytest green; heuristic 10 seeds -> 8 success/2 truncat
 
 Status: DONE (A-line). Workstream B (L2 rolling rescheduling) deferred until L3
 training is stable, per user.
+
+[2026-08-08 13:40]
+Task: A3 pivot — fixed-block -> moving-block signalling (sections kept as speed zones)
+
+Files:
+  src/control/l3_sim.py — replace earliest_block_entry with earliest_moving_entry
+    (continuous safety distance: entry >= max over positions of
+    front_time_at(pos+safety_m) - our_time_to(pos); checked at section boundaries
+    and boundaries shifted back by safety; + moving_block_margin_sec). Build
+    _sec_bounds (cumulative section positions) per corridor; transit() and
+    next_entry_earliest() use the moving-block constraint; corridor_headway_sec
+    is now an absolute floor.
+  configs/five_station/l3_physics.yaml — block_margin_sec -> moving_block_safety_m
+    (500 m) + moving_block_margin_sec (3 s); corridor_headway_sec 15 -> 5 (floor,
+    was binding and would negate moving-block benefit); corridor_sections
+    documented as speed zones.
+  tests/test_l3_physics.py — moving-block assertions (entry gap = safety_m/v +
+    margin ~9s; FAST-behind-CRUISE held more but far less than fixed-block).
+
+Rationale: user chose moving-block (fixed-block hard to publish). Sections kept
+as SPEED ZONES only; occupancy is now continuous safety distance. Same-speed
+entry gap 23s -> ~9s; FAST catch-up delay 19.9s -> 7.7s (10s gap). Preserves the
+speed-curve + calibration work from the committed A-line.
+
+Status: DONE. 21/21 pytest green; heuristic 10 seeds 8 success/2 truncated/0 guard.

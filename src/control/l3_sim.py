@@ -27,7 +27,11 @@ class L3Physics:
     default_cruise_mps: float = 25.0
     default_max_mps: float = 30.0
     corridor_distances_m: Dict[str, float] = field(default_factory=dict)
-    block_margin_sec: float = 6.0
+    # Moving-block signalling: continuous safety distance behind the front
+    # train's tail (not whole-section clearance).  corridor_sections remain as
+    # SPEED ZONES (piecewise speed curve), not occupancy blocks.
+    moving_block_safety_m: float = 500.0
+    moving_block_margin_sec: float = 3.0
     corridor_sections: Dict[str, list] = field(default_factory=dict)
 
     def get_speeds(self, priority: int) -> TrainClassSpeed:
@@ -68,26 +72,64 @@ class L3CorridorState:
     def earliest_entry(self, corridor_id: str, headway: float) -> float:
         return self._last_entry.get(corridor_id, -float("inf")) + headway
 
-    def earliest_block_entry(self, corridor_id: str, run_times: List[float],
-                             block_margin: float) -> float:
-        """Fixed-block earliest corridor entry.
+    def earliest_moving_entry(self, corridor_id: str, run_times: List[float],
+                              sec_bounds: List[float], safety_m: float,
+                              margin_sec: float) -> float:
+        """Moving-block earliest corridor entry.
 
-        The train reaches section i at (entry + sum of run times before i) and
-        must wait until the front occupant has cleared section i plus the block
-        margin.  FIFO holds by construction (only the immediately-preceding
-        occupant can bind).  Returns -inf when the corridor is empty.
+        A following train may be at position x only after the front occupant is
+        at least *safety_m* ahead of x (continuous safety distance — braking +
+        reaction, NOT whole-section clearance).  sec_bounds are the shared
+        cumulative section boundaries (position in m).  Returns -inf when the
+        corridor is empty.
         """
         occs = self._occupants.get(corridor_id, [])
-        if not occs:
+        if not occs or not sec_bounds:
             return -float("inf")
         front = occs[-1]
-        cum = 0.0
+        total = sec_bounds[-1]
+
+        def front_time_at(x: float) -> float:
+            """Absolute time the front reaches position x (linear interpolate)."""
+            x = min(max(x, 0.0), total)
+            for k in range(len(sec_bounds) - 1):
+                a, b = sec_bounds[k], sec_bounds[k + 1]
+                if a <= x <= b:
+                    span = b - a
+                    if span <= 1e-9:
+                        return front.entry_times[k]
+                    frac = (x - a) / span
+                    return front.entry_times[k] + frac * (
+                        front.exit_times[k] - front.entry_times[k])
+            return front.exit_times[-1]
+
+        def our_time_to(pos: float) -> float:
+            """Our run time (from corridor entry) to reach position pos."""
+            pos = min(max(pos, 0.0), total)
+            cum = 0.0
+            for k, rt in enumerate(run_times):
+                a = sec_bounds[k] if k < len(sec_bounds) else total
+                b = sec_bounds[k + 1] if k + 1 < len(sec_bounds) else total
+                if a <= pos <= b:
+                    span = b - a
+                    if span <= 1e-9:
+                        return cum
+                    return cum + (pos - a) / span * rt
+                cum += rt
+            return cum
+
+        # Constraint (continuous over position): entry >= front_time_at(pos+safety)
+        # - our_time_to(pos) for every pos we occupy.  The bound is piecewise-linear,
+        # so it suffices to check our section boundaries and front boundaries shifted
+        # back by the safety distance.
+        positions = set(sec_bounds)
+        for k in range(len(sec_bounds)):
+            positions.add(sec_bounds[k] - safety_m)
         earliest = -float("inf")
-        for i, rt in enumerate(run_times):
-            exit_i = front.exit_times[i] if i < len(front.exit_times) else front.exit_times[-1]
-            earliest = max(earliest, exit_i + block_margin - cum)
-            cum += rt
-        return earliest
+        for pos in positions:
+            pos = min(max(pos, 0.0), total)
+            earliest = max(earliest, front_time_at(pos + safety_m) - our_time_to(pos))
+        return earliest + margin_sec
 
     def record_occupancy(self, corridor_id: str, train_id: str,
                          entry: float, run_times: List[float]) -> None:
@@ -134,8 +176,15 @@ class L3Simulator:
         self._throat_hw = throat_headways or {}
         self._distances = corridor_distances or dict(physics.corridor_distances_m)
         # corridor_id -> List[L3Section] (calibrated); when present, transit uses
-        # block-section physics instead of the single-segment distance path.
+        # moving-block physics with a per-section speed profile.
         self._sections = sections or {}
+        # cumulative section boundaries (position in m) per corridor
+        self._sec_bounds: Dict[str, List[float]] = {}
+        for cid, secs in self._sections.items():
+            bounds = [0.0]
+            for s in secs:
+                bounds.append(bounds[-1] + s.length_m)
+            self._sec_bounds[cid] = bounds
 
     def throat_gap(self, throat_id: str, departure: float) -> float:
         """Seconds until throat is free after *departure*."""
@@ -192,12 +241,13 @@ class L3Simulator:
 
         corridor_enter = throat_exit  # throat-out feeds into corridor entry
         if sections:
-            # Block sections define the physical headway; the timetable-derived
-            # spacing (self._headways) is only a legacy floor for the
-            # single-segment path.
+            # Moving-block: continuous safety distance (safety_m + margin) behind
+            # the front train's tail; corridor_headway_sec is an absolute floor.
             earliest = max(
                 self._corridors.earliest_entry(corridor_id, p.corridor_headway_sec),
-                self._corridors.earliest_block_entry(corridor_id, run_list, p.block_margin_sec))
+                self._corridors.earliest_moving_entry(
+                    corridor_id, run_list, self._sec_bounds.get(corridor_id, []),
+                    p.moving_block_safety_m, p.moving_block_margin_sec))
         else:
             hw = self._headways.get(corridor_id, p.corridor_headway_sec)
             earliest = self._corridors.earliest_entry(corridor_id, hw)
@@ -259,15 +309,16 @@ class L3Simulator:
 
     def next_entry_earliest(self, corridor_id: str,
                             run_times: Optional[List[float]] = None) -> float:
-        """Earliest allowed corridor entry: fixed-block when sections exist,
-        else moving-block with the configured corridor-headway floor."""
+        """Earliest allowed corridor entry: moving-block safety distance when
+        sections exist, else the moving-block floor."""
         p = self.p
         earliest = self._corridors.earliest_entry(corridor_id, p.corridor_headway_sec)
         if self._sections.get(corridor_id) and run_times:
             earliest = max(
                 earliest,
-                self._corridors.earliest_block_entry(
-                    corridor_id, run_times, p.block_margin_sec))
+                self._corridors.earliest_moving_entry(
+                    corridor_id, run_times, self._sec_bounds.get(corridor_id, []),
+                    p.moving_block_safety_m, p.moving_block_margin_sec))
         return earliest
 
     def estimate_headway_gap(self, corridor_id: str, departure: float,
