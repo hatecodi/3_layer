@@ -84,11 +84,22 @@ class CorridorCritic(nn.Module):
 
 @dataclass
 class L3Transition:
+    """One per-section transition with DECOMPOSED rewards/values.
+
+    reward_local / value_local  -> the train's OWN corridor outcome (punctuality,
+                                   FAST energy).
+    reward_global / value_global -> the episode-level TEAM term (system ontime /
+                                   delay), credited at the corridor end.
+    Two critics (local + global) separate these so credit assignment doesn't mix
+    own-punctuality gradients with the shared team term (mirrors L2's local/global).
+    """
     obs: torch.Tensor
     action: int
     logprob: float
-    reward: float
-    value: float
+    reward_local: float
+    reward_global: float
+    value_local: float
+    value_global: float
     done: bool
 
 
@@ -107,21 +118,25 @@ class L3RolloutBuffer:
     def __len__(self) -> int:
         return len(self._transitions)
 
-    def compute_gae(self, final_value: float) -> tuple:
-        """Return (advantages, returns) as tensors."""
+    def compute_gae(self, final_local: float, final_global: float) -> tuple:
+        """Return ((adv_local, ret_local), (adv_global, ret_global)) tensors —
+        one GAE per reward component (local critic, global critic)."""
         T = len(self._transitions)
-        advantages = torch.zeros(T)
-        returns = torch.zeros(T)
-        gae = 0.0
-        next_value = final_value
+        adv_l = torch.zeros(T); ret_l = torch.zeros(T)
+        adv_g = torch.zeros(T); ret_g = torch.zeros(T)
+        gae_l = gae_g = 0.0
+        nv_l, nv_g = final_local, final_global
         for t in reversed(range(T)):
             tr = self._transitions[t]
-            delta = tr.reward + self.gamma * next_value * (1 - int(tr.done)) - tr.value
-            gae = delta + self.gamma * self.gae_lambda * (1 - int(tr.done)) * gae
-            advantages[t] = gae
-            returns[t] = gae + tr.value
-            next_value = tr.value
-        return advantages, returns
+            not_done = 1 - int(tr.done)
+            d_l = tr.reward_local + self.gamma * nv_l * not_done - tr.value_local
+            d_g = tr.reward_global + self.gamma * nv_g * not_done - tr.value_global
+            gae_l = d_l + self.gamma * self.gae_lambda * not_done * gae_l
+            gae_g = d_g + self.gamma * self.gae_lambda * not_done * gae_g
+            adv_l[t] = gae_l; ret_l[t] = gae_l + tr.value_local
+            adv_g[t] = gae_g; ret_g[t] = gae_g + tr.value_global
+            nv_l, nv_g = tr.value_local, tr.value_global
+        return (adv_l, ret_l), (adv_g, ret_g)
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +148,8 @@ class L3WorkerTrainer:
     def __init__(
         self,
         actor: CorridorActor,
-        critic: CorridorCritic,
+        critic_local: CorridorCritic,
+        critic_global: CorridorCritic,
         lr: float = 3e-4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
@@ -145,12 +161,15 @@ class L3WorkerTrainer:
         device: Optional[torch.device] = None,
     ):
         self.actor = actor
-        self.critic = critic
+        self.critic_local = critic_local
+        self.critic_global = critic_global
         self.device = device or torch.device("cpu")
         self.actor.to(self.device)
-        self.critic.to(self.device)
+        self.critic_local.to(self.device)
+        self.critic_global.to(self.device)
         self.optimizer = Adam(
-            list(actor.parameters()) + list(critic.parameters()),
+            list(actor.parameters()) + list(critic_local.parameters())
+            + list(critic_global.parameters()),
             lr=lr)
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -168,20 +187,23 @@ class L3WorkerTrainer:
 
     @torch.no_grad()
     def select_action(self, obs: torch.Tensor) -> tuple:
-        """Return (action_index, logprob, value)."""
+        """Return (action_index, logprob, value_local, value_global)."""
         obs = obs.unsqueeze(0).to(self.device)
         dist = self.actor.dist(obs)
         action = dist.sample()
         logprob = dist.log_prob(action)
-        value = self.critic(obs)
-        return action.item(), logprob.item(), value.item()
+        v_local = self.critic_local(obs)
+        v_global = self.critic_global(obs)
+        return action.item(), logprob.item(), v_local.item(), v_global.item()
 
     def update(self) -> Dict[str, float]:
-        """Run PPO epochs over the buffer. Returns loss stats."""
+        """Run PPO epochs over the buffer with TWO critics (local + global).
+        The policy is driven by the combined advantage (local + global); each
+        critic regresses its own return.  Returns loss stats."""
         buffer = self._buffer
         if len(buffer) == 0:
             return {}
-        advantages, returns = buffer.compute_gae(0.0)
+        (adv_l, ret_l), (adv_g, ret_g) = buffer.compute_gae(0.0, 0.0)
 
         obs = torch.stack([t.obs for t in buffer._transitions]).to(self.device)
         old_logprobs = torch.tensor([t.logprob for t in buffer._transitions],
@@ -189,10 +211,11 @@ class L3WorkerTrainer:
         old_actions = torch.tensor([t.action for t in buffer._transitions],
                                    device=self.device)
 
-        advantages = advantages.to(self.device)
-        returns = returns.to(self.device)
+        adv_l = adv_l.to(self.device); adv_g = adv_g.to(self.device)
+        ret_l = ret_l.to(self.device); ret_g = ret_g.to(self.device)
 
-        # Normalize advantages
+        # combined advantage for the policy (own punctuality + team term)
+        advantages = adv_l + adv_g
         adv_std = advantages.std()
         if adv_std > 1e-8:
             advantages = (advantages - advantages.mean()) / adv_std
@@ -203,7 +226,8 @@ class L3WorkerTrainer:
             dist = self.actor.dist(obs)
             new_logprobs = dist.log_prob(old_actions)
             entropy = dist.entropy().mean()
-            values = self.critic(obs)
+            vals_l = self.critic_local(obs)
+            vals_g = self.critic_global(obs)
 
             # Policy loss
             ratio = torch.exp(new_logprobs - old_logprobs)
@@ -212,15 +236,16 @@ class L3WorkerTrainer:
                                 1.0 + self.clip_ratio) * advantages
             loss_policy = -torch.min(surr1, surr2).mean()
 
-            # Value loss
-            loss_value = F.mse_loss(values, returns)
+            # Value loss: two critics, each on its own return
+            loss_value = F.mse_loss(vals_l, ret_l) + F.mse_loss(vals_g, ret_g)
 
             loss = loss_policy + self.value_coef * loss_value - self.entropy_coef * entropy
 
             self.optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(
-                list(self.actor.parameters()) + list(self.critic.parameters()),
+                list(self.actor.parameters()) + list(self.critic_local.parameters())
+                + list(self.critic_global.parameters()),
                 self.max_grad_norm)
             self.optimizer.step()
 

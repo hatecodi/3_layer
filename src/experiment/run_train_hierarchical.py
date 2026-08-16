@@ -25,6 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.common.base_env import BaseRailwayEnv
+from src.env.five_station_env import FiveStationEnv
 from src.env.observation_builder import get_obs_dim, critic_input
 from src.marl.actor_critic import (
     Layer2ActorCritic,
@@ -63,10 +64,12 @@ HP = {
     "rollout_steps": 512,
 }
 
+# Staged protocol (2026-08-14, user): train L2 first with the SA baseline as the
+# L3 "experience" (near-optimal corridor execution -> clean scheduling signal),
+# then freeze L2 and train L3 to distil/approach SA's corridor behaviour.
 PHASES = {
-    "A": {"episodes": 3000, "train_l2": True, "train_l3": False},
-    "B": {"episodes": 3000, "train_l2": False, "train_l3": True},
-    "C": {"episodes": 3000, "train_l2": True, "train_l3": True},
+    "A": {"episodes": 3000, "train_l2": True, "train_l3": False, "l3_sa": True},
+    "B": {"episodes": 3000, "train_l2": False, "train_l3": True, "l3_sa": False},
 }
 
 
@@ -88,54 +91,102 @@ def _build_critic_inputs(obs, requests):
 # ---------------------------------------------------------------------------
 
 
+def eval_hier_heldout(l2_trainer, l3_worker, cfg, seeds, device, incident=True,
+                      use_sa=False):
+    """Run held-out incident episodes with the CURRENT L2 policy + L3 executor
+    (SA during Phase A, learned L3 during Phase B). No learning. Returns
+    {arr_ontime, succ, deadlock, trunc}."""
+    n_ontime_arr = 0; n_arr = 0; succ = 0; deadlock = 0; trunc = 0
+    for s in seeds:
+        env = FiveStationEnv(cfg, seed=s, batch_window_sec=120.0, enable_vt=False,
+                             enable_initial_delay=False,
+                             enable_corridor_incident=incident,
+                             l3_worker=l3_worker, l3_sa=use_sa)
+        obs, info = env.reset()
+        done = False
+        while not done:
+            masks = info.get("action_masks", {})
+            requests = info.get("requests", [])
+            group_obs = _build_critic_inputs(obs, requests)
+            gs_vec = compact_global_state(info.get("metrics", {}))
+            agent_actions = l2_trainer.collect_step(
+                obs, masks, group_obs, gs_vec, device=device)
+            action_dict = {aid: (a.platform, a.entry)
+                           for aid, a in agent_actions.items()}
+            obs, _, term, trunc_, info = env.step(
+                action_dict, lambda_team=l2_trainer.lam_team)
+            done = term or trunc_
+            mm = info.get("metrics", {})
+            n_ontime_arr += mm.get("n_ontime_arr", 0)
+            n_arr += mm.get("n_arrivals", 0)
+        status = info.get("episode_status", "?")
+        succ += status == "success"; deadlock += status == "deadlock"
+        trunc += status == "truncated"
+    return {"arr_ontime": n_ontime_arr / max(n_arr, 1),
+            "succ": succ, "deadlock": deadlock, "trunc": trunc}
+
+
 def train_hierarchical(
     env_factory: Callable[[int, Optional[object]], BaseRailwayEnv],
     args,
     obs_dim: int = 29,
+    phases: Optional[Dict] = None,
+    l2_ckpt: Optional[Path] = None,
+    cfg=None,
+    eval_every=0, eval_n=12, eval_seed_base=900000,
 ) -> Dict:
+    phases = phases or PHASES
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Device: {device}")
 
     # L2 Manager (existing architecture)
     ac = Layer2ActorCritic(obs_dim=obs_dim, k_local=HP["k_local"],
                            hidden_dim=HP["hidden_dim"])
+    if l2_ckpt:
+        state = torch.load(l2_ckpt, map_location=device, weights_only=False)
+        ac.load_state_dict(state["ac_state"])
+        print(f"Loaded L2 from {l2_ckpt} (frozen for L3 training)")
     l2_trainer = MAPPOTrainer(
         ac, lr=HP["lr"], gamma=HP["gamma"], gae_lambda=HP["gae_lambda"],
         clip_ratio=HP["clip_ratio"], ppo_epochs=HP["ppo_epochs"],
         minibatch_size=HP["minibatch_size"], entropy_coef=HP["entropy_coef_start"],
         value_coef=HP["value_coef"], max_grad_norm=HP["max_grad_norm"],
-        total_episodes=sum(p["episodes"] for p in PHASES.values()),
+        total_episodes=sum(p["episodes"] for p in phases.values()),
         device=device)
     l2_buffer = RolloutBuffer(gamma=HP["gamma"], gae_lambda=HP["gae_lambda"])
 
-    # L3 Worker (shared corridor speed controller)
+    # L3 Worker (shared corridor speed controller) — TWO critics: local (own
+    # punctuality) + global (team term), mirroring L2's local/global design.
     l3_actor = CorridorActor(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
     l3_critic = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
+    l3_critic_g = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
     l3_trainer = L3WorkerTrainer(
-        l3_actor, l3_critic, lr=HP["l3_lr"], gamma=HP["gamma"],
+        l3_actor, l3_critic, l3_critic_g, lr=HP["l3_lr"], gamma=HP["gamma"],
         gae_lambda=HP["gae_lambda"], clip_ratio=HP["clip_ratio"],
         ppo_epochs=HP["ppo_epochs"], entropy_coef=HP["l3_entropy_coef"],
         value_coef=HP["value_coef"], max_grad_norm=HP["max_grad_norm"],
         device=device)
 
-    # Checkpoint dir
+    # Checkpoint dir (out_root lets runs be grouped under output/<date>/, e.g. --out-root output/8_16/training)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = PROJECT_ROOT / "output" / f"{args.env}_hierarchical" / run_id
+    run_dir = PROJECT_ROOT / args.out_root / f"{args.env}_hierarchical" / run_id
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     episode_metrics: List[Dict] = []
+    eval_rows: List[Dict] = []   # held-out eval at checkpoints (eval_every > 0)
     total_ep = 0
     best_reward = -float("inf")
     # Rolling window so reported metrics average over bunched + non-bunched
     # episodes (single-episode sampling hit only non-bunched seeds and looked
     # unrealistically on-time).
-    _WIN = max(50, sum(p["episodes"] for p in PHASES.values()) // 20)
+    _WIN = max(50, sum(p["episodes"] for p in phases.values()) // 20)
     win_reward = deque(maxlen=_WIN)
     win_dep = deque(maxlen=_WIN)
     win_ontime = deque(maxlen=_WIN)
+    win_arr_ontime = deque(maxlen=_WIN)   # realised (L3) arrival punctuality
 
-    for phase_name, phase_cfg in PHASES.items():
+    for phase_name, phase_cfg in phases.items():
         print(f"\n{'='*60}")
         print(f"  Phase {phase_name}: {'L2' if phase_cfg['train_l2'] else ''}"
               f"{' + ' if phase_cfg['train_l2'] and phase_cfg['train_l3'] else ''}"
@@ -160,9 +211,11 @@ def train_hierarchical(
                 + (HP["entropy_coef_end"] - HP["entropy_coef_start"]) * entropy_progress
             )
 
-            # Attach L3 worker only during L3 training phases
+            # Attach L3 worker only during L3 training phases; use the SA baseline
+            # as the L3 "experience" during the L2-only phase.
             worker = l3_trainer if phase_cfg["train_l3"] else None
-            env = env_factory(seed=total_ep, l3_worker=worker)
+            env = env_factory(seed=total_ep, l3_worker=worker,
+                              l3_sa=phase_cfg.get("l3_sa", False))
             obs, info = env.reset()
 
             ep_reward: Dict[str, float] = defaultdict(float)
@@ -170,6 +223,8 @@ def train_hierarchical(
             ep_total_granted = 0
             ep_total_ontime_dep = 0
             ep_total_dep_delay = 0.0
+            ep_total_ontime_arr = 0
+            ep_total_arrivals = 0
             l3_update_count = 0
 
             while not ep_done:
@@ -191,6 +246,8 @@ def train_hierarchical(
                 ep_total_granted += metrics.get("n_granted", 0)
                 ep_total_ontime_dep += metrics.get("n_ontime_dep", 0)
                 ep_total_dep_delay += metrics.get("total_dep_delay", 0.0)
+                ep_total_ontime_arr += metrics.get("n_ontime_arr", 0)
+                ep_total_arrivals += metrics.get("n_arrivals", 0)
                 reward_breakdown = info.get("reward_breakdown", {})
 
                 # L2 transitions
@@ -266,6 +323,7 @@ def train_hierarchical(
             mean_r = total_r / max(len(ep_reward), 1)
             ep_mean_dep = ep_total_dep_delay / max(ep_total_granted, 1)
             ep_ontime = ep_total_ontime_dep / max(ep_total_granted, 1)
+            ep_arr_ontime = ep_total_ontime_arr / max(ep_total_arrivals, 1)
 
             ep_summary = {
                 "episode": total_ep,
@@ -275,12 +333,14 @@ def train_hierarchical(
                 "mean_reward": mean_r,
                 "mean_dep_delay": ep_mean_dep,
                 "ontime_rate": ep_ontime,
+                "arr_ontime": ep_arr_ontime,
                 "l3_updates": l3_update_count,
             }
             episode_metrics.append(ep_summary)
             win_reward.append(mean_r)
             win_dep.append(ep_mean_dep)
             win_ontime.append(ep_ontime)
+            win_arr_ontime.append(ep_arr_ontime)
 
             # Report rolling-window MEAN (not a single sampled episode), so the
             # logged delay/ontime reflect the mixed bunched + non-bunched mix.
@@ -288,7 +348,8 @@ def train_hierarchical(
                 print(
                     f"  ep {total_ep:>5} [{phase_name}] | reward={sum(win_reward)/len(win_reward):>7.2f} | "
                     f"dep_dly={sum(win_dep)/len(win_dep):>6.1f}s | "
-                    f"ontime={sum(win_ontime)/len(win_ontime):.2f} | "
+                    f"dep_ontime={sum(win_ontime)/len(win_ontime):.2f} | "
+                    f"arr_ontime={sum(win_arr_ontime)/len(win_arr_ontime):.2f} | "
                     f"l3_upd={l3_update_count:>2} | "
                     f"{info.get('episode_status', '?'):>12}"
                 )
@@ -297,16 +358,36 @@ def train_hierarchical(
                 best_reward = mean_r
                 torch.save(
                     {"ac_state": ac.state_dict(), "l3_actor": l3_actor.state_dict(),
-                     "l3_critic": l3_critic.state_dict(), "episode": total_ep, "hp": HP},
+                     "l3_critic_local": l3_critic.state_dict(),
+                     "l3_critic_global": l3_critic_g.state_dict(),
+                     "episode": total_ep, "hp": HP},
                     ckpt_dir / "best.pt",
                 )
+
+            # ---- held-out eval hook (fixed seeds, current pipeline, no learning) ----
+            if eval_every > 0 and (total_ep + 1) % eval_every == 0:
+                ev_seeds = [eval_seed_base + i * 7919 for i in range(eval_n)]
+                ev = eval_hier_heldout(
+                    l2_trainer,
+                    l3_trainer if phase_cfg["train_l3"] else None,
+                    cfg, ev_seeds, device, incident=args.incident,
+                    use_sa=phase_cfg["l3_sa"])
+                eval_rows.append({
+                    "episode": total_ep + 1, "phase": phase_name,
+                    "arr_ontime": round(ev["arr_ontime"], 4),
+                    "succ": ev["succ"], "deadlock": ev["deadlock"],
+                    "trunc": ev["trunc"]})
+                print(f"    [heldout @ ep {total_ep+1} {phase_name}] "
+                      f"arr_ontime={ev['arr_ontime']:.3f} "
+                      f"(succ {ev['succ']}/{len(ev_seeds)})")
 
             total_ep += 1
 
     # ---- final save ----
     torch.save(
         {"ac_state": ac.state_dict(), "l3_actor": l3_actor.state_dict(),
-         "l3_critic": l3_critic.state_dict(), "hp": HP,
+         "l3_critic_local": l3_critic.state_dict(),
+         "l3_critic_global": l3_critic_g.state_dict(), "hp": HP,
          "episode_metrics": episode_metrics},
         ckpt_dir / "final.pt",
     )
@@ -339,6 +420,14 @@ def train_hierarchical(
             writer.writerows(episode_metrics)
         print(f"  CSV: {csv_path}")
 
+    if eval_rows:
+        ev_path = run_dir / "eval_ontime.csv"
+        with open(ev_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(eval_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(eval_rows)
+        print(f"  held-out eval CSV: {ev_path}")
+
     return {"best_reward": best_reward, "final_metrics": recent_dep}
 
 
@@ -355,6 +444,24 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--vt", action="store_true", help="Enable VT disturbance")
     parser.add_argument("--delay", action="store_true", help="Enable initial delay")
+    parser.add_argument("--incident", action="store_true",
+                        help="corridor speed-restriction incident as the training "
+                             "disturbance (disables origin-bunching)")
+    parser.add_argument("--l2-ckpt", type=Path, default=None,
+                        help="load a pretrained L2 checkpoint (Phase B: freeze it, "
+                             "train L3 against it)")
+    parser.add_argument("--phases", type=str, default="A,B",
+                        help="comma-separated phases to run, e.g. 'A' (L2+SA-L3) "
+                             "or 'A,B' (then freeze L2, train L3)")
+    parser.add_argument("--out-root", type=str, default="output",
+                        help="root dir under PROJECT_ROOT for this run, e.g. "
+                             "output/8_16/training (default 'output')")
+    parser.add_argument("--eval-every", type=int, default=0,
+                        help="run a held-out incident eval every N training eps (0=off)")
+    parser.add_argument("--eval-n", type=int, default=12,
+                        help="number of held-out episodes per eval checkpoint")
+    parser.add_argument("--eval-seed-base", type=int, default=900000,
+                        help="base seed for the deterministic held-out eval set")
     args = parser.parse_args()
 
     HP["lr"] = args.lr
@@ -366,14 +473,19 @@ def main():
     cfg = load_scenario(scenario_name=args.env)
     obs_dim = get_obs_dim(cfg)
 
-    def env_factory(seed: int, l3_worker=None) -> FiveStationEnv:
+    def env_factory(seed: int, l3_worker=None, l3_sa: bool = False) -> FiveStationEnv:
         return FiveStationEnv(
             cfg=cfg, seed=seed, batch_window_sec=120.0,
-            enable_vt=args.vt, enable_initial_delay=args.delay,
-            l3_worker=l3_worker,
+            enable_vt=args.vt, enable_initial_delay=args.delay and not args.incident,
+            enable_corridor_incident=args.incident,
+            l3_worker=l3_worker, l3_sa=l3_sa,
         )
 
-    train_hierarchical(env_factory, args, obs_dim=obs_dim)
+    phases = {p: PHASES[p] for p in args.phases.split(",") if p in PHASES}
+    train_hierarchical(env_factory, args, obs_dim=obs_dim, phases=phases,
+                       l2_ckpt=args.l2_ckpt, cfg=cfg,
+                       eval_every=args.eval_every, eval_n=args.eval_n,
+                       eval_seed_base=args.eval_seed_base)
 
 
 if __name__ == "__main__":

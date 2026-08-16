@@ -37,7 +37,12 @@ def _rolling(y, w=5):
     y = np.asarray(y, dtype=float)
     if w <= 1 or len(y) < w:
         return y
-    return np.convolve(y, np.ones(w) / w, mode="valid")
+    kernel = np.ones(w) / w
+    pad_l = (w - 1) // 2
+    pad_r = w - 1 - pad_l
+    # edge-pad so the smoothed series keeps the full input length (mode="valid"
+    # alone trims w-1 trailing points, cutting the line short near the end)
+    return np.convolve(np.pad(y, (pad_l, pad_r), mode="edge"), kernel, mode="valid")
 
 
 def _band(by_seed, key, episodes, w):
@@ -68,8 +73,8 @@ def main():
         ("entropy", "entropy", "#8e44ad"),
         ("policy_loss", "L3 policy loss", "#2874a6"),
         ("value_loss", "L3 value loss", "#d35400"),
-        ("ontime_pct", "eval ontime (%)", "#1e8449"),
-        ("mean_dep", "eval mean_dep (s)", "#7d6608"),
+        ("ontime_pct", "eval arrival ontime (%)", "#1e8449"),
+        ("mean_dep", "eval mean arr delay (s)", "#7d6608"),
     ]
     fig, axes = plt.subplots(2, 3, figsize=(14, 8))
     for ax, (key, title, color) in zip(axes.flat, panels):

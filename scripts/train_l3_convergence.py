@@ -9,6 +9,10 @@ Usage:
         --l2 output/five_station_15t_hierarchical/<run>/checkpoints/final.pt \
         --seeds 3 --episodes 2500 --eval-every 125 \
         --eval-seeds 900000 --eval-n 8 --out output/figures/l3v3_conv_15t_ms.csv
+
+    # corridor speed-restriction incident (disables origin-bunching)
+    python scripts/train_l3_convergence.py --scenario five_station_15t --l2 <l2.pt> \
+        --incident --out output/figures/l3v3_conv_incident.csv
 """
 from __future__ import annotations
 
@@ -66,8 +70,21 @@ def main():
     ap.add_argument("--ontime-thresh", type=float, default=0.5)
     ap.add_argument("--dep-thresh", type=float, default=0.15)
     ap.add_argument("--out", type=Path, default=None)
-    ap.add_argument("--entropy-start", type=float, default=0.05)
-    ap.add_argument("--entropy-end", type=float, default=0.01)
+    # Slow entropy annealing: with the FAST penalty the reward landscape is
+    # sharper and the old 0.05->0.01 schedule collapsed the policy to a
+    # deterministic "never-FAST" local optimum by ~ep1000 (ontime stuck 58%).
+    # Higher + slower decay lets it explore the FAST/CRUISE tradeoff.
+    ap.add_argument("--entropy-start", type=float, default=0.15)
+    ap.add_argument("--entropy-end", type=float, default=0.05)
+    ap.add_argument("--incident", action="store_true",
+                    help="corridor speed-restriction incident as the ONLY disturbance "
+                         "(disables origin-bunching so the recoverable incident delay "
+                         "isn't swamped)")
+    ap.add_argument("--vt", action="store_true", help="enable visitor trains")
+    ap.add_argument("--log-every", type=int, default=500,
+                    help="print a live trend line every N episodes (rolling reward, "
+                         "entropy/loss, last eval ontime/dep, incident rate, hard-guards) "
+                         "so a policy collapse is visible early")
     args = ap.parse_args()
     args.out = args.out or Path(f"output/figures/l3v3_conv_{args.scenario}_ms.csv")
 
@@ -96,12 +113,16 @@ def main():
                              entropy_coef=args.entropy_start, value_coef=0.5, max_grad_norm=1.0,
                              device=dev)
         ep_rew = []
+        incident_flags = []   # per-episode: had a corridor incident?
+        hard_guards = []      # per-episode: L3 hard-guard replan count
 
         def eval_worker():
             ev = Counter(); g = 0; o = 0; d = 0.0
             for s in range(args.eval_n):
-                e2 = FiveStationEnv(cfg=cfg, seed=args.eval_seeds + s, enable_vt=False,
-                                    enable_initial_delay=True, l3_worker=l3)
+                e2 = FiveStationEnv(cfg=cfg, seed=args.eval_seeds + s, enable_vt=args.vt,
+                                    enable_initial_delay=not args.incident,
+                                    enable_corridor_incident=args.incident,
+                                    l3_worker=l3)
                 o2, i2 = e2.reset()
                 for _ in range(600):
                     m2 = i2.get("action_masks", {})
@@ -110,8 +131,8 @@ def main():
                     ad2 = {aid: (a.platform, a.entry) for aid, a in aa2.items()}
                     o2, r2, t2, tr2, i2 = e2.step(ad2, lambda_team=0.3)
                     mm = i2.get("metrics", {})
-                    g += mm.get("n_granted", 0); o += mm.get("n_ontime_dep", 0)
-                    d += mm.get("total_dep_delay", 0.0)
+                    g += mm.get("n_arrivals", 0); o += mm.get("n_ontime_arr", 0)
+                    d += mm.get("total_arr_delay", 0.0)
                     if t2 or tr2:
                         break
             return o / max(g, 1) * 100, d / max(g, 1)
@@ -119,9 +140,12 @@ def main():
         seed_rows = []
         for ep in range(args.episodes):
             l3.entropy_coef = args.entropy_start - (args.entropy_start - args.entropy_end) * (ep / args.episodes)
-            env = FiveStationEnv(cfg=cfg, seed=seed * 1000000 + ep, enable_vt=False,
-                                 enable_initial_delay=True, l3_worker=l3)
+            env = FiveStationEnv(cfg=cfg, seed=seed * 1000000 + ep, enable_vt=args.vt,
+                                 enable_initial_delay=not args.incident,
+                                 enable_corridor_incident=args.incident,
+                                 l3_worker=l3)
             obs, info = env.reset()
+            incident_flags.append(bool(env._corridor_incidents))
             for _ in range(600):
                 masks = info.get("action_masks", {})
                 g0 = bc(obs, info.get("requests", [])); gs = compact_global_state(info.get("metrics", {}))
@@ -131,6 +155,7 @@ def main():
                 if term or trunc:
                     break
             ep_rew.append(env._l3_ep_reward)
+            hard_guards.append(env._hard_guard_violations)
             if len(l3.buffer) >= 64:
                 l3.update()
             if (ep + 1) % args.eval_every == 0:
@@ -144,12 +169,31 @@ def main():
                        "ontime_pct": ont, "mean_dep": dep}
                 seed_rows.append(row)
                 all_rows.append(row)
+            # live trend line: rolling reward, recent entropy/loss, last eval,
+            # incident rate + hard-guards so a policy collapse is visible early.
+            if args.log_every > 0 and (ep + 1) % args.log_every == 0:
+                st = l3.get_last_stats()
+                win = ep_rew[-args.log_every:]
+                l3r = sum(win) / max(len(win), 1)
+                inc_r = sum(incident_flags[-args.log_every:]) / max(len(incident_flags[-args.log_every:]), 1) * 100
+                hg = sum(hard_guards[-args.log_every:])
+                if seed_rows:
+                    last = seed_rows[-1]
+                    ont_s, dep_s = f"{last['ontime_pct']:.1f}", f"{last['mean_dep']:.1f}"
+                else:
+                    ont_s = dep_s = "n/a"
+                print(f"[seed {seed} ep {ep+1}/{args.episodes}] "
+                      f"l3_reward={l3r:+.2f} ent={st.get('l3_entropy', 0):.3f} "
+                      f"pol={st.get('l3_loss_policy', 0):+.3f} val={st.get('l3_loss_value', 0):.3f} "
+                      f"eval_ont={ont_s}% eval_dep={dep_s}s inc={inc_r:.0f}% hg={hg}",
+                      flush=True)
         plat_ont = plateau_check(seed_rows, "ontime_pct", args.plateau_k, args.ontime_thresh)
         plat_dep = plateau_check(seed_rows, "mean_dep", args.plateau_k, args.dep_thresh)
         print(f"seed {seed}: plateau_ontime={plat_ont} plateau_mean_dep={plat_dep} "
               f"final_ontime={ont:.1f}% dep={dep:.1f}s", flush=True)
+        tag = "_incident" if args.incident else ""
         torch.save({"l3_actor": l3.actor.state_dict(), "l3_critic": l3.critic.state_dict()},
-                   f"output/l3v3_{args.scenario}_seed{seed}.pt")
+                   f"output/l3v3_{args.scenario}{tag}_seed{seed}.pt")
 
     with open(args.out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["seed", "episode", "l3_reward", "entropy",

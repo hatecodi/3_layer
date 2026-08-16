@@ -35,6 +35,15 @@ time_generation:
     k_dwell: [120, 300]                 # longer occupation
     g_dwell: [60, 150]
     p1_bias: 0.0                        # uniform — heuristic can't predict
+  corridor_incident:
+    enabled: false                  # opt-in: pass enable_corridor_incident=True
+                                    # (or --incident) so existing baselines are unchanged
+    prob: 0.6
+    duration_range: [100, 200]
+    factor_range: [0.15, 0.4]           # 大暴雨(45km/h=0.15x) .. 暴雨(120km/h=0.4x) — HARD DATA
+    safety_factor: 1.5                  # wet-rail braking distance — ESTIMATED
+    min_trains: 2                       # incident window must overlap >= this many transits
+    max_added_delay_sec: 200            # calibration cap — keep delay recoverable
 assumptions:
 - 'Time compression: real seconds / 25 = sim seconds. Base 15:00 = t=0.'
 - A:南昌西 B:鹰潭北 C:上饶 D:杭州东 E:南京南

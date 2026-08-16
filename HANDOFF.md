@@ -1,65 +1,82 @@
-# Handoff — 2026-08-08 22:40（明天：实现走廊限速事故场景）
+# Handoff — 2026-08-15
 
-## 项目状态
+## 项目状态（关键变化：今天有了可写的正向结果）
 
-三层铁路 MARL 框架，L3 已升级为**逐区段速度曲线学习**（顺序决策、移动闭塞 headway 硬边界）。当前在**扩展性研究**阶段：验证分层 MAPPO 相对贪婪 SA 优化器的优势是否随规模/拥堵增长。
+三层铁路 MARL。**本轮完成物理修复 + 场景完善 + 分层重训，拿到了可辩护的结果：**
 
-## 今天完成
+- **learned ≈ 非全知 SA（sa-online）**，略低于全知 SA（oracle），**远胜 cruise（无协调 floor）**。
+- **扩展性：learned 在 10t→30t 平滑迁移（77/71/64/62/62 ontime），全面碾压 flat MAPPO（48/43/38/38/36.5）**，flat 甚至低于 cruise。
+- **诚实根因不变**：双线单股道无越行 = 纯 FIFO → **L2 无协调价值**（learned L2 ≈ 启发式，所有场景验证）。三层价值在 **L3 的高效执行（即时响应 + 节能 + 到站精度）+ 整体鲁棒性 + 扩展性**，不在 L2 协调。
 
-1. **L3 v3**：逐区段序贯调速（worker 每区段选 CRUISE/FAST/SLOW），moving-block headway 硬边界，区段间 done=False/区段末 done=True。塌缩修复：平滑 ontime reward（高斯）+ late_coef=0.05 + entropy schedule。
-2. **团队奖励**：episode 级 `compute_l3_team_reward`（λ=0.3），L3 看到系统结果（episode ontime_rate, mean_dep）。仍是 MAPPO。
-3. **安全底线**：修了站台 min_gap bug（零时长终点车 booking 立即过期→平台提前释放，`w.end + min_gap > t_now`）。L1/L2 全审计干净。
-4. **训练日志采样修复**：单 episode → 滚窗均值。
-5. **收敛验证协议**（标准基建）：
-   - `scripts/train_l3_convergence.py`（多 seed + 斜率平台化）、`scripts/plot_l3_conv_protocol.py`、`scripts/analyze_l3_behavior.py`、`scripts/eval_protocol.py`（held-out 30 seed 分层）。
+## 本轮完成（2026-08-14→15）
 
-## 3 seed 收敛结果（今天跑完，确认收敛）
+1. **物理修复（关键）**：`section_progress` 改连续 moving-block（P2，FAST 不能中段贴车）；worker 执行按所选档位重算 wait；CRUISE 改走同一条逐区间路径（P1，消除 transit() 咽喉双算）。三条路径物理统一（stepwise ≡ transit，diff=0）。→ 旧 checkpoint 全失效，需重训。
+2. **incident 修复**：整趟限速→**section-resolved**（只限窗口覆盖的区段）；`safety 1.5→1.0`、`max_added 200→80`（低于 replan 阈值，防雪崩）。→ incident 从"全崩"变成"可恢复"（aff_mean ~30-40s）。加了 `--severity` 参数开关（不改基础配置）。
+3. **场景完善**：K834→G834（C→D，**D 停 48 sim-s 换车头**，造真实 D 站台稀缺）；K1185→G1185；停站异质核对（已符合铁路时刻表.md：G230跳C、G238跳B/C、G1487跳B）；**每条走廊最后一段加进站限速 limit_mps=70**（≈SLOW 速度）。**实证：跳站≠越行**（430 对车 0 次重排序，FIFO 结构不变）。
+4. **L3 双 critic + 奖励**：`L3WorkerTrainer` 拆 **critic_local（自身准点）+ critic_global（团队）**（镜像 L2 的 local/global），reward 拆分；FAST penalty 0.30 + **早到惩罚 always（0.05）** → 治好了 always-FAST 塌缩（行为分布匹配 SA：CRUISE 63/FAST 37，限速段 FAST 76%）。save keys: `l3_critic_local/global`。
+5. **分层重训（A+B）**：`run_train_hierarchical` PHASES=A(L2+SA-L3)+B(L3固定L2蒸馏)，加 `--incident`/`--l2-ckpt`。Phase A 11min、Phase B v3 ~20min。**A+B 足够，不需 Phase C**（L2≈启发式无协调价值，C 增益小+不稳）。
+6. **指标**：尾端严重度（`SEVERE_DELAY_SEC=60s`，n/rate/mean/max）；**E1 重解代价**（SA 重排 n_transits×3.48ms vs learned 即时 n_sections×0.36ms，`compute.csv`）；per-metric CSV 输出（`--out-dir`，每指标一张表）；`--extra-train`（随机加车 P2→D）；`--severity`（incident 强度，开重调度窗口）。
+7. **flat MAPPO 重训 + 扩展性**：flat 用 72 动作联合（platform×entry×speed），单档速度。15t+incident 重训 7000 集（发车 ontime 88% 收敛，但到站仅 43%——单档速度无法控到站）。10t/15t/20t 评估。
 
-`scripts/train_l3_convergence.py` 15t，2500ep×3，团队奖励：
-| seed | plateau(ontime/dep) | final ontime | final dep |
+## 关键结果（15t incident 3×60，learned=PhaseA L2 + PhaseB_v3 L3）
+
+| mode | ontime% | affected 延迟 | E1 重解代价 |
 |---|---|---|---|
-| 0 | ✓/✓ | 75.8% | 18.9s |
-| 1 | ✓/✓ | 77.2% | 18.2s |
-| 2 | ✓/✓ | 77.0% | 18.3s |
-- 全部过斜率平台化判据；最终方差小（ontime 76.7±0.7%，dep 18.5±0.4s）→ 训练稳定。
-- 收敛图：`output/figures/l3v3_conv_15t_ms.png`；checkpoint：`output/l3v3_five_station_15t_seed{0,1,2}.pt`。
-- 注意：这是**当前 origin-bunching 扰动**下的收敛（learned ≈ SA，协调价值小）。
+| sa（全知 oracle）| 73.0 | 30.2 | 重排 2.4x |
+| **learned** | **71.4** | 38.5 | 即时（便宜 2.4x）|
+| sa-online（非全知）| 71.4 | 39.7 | 0.5ms/区间 |
+| cruise | 44.2 | 88.4 | ~0（规则）|
+| **flat MAPPO** | **42.9** | 82.0 | 单前向（最便宜但差）|
 
-## 关键结论（为什么重做延误场景）
+扩展性 ontime（10t/15t/20t/25t/30t，2026-08-16 补 25t/30t）：**learned 77.4/71.4/64.0/62.2/62.0**、sa 79.7/73.0/66.7/68.1/66.0、sa-online 78.0/71.4/66.3/67.5/65.7、cruise 53.7/44.2/41.2/38.7/34.5、**flat 48.3/42.9/38.0/38.3/36.5（≤ cruise）**。learned 到 30t 仍 ~62%（≈sa-6pp），flat 塌到 ~36%，learned−flat 差距在 25/30t 拉大到 ~25pp。死锁全 0。
 
-- 15 车下 **learned ≈ SA**（拥堵子集优势极小）。origin-bunching 扰动（60-160s）不可恢复、淹没一切；worker 行为是 delay 驱动（晚点→FAST），**不是拥堵协调**（下一站拥堵仍 FAST 100%），团队奖励也没改变。
-- **L3 速度协调在当前扰动下杠杆小 → 重做延误场景**，让协调空间变大（见 plan）。
+**训练轮数收敛对比（2026-08-16，held-out 到站准点 vs episodes，15t/25t 从头训练，等预算 6000 集）**：
+收敛指标已升级为 **held-out eval**（训练每 200 集冻结当前策略、固定 12 集 incident 种子评估，见 run_flat_mappo/run_train_hierarchical 的 --eval-every hook）——比训练时 per-episode 干净，flat 25t 训练滚动 0.50 是噪声、held-out 稳定 0.41。
+| 方法/规模 | 全管线 episodes-to-50%（held-out） | PhaseB-only(学到的 L3) | 最终 held-out 到站准点 |
+|---|---|---|---|
+| flat 15t (6000集) | **永不** | — | 0.453 |
+| flat 25t (6000集) | **永不** | — | 0.412 |
+| hier 15t (PhaseA+B 6000) | 200（首个 eval 点即 ≥50%，SA 预训练起步） | 4000 | 0.673 |
+| hier 25t (PhaseA+B 6000) | 200 | 5000 | 0.612 |
+含义：**等预算 + held-out 口径**下，分层管线在首个 eval 点（ep 200）即可用（Phase A 用 SA-L3 作 L3 经验），学到的 L3（Phase B 从随机）在累计 4000/5000 集内收敛到 50%+；flat 在同样 6000 集内从未达到 50%（15t 0.45 / 25t 0.41）。训练时 flat 25t 逼近 0.50 的迹象是噪声，held-out 确认 flat 未达可用水平。
 
-## 明天计划（part 2，plan 已写）
+## 数据位置
 
-`plan_corridor_incident_scenario.md`：**走廊临时限速事故**扰动（暴雨），让协调价值显性。
+2026-08-16 新增（全部在 `output/8_16/`）：`scalability/{25t,30t}/`（扩展评估 per-metric CSV）、
+`scalability/summary_ontime.csv`（10..30 合并）、`scalability/conv_summary.csv` + `conv_curves.png` + `conv_phaseB.png` + `scalability_quality.png`（held-out 收敛对比）、
+训练（**规范版=带 held-out eval**，各含 training_metrics.csv + eval_ontime.csv）：
+`training/flat_mappo/20260816_{154653,155134}/`（flat 15t/25t 6000集）、
+`training/five_station_{15t,25t}_hierarchical/20260816_{154928,154929}/`（hier 15t/25t PhaseA+B）。
+旧的无 eval 版本（flat 140618/140829/152139/152543、hier 140621/140832）已被取代，可清理。
+配置：`configs/five_station_{25t,30t}/`。
 
-**依据（已查铁路资料，来源在 coding_log 22:01 条目）**：
-- 暴雨（1h 降雨 ≥45mm）→ 限速 **120 km/h = 0.4×**（P2 巡航 300）；大暴雨（≥60mm）→ **45 km/h = 0.15×**。硬数据。
-- 跟车间隔：正常 CTCS-2/3 ≈ 180s；限速→湿轨制动距离增→间隔增。`safety_factor 1.5`（估计，论文标注）。
-- 场景 = 限速 0.4 + `moving_block_safety_m × 1.5`。
+2026-08-14 旧数据（全部在 output/8_14/）：
 
-**实现**（按 plan）：
-1. `disturbance.py` `inject_corridor_incident`（config: prob/min_time/duration/factor/safety_factor）
-2. env：`_corridor_incidents`，transit 时算 speed_factor 传 L3 sim + obs（obs 第10槽 = 1.0-speed_factor）
-3. `l3_sim.py` `section_run_time`/`section_progress` 加 speed_factor
-4. config `time_generation.corridor_incident`
-5. 重训 + 协议验证（收敛/行为/held-out，按受限分层）→ 20/25 车扩展性
+- `incident/`、`clean/`、`extra/`：15t 对比 + 加车，per-metric CSV（ontime/affected/tail/delay/compute/episode）
+- `scalability/{10t,15t,20t}/`：扩展性（含 flat）
+- `behavior/`：SA vs learned 行为分布
+- `training/{phaseA,phaseB,phaseB_v2,phaseB_v3,flat_mappo}/`：训练 metrics + ckpt
+- `training/phaseB_v3/convergence.png`：收敛曲线（reward +3.07，ontime 82.4% 平台化）
+- 临时可清理：`extra_15t/`、`extra_20t/`、`extra/headway.csv`（headway 次数指标已弃用）
 
-## 关键文件 / checkpoint
+## 诚实结论
 
-- `src/control/l3_sim.py`（逐区段 + section_progress + moving-block）
-- `src/env/five_station_env.py`（stepwise loop + 团队奖励 + min_gap 修复）
-- `src/env/reward.py`（smooth ontime + compute_l3_team_reward）
-- `src/marl/l3_worker.py`、`src/control/l3_sa.py`（SA 基线）
-- `scripts/{train_l3_convergence,plot_l3_conv_protocol,analyze_l3_behavior,eval_protocol}.py`
-- `configs/five_station_15t/`（15 车变体，`scripts/generate_scaled_timetable.py` 生成）
-- checkpoint：`output/l3v3_five_station_15t_seed{0,1,2}.pt`（3 seed 收敛版）
+- **L2 协调价值 ≈ 0**（稀缺 G834、incident、重调度窗口 severity=2.5 下，learned L2 ≈ 启发式）。
+- **L3 价值在"高效执行"**：即时响应（E1 2.4x 便宜于 SA 重排）、逼近非全知 SA、远胜 cruise 和 flat。
+- **flat MAPPO 失败**：72 动作联合空间难学 + 单档速度 → 低于无协调 floor → 是分层分解价值的强论据。
+- **重调度未实现**（L3→L2 显式通信没有）；L2 滚动重排存在但被 slack/FIFO 压制。
 
-## 已知坑 / 注意
+## 审稿人问题（现在能答）
 
-- **训练 log 采样**：单 episode 会骗人（只采到无束发→假 2.3s/96%）——用滚窗均值/held-out eval。
-- **观测里 `next_platforms_free`（obs idx7）就是下游拥堵信号**，但 worker 目前不用它协调（reward 没激励）。加 obs 前先确认是否已有可用信号。
-- **reward 量纲**：团队/全局项太弱（0.002）= 无协调；太强（逐次 0.01+）= 震荡。episode 级团队奖励是干净方案（每集一个值）。
-- **站台 min_gap**：终点终止车零时长 booking，过滤要 `w.end + min_gap > t_now`（已修）。
-- **eval seed 集要固定**：不同 seed 集 learned vs SA 胜负会反转（650000+ learned 赢，800000+ 打平）。用协议固定 held-out。
+"为什么做 MAPPO 分层，不做 flat/启发式？"——**现在有数据答**：
+1. flat MAPPO（72 联合动作）在 10-30t 全面塌缩（48→36.5，≤ cruise）→ 分层分解价值。
+2. learned 以 2.4x 低算力追平非全知 SA、逼近全知 SA、远胜无协调 floor。
+3. 加车次/新实例免重训迁移（learned 15t→10t/20t/25t/30t 保持，到站准点 77→62）。
+4. **训练轮数（等预算 6000 集，held-out 口径）**：分层首个 eval 点（ep 200）即可用（SA 预训练起步）+ 学到的 L3 ~1000-2000 PhaseB 集收敛到 50%+；flat 6000 集从未到 50%（15t 0.45 / 25t 0.41，见上表）。
+
+## 下一步建议
+
+1. **清理临时数据**（extra_15t/extra_20t/headway.csv）+ 把关键结果整理成论文表格/图。
+2. **可选**：short Phase C（联合微调）走形式；或测"L2 在 SA-L3 vs learned-L3 调度一致性"证据。
+3. **越行/重调度**：若要坚持"learned 赢强基线"，仍需越行（重排序自由度）；当前"逼近 oracle + 扩展性"框架不依赖它。
+4. flat MAPPO 的 PROJECT_ROOT bug 已修；旧单 critic L3 脚本（continue_with_vt 等）与新 L3WorkerTrainer API 不兼容（未更新，legacy）。

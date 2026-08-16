@@ -2212,3 +2212,705 @@ Figure: output/figures/l3v3_conv_15t_ms.png; checkpoints: output/l3v3_five_stati
 This is the standard convergence evidence for the CURRENT (origin-bunching)
 scenario, where learned ~= SA. Tomorrow: corridor speed-restriction incident.
 HANDOFF.md rewritten with today's state + tomorrow's plan.
+
+[2026-08-12]
+Task: fix L3 convergence figure missing 2000-2500ep tail
+
+Root cause: _rolling() in scripts/plot_l3_conv_protocol.py and
+scripts/plot_l3v3_convergence.py used np.convolve(..., mode="valid"), trimming
+w-1 trailing points (w=5, 20 eval pts -> line ended at ep 2000). Data in CSV
+was complete through 2500; the plot dropped the tail.
+Fix: edge-pad before valid-mode convolution so the smoothed series keeps full
+input length (no truncation, no mode="same" zero-dip artifact).
+Regenerated output/figures/l3v3_conv_15t_ms.png + l3v3_convergence_paper.png;
+both line/band now span 125..2500.
+
+[2026-08-12]
+Task: sync CLAUDE.md + AGENTS.md to current code state
+
+Both files were two-station era and referenced files that no longer exist
+(sumo_env.py, configs/timetable_layer1.yaml, scripts/validate_sumo.py) plus a
+data-flow step (ExecutionTarget -> executor.py -> SUMO TraCI) that is dead code
+(only legacy run_executor_baseline.py). obs dims were 74/K_max=5; actual is
+~29/k_local=1. AGENTS.md also pointed at non-existent .Codex/ paths.
+Updated: project overview (five-station A-E, 15t), Layer1/3 descriptions, key
+commands (current L3 workflow), data flow, module table (added
+five_station_env/l3_worker/l3_sim/l3_sa/run_train_hierarchical/run_train_l3_only/
+run_flat_mappo; marked executor/execution_target/run_executor_baseline LEGACY),
+"to be built" list, critic obs dims, network section. AGENTS.md workflow paths
+now point to .claude/ (real). README.md still stale (L3 v2 reward/obs, old
+results) — deliberately left; update separately if needed.
+
+[2026-08-12]
+Task: corridor speed-restriction incident — CORE IMPLEMENTED (+ plan optimizations)
+
+Optimizations found in the draft plan (verified with data):
+(a) Random incident windows caught 0 trains 50.8% of the time (measured on the
+    15t timetable) -> incident timing now ANCHORED to corridor transits
+    (>= min_trains=2, weighted by traffic; follows inject_bunched_delay pattern).
+(b) Incident runs decoupled from origin-bunching: train_l3_convergence gained
+    --incident (enable_corridor_incident=True, enable_initial_delay=False) + --vt.
+(c) Severity calibrated: max_added_delay_sec=200 caps worst-case added delay
+    (regime-aware: full-cover transit*(1/f-1) vs partial duration*(1-f)) so the
+    incident delay is recoverable by L3 (not like bunching). factor 0.31-0.47
+    observed (0.15 floor raised when needed).
+(d) Corridor choice weighted by traffic.
+
+Implemented:
+- src/env/disturbance.py: inject_corridor_incident + _corridor_transit_windows
+  (returns {corridor: (start,end,speed_factor,safety_factor)}; enabled gated by
+  caller, not config — avoids silently changing existing baselines).
+- src/control/l3_sim.py: section_run_time(..., speed_factor), section_progress(
+  ..., speed_factor, safety_factor) — moving-block safety dist grows under wet rail.
+- src/control/l3_sa.py: sa_optimize_profile threads both factors (SA sees the
+  same physics as the worker).
+- src/env/observation_builder.py: L3 obs slot 9 (was reserved) = 1.0-speed_factor
+  (0=clear) — worker can react to the restriction; obs stays 10-dim.
+- src/env/five_station_env.py: enable_corridor_incident param (default off),
+  _corridor_incidents in init/reset, _advance_trains computes per-transit factor
+  from window overlap, threads to worker/SA/obs. Compat (no worker/SA) path
+  ignores incidents (documented).
+- configs/five_station + five_station_15t timetable.yaml: corridor_incident block
+  (enabled:false doc-only; prob .6; duration [100,200]; factor [0.15,0.4] HARD
+  DATA; safety_factor 1.5 ESTIMATED; min_trains 2; max_added_delay_sec 200).
+- scripts/train_l3_convergence.py: --incident / --vt flags.
+- tests/test_l3_physics.py: +4 tests (speed_factor slows, safety_factor widens
+  gap, anchored-to-traffic, calibration recoverable). 40/40 green.
+
+Smoke: 6/8 eps got an incident, 156 L3 transitions carried the restriction
+signal; default env unchanged (backward compat).
+
+NEXT: wire --incident into analyze_l3_behavior.py + eval_protocol.py, then
+train (train_l3_convergence --incident) + behavior + held-out eval, then
+20/25-train arm.
+
+[2026-08-12]
+Task: eval/behavior audit for the incident arm — fixed biases, wired --incident
+
+Audit findings before wiring (eval angle was origin-bunching-era):
+  B1 CRUISE baseline IGNORED the incident (compat path) -> inflated CRUISE.
+  B2 stratification keyed on origin-bunching, not incident.
+  B3 metrics were L2 grant departure delays, not L3 realised corridor/arrival delay.
+  B4 fixed seed block + single checkpoint = seed-set sensitive (known flip).
+  B5 point estimates only, no paired stats/CI.
+  B6 deadlock/truncation folded into succ only.
+  B7 absolute >60s meaningless under incident (delay inevitable).
+  B8 behavior script had no incident-signal binning + hardcoded initial_delay.
+
+Fixes landed (order):
+  1. B1: l3_sim.transit() gained speed_factor/safety_factor (run scaled by 1/f,
+     moving-block safety dist * sf); env compat branch passes them -> CRUISE
+     baseline faces the same physics. +2 tests.
+  2. Env: _advance_trains records realised corridor transits
+     (train/corridor/actual_arrival/planned_arrival/arr_delay/headway_delay/
+     affected) -> info["l3_transit_events"] (eval instrumentation).
+  3. eval_protocol.py rewritten: --incident (decouple from bunching), incident-
+     aware stratification (affected vs unaffected transit events; incident vs non-
+     incident episodes), realised-arrival-delay distribution, paired excess vs
+     CRUISE on the affected subset (B7: relative, not absolute), --blocks seed-
+     block variance (B4), deadlock/trunc reported separately (B6). Legacy
+     bunching path kept (backward compat).
+  4. analyze_l3_behavior.py: --incident + --vt; added action-vs-restriction-signal
+     (obs slot 9) binning = pass criterion #4.
+
+Verified: 42/42 tests; eval smoke (dummy ckpts) shows affected subset clearly
+slower than unaffected + paired excess negative vs CRUISE; CRUISE now honours the
+incident (affected mean 452s vs ~0 before the fix). Legacy non-incident eval path
+unchanged.
+
+NEXT: train_l3_convergence --incident (3 seeds) -> analyze_l3_behavior --incident
+-> eval_protocol --incident --blocks 3 -> 20/25-train arm.
+
+[2026-08-12]
+Task: train_l3_convergence.py --log-every live trend logging
+
+Script only printed at seed completion (2500ep) + final save -> no mid-run signal.
+Added --log-every (default 500): per-episode incident_flags/hard_guards tracking +
+a flush=True trend line every N eps: rolling l3_reward, entropy, policy/value loss,
+last eval ontime%/mean_dep, incident rate %, hard-guard count. Lets us catch a
+policy collapse early (reward cliff / entropy->0 too fast / eval ontime drop).
+Restarted the incident training (brqfqz28p) with --log-every 500 to get live
+monitoring for this run; a 5-min cron (26457e27) tail-checks the log and reports
+trend/verdict.
+
+[2026-08-12]
+Task: incident training monitoring + checkpoint hygiene
+
+- Incident training (brqfqz28p) progress: seed0 ep1500/2500. eval_ont DRIFTING DOWN
+  91.8% -> 88.5% -> 86.8% (training should improve ontime, not reduce it) — flagged
+  as a watch item, will investigate after training + baseline comparison.
+  ent 0.77->0.19 (annealing, not collapsed), hg 644->512 (improving), reward ~-32..-41.
+- CAUGHT: train_l3_convergence.py save path was hardcoded
+  output/l3v3_{scenario}_seed{seed}.pt -> the incident run would OVERWRITE the
+  origin-bunching L3 checkpoints. Fixed: tag="--incident"? -> l3v3_..._incident_seedX.pt
+  (doesn't affect the already-running instance). Backed up the origin-bunching ckpts
+  to output/ckpt_backup/l3v3_five_station_15t_originbunch_seed{0,1,2}.pt.
+- Plan after training: copy incident ckpts to distinct names, then eval_protocol
+  --incident --n 60 --blocks 3 (learned vs SA vs CRUISE on same held-out seeds),
+  then diagnose the ontime metric (B3-style: departure vs realised-arrival ontime).
+
+[2026-08-12]
+Task: incident training DONE (3-seed) + eval surfaced a SA baseline bug (fixed)
+
+Training (train_l3_convergence --incident, 3x2500ep, 15t):
+  seed0 plateau both True, final ontime 91.5% dep 9.6s reward -22
+  seed1 plateau both True, final ontime 91.8% dep 9.7s reward -14
+  seed2 plateau both True, final ontime 90.8% dep 10.6s reward -6 (val spike 85 at
+  ep1500 recovered; slower entropy anneal 0.358@ep2000 — slightly less converged)
+  ckpts: output/l3v3_five_station_15t_incident_seed{0,1,2}.pt (origin-bunching
+  ckpts preserved in output/ckpt_backup/, default names restored).
+
+ONTIME-METRIC DIAGNOSIS (user concern confirmed): n_ontime_dep is L2 GRANT-level
+departure vs timetable plan (reward.py:71-78) — NOT execution. Incident eval shows
+affected transits arrive mean +233s late while departure-ontime reads 91.5% => the
+high ontime is a departure-metric artifact; realised ARRIVAL delay on the
+affected subset is the real signal.
+
+BUG FOUND in first eval: SA arrived EARLY on affected transits (mean -38.8s)
+because the env's SA EXECUTION loop called section_progress WITHOUT
+speed_factor/safety_factor (five_station_env.py SA branch) — SA planned with the
+restriction (sa_optimize_profile threads it) but executed at full speed. Fixed:
+pass speed_factor/safety_factor in the SA branch execution loop. Regression test:
+tests/test_l3_physics.py test_sa_execution_honors_speed_factor (asserts affected
+C_to_D transit delay > 50s). 43/43 tests green.
+Re-ran incident eval with the fix; SA affected delays now positive (G230 +202.7s).
+
+[2026-08-12]
+Task: incident eval final — learned ≈ SA across all 3 seeds (honest negative)
+
+eval_protocol --incident --n 60 --blocks 3 --seeds 900000, learned-only reruns for
+seed1/seed2 ckpts (added --learned-only flag; SA/CRUISE are checkpoint-independent).
+
+Affected-subset realised arrival delay:
+  learned s0: mean 230.9 p90 470.9 p95 570 | s1: 234.7/470.9/571 | s2: 225.3/444.5/527
+  SA (fixed): 238.4 / 470.9 / 556 | CRUISE: 556 / 976 / 1433 (system collapses, succ 52/103)
+
+Conclusions:
+1. learned ≈ greedy-SA under the incident too, robust across all 3 training seeds.
+   max=1159 identical -> tail ceiling is incident physics, not coordinatible.
+2. L3 layer IS necessary: CRUISE (no coord) collapses (unaffected mean 1812s).
+3. Ontime-metric artifact confirmed: affected arrival ~230s late while departure
+   ontime reads 91.5% (n_ontime_dep is L2 grant vs timetable, not execution).
+=> The "coordination-rich" incident did NOT separate learned from greedy-SA. Per-transit
+   SA with full info is near-optimal for the arrival-punctuality objective under
+   moving-block headway (problem is locally separable per train). To beat SA, need
+   either a non-local objective/reward (team term too weak at lambda=0.3) or a
+   disturbance where trains' choices interact non-locally, or scale (20/25t) where
+   congestion is binding.
+
+[2026-08-12]
+Task: FIX the ontime metric — switch headline punctuality from L2 grant DEPARTURE
+to REALISED ARRIVAL (L3 execution).
+
+WHY departure was used: L2's output is a departure window; metrics predate L3
+execution; eval keyed on n_ontime_dep out of inertia. Result: incident showed
+"91.5% ontime" while affected trains actually arrive mean +230s late — a false high.
+
+Fix (reward.py + env + eval):
+- Metrics.n_arrivals added; compute_metrics(transit_events=...): when provided,
+  n_ontime_arr/total_arr_delay/mean_arr_delay/max_arr_delay/ontime_rate are
+  computed from REALISED arrivals (ev['arr_delay'] = actual-planned). Fallback to
+  grant window W_in when no events (backward compat). ontime_rate now = arrival.
+- five_station_env.step(): passes transit_events to compute_metrics; _l3_ep_grants/
+  _l3_ep_ontime/_l3_ep_delay now accumulate n_arrivals/n_ontime_arr/total_arr_delay
+  -> L3 team reward is trained on REALISED arrival punctuality.
+- eval_protocol + train_l3_convergence eval_worker: ontime/delay now read
+  n_ontime_arr/n_arrivals/total_arr_delay. Plot labels updated.
+- Fixed a bug in my fallback branch (for_train args swapped). 43/43 tests green.
+
+Corrected picture on existing incident checkpoints (30 seeds):
+  learned s0: ARR ontime 27.5% mean arr delay 44.3s  (old DEP ontime 76.3%)
+  learned s1: ARR ontime 31.7% mean arr delay 41.1s  (old DEP ontime 78.9%)
+  learned s2: ARR ontime 26.3% mean arr delay 45.0s  (old DEP ontime 74.7%)
+=> real arrival punctuality ~27-32%, not 90%+.
+
+NOTE: existing incident checkpoints were trained with the DEPARTURE-based team
+reward. The team-reward signal is now arrival-based => RETRAIN needed for L3 to
+optimise realised punctuality.
+
+[2026-08-12]
+Task: retrain stopped after seed 1 (user: "不用跑了，seed2")
+
+Retrain (arrival-based team reward) run bxocehday stopped early after seed 1.
+2 retrained seeds, consistent:
+  seed0: ARR ontime 42.8% mean arr delay 52.6s
+  seed1: ARR ontime 42.6% mean arr delay 50.4s
+vs SA 46.3% / 29.0s => ontime close (~4pt), mean delay ~2x worse.
+
+Checkpoint state (WARNING): incident_seed{0,1}.pt = retrained arr-based (19:28/19:41);
+incident_seed2.pt = OLD dep-based (18:49, not retrained). dep-reward versions backed up
+in output/ckpt_backup/l3v3_five_station_15t_incident_depreward_seed{0,1,2}.pt.
+Retrain CSV not written (stopped before final save); per-seed data in log
+output/l3v3_conv_incident_arr.log.
+
+Diagnosis for the remaining gap (mean delay 51s vs SA 29s): late_coef=0.05 in
+compute_l3_terminal_reward is too flat beyond ~15s -> learned doesn't penalise the
+tail. Proposed fix: late_coef 0.05 -> 0.3-0.5 (or superlinear), plus strengthen the
+team reward (lambda 0.3->1.0+ / reward re-dispersion) so coordination can beat
+greedy-SA. Pending user decision.
+
+[2026-08-12]
+Task: priority-weighted ontime in EVAL + reward
+
+User consulted railway dept: KPI = ontime ARRIVALS / total; high-priority trains
+(复兴号>和谐号>普速) must be MORE on-time. Two changes:
+
+REWARD (already implemented this session):
+- compute_l3_terminal_reward now has priority param; local reward scaled by
+  PRIORITY_WEIGHT {1:1.4, 2:1.0, 3:0.6} so higher-class arrivals matter more.
+  Env worker + SA baseline both pass priority=train_prio (fair comparison).
+- ontime_bonus raised 2.0->3.0 (rate PRIMARY, applies to all arrivals so dominates
+  expected reward); late penalty 0.15*dev + 0.001*dev^2 (tail SECONDARY).
+
+EVAL (this entry):
+- eval_protocol: arr_events now carry priority; report_incident prints
+  priority-stratified realised-arrival ontime (all / incident-affected) for P1/P2/P3.
+  Smoke (old no-priority ckpt): P1=16.7% vs P2=71.1% -> confirms old reward didn't
+  prioritise high-class trains; retrain with priority weighting should lift P1.
+
+RETRAIN running (b9rku7vny) with the new reward. ckpts backup:
+  ckpt_backup/l3v3_five_station_15t_incident_arr_seed{0,1}.pt (previous arr-based).
+
+[2026-08-12]
+Task: reward tail-cap fix + restart priority retrain
+
+First priority-reward run showed l3_reward ~-870 (vs -60 prior): the quadratic
+late term 0.001*dev^2 exploded on incident extreme delays (a P1 train 400s late =
+-308 reward), letting a few physics-bound extreme-late trains dominate the episode
+reward and violate the "ontime rate PRIMARY" hierarchy.
+Fix: L3_LATE_CAP=20.0 — late penalty = min(0.15*dev + 0.001*dev^2, 20), so the
+tail is strongly penalised up to ~85s then flat (P1 max -28, P2 -20, P3 -12);
+rate incentive stays primary. Verified reward magnitudes + 43/43 tests.
+Restarted training (bu1cswtuy).
+
+[2026-08-12]
+Task: per-train schedule speed — fixes P1/P3 structural early/late (root cause)
+
+ROOT CAUSE: sim used CLASS-level MAX speeds as cruise on a P2-calibrated shared
+corridor, but the timetable encodes PER-TRAIN schedule (average) speeds. P1
+(复兴号) planned 249s C->D vs 149.6s at 350km/h cruise -> arrived ~100s early.
+P3 (K1185) had huge schedule slack -> ~55s early. ontime KPI was structurally
+unfair across classes.
+
+FIX (realistic speeds, per user "速度要符合现实"):
+- l3_sim: section_run_time/section_progress accept schedule_cruise_mps (per-train
+  per-corridor). CRUISE = schedule speed, FAST = class max (recovery), SLOW = /1.2.
+- env: schedule_cruise = distance/(planned_transit - corridor_overhead_sec) from
+  the INITIAL timetable (fixed), capped at class max. Passed to worker + SA;
+  obs speed_ratio now schedule/max. L2-adjusted departure does NOT change the
+  target (L3 recovers toward the fixed planned arrival).
+- l3_sa: sa_optimize_profile threads schedule_cruise_mps (SA sees same physics).
+
+VERIFIED: CRUISE reproduces planned transit for ALL trains/classes (worst err
+0.000s). No-incident SA: P1 ontime 16.2%->93.3%, P3 0%->100%, P2 40.3%->78.9%.
+P2 p90 +114s tail: either realistic tight-schedule (G230 express, low recovery)
+or stale-L2 side effect (L2 ckpt trained on old speed model). 43/43 tests.
+
+NOTE: existing L3 checkpoints are STALE (old class-speed model). Need L3 retrain
+with the new schedule speeds. Pending L2 decision (keep frozen w/ caveat, or retrain).
+
+[2026-08-12]
+Task: FAST-penalty (fix policy collapse) + figures 1/3/5 + table 6
+
+BEHAVIOR COLLAPSE found: analyze_l3_behavior showed learned = FAST 100% under any
+stress (delay>90 / headway>0.5 / restricted) — never SLOW, always crank FAST. Root:
+v3 reward dropped the v2 fuel penalty -> FAST is free -> degenerate "always FAST".
+User: "这个其实策略崩塌了，行为上没有智能选速度".
+
+FIX: L3_FAST_PENALTY=0.5 per FAST block-section (reward.py). Worker: each FAST
+section reward = -0.5. SA score subtracts same cost (fair comparison). 43/43 tests.
+NOTE: speed_factor DOES slow all modes (FAST under 0.4 restriction = 160km/h, not
+400) — clarified in fig6 table; "FAST 100%" is a gear choice, not ignoring the limit.
+
+FIGURES (output/figures/8.12图/): fig1_convergence.png (3-seed before band),
+fig3_ontime_priority.png, fig5_affected_delay.png, fig6_behavior.md (table),
+data/compare.csv. CSV-first workflow (eval_protocol --out-csv now dumps per-mode
+ontime/priority/affected stats).
+
+3-seed BEFORE (no FAST penalty): ontime 76.8/77.1/70.6 = 74.8+/-3.6%, dep
+31/68/35s (seed1 tail high). eval_protocol honest comparison (replan 250s physics):
+learned 71.6% vs SA 75.5% vs CRUISE 15% overall; affected mean 202 vs 387 vs 695s;
+priority P1: learned 77.3/SA 80.4/CRUISE 15.3 (both learned+SA satisfy "high-priority
+more ontime").
+
+RETRAINING: 1-seed with FAST penalty (bbi1k2nde) to verify the collapse is fixed
+(behavior should show FAST/CRUISE/SLOW tradeoff, not always-FAST). Then 3-seed.
+
+[2026-08-13]
+Task: FAST-penalty + slow entropy — behavior collapse FIXED
+
+Penalty 0.5 over-corrected (policy gave up FAST entirely, ontime stuck 58%, entropy
+collapsed to 0). Root was NOT just penalty magnitude: with any penalty the reward
+landscape is sharper and the old entropy schedule (0.05->0.01) determinized the
+policy before it could explore the FAST/CRUISE tradeoff.
+
+FIX: L3_FAST_PENALTY 0.5 -> 0.25; entropy schedule 0.05->0.01 becomes 0.15->0.05.
+
+1-seed result (bbi1k2nde stopped; b7lfhlicn final):
+  plateau both True, final ontime 77.8% dep 55.4s (ontime == no-penalty 76.8%).
+  Behavior (analyze_l3_behavior --incident): restriction -> CRUISE 56/FAST 37/SLOW 8
+  (was FAST 100%); delay<5 -> CRUISE 97% (no waste); delay>90 -> FAST 94%; SLOW now
+  used (0% -> up to 10%). = state-dependent CRUISE/FAST/SLOW tradeoff, NOT collapse.
+  fig6_behavior.md updated with the fixed behavior.
+
+NEXT: 3-seed with penalty+slow-entropy for the final convergence figure, then final
+eval (learned 3-seed vs SA(also pays FAST cost) vs CRUISE) + regenerate figs.
+
+[2026-08-13]
+Task: 3-seed FINAL (FAST penalty 0.25 + slow entropy) + final eval + figures done
+
+3-seed convergence (bviyunbl3): all plateau both True.
+  seed0 77.8%/55.4s, seed1 74.5%/86.4s, seed2 74.2%/73.0s => ontime 75.5+/-2.0%,
+  mean_dep 71.6s. Mid-training val spikes (seed0 90@ep2000, seed2 751@ep1500)
+  self-healed at ep2500. Entropy stayed healthy (slow annealing 0.15->0.05 works).
+
+FINAL EVAL (learned 3-seed mean vs SA vs CRUISE, all paying L3_FAST_PENALTY=0.25,
+replan 250s, schedule-speed physics):
+  learned: ontime 71.6% P1 75.5 P2 68.1 P3 84.1 | aff_mean 457.6s
+  sa:      ontime 75.4% P1 80.3 P2 70.8 P3 93.3 | aff_mean 387.2s
+  cruise:  ontime 15.0% (collapses)
+HONEST RESULT: after the FAST-penalty behavior fix, learned is WORSE than SA on
+every metric. The earlier "learned beats SA on affected delay (202 vs 387s)" was an
+ARTIFACT of the collapsed always-FAST behavior (fast through the restriction) —
+fixing the collapse removed it. The team-reward coordination does NOT let learned
+beat the per-transit greedy SA oracle, even under the incident.
+
+FIGURES (output/figures/8.12图/): all FINAL
+  fig1_convergence.png (3-seed band, ontime 75.5+/-2), fig3_ontime_priority.png,
+  fig5_affected_delay.png, fig6_behavior.md (fixed behavior: restriction ->
+  CRUISE 56/FAST 37/SLOW 8), data/compare.csv (CSV-first).
+
+[2026-08-13]
+Task: root-cause verification — coordination value needs SCARCITY, not tight timing
+
+User insight: original plan had L3->L2 re-dispatch, but the env may not trigger it.
+Verified: dep_max_slack_sec=60 absorbs incident delay -> L2 re-dispatch is a rubber
+stamp (same decision, shifted window) -> no coordination pressure -> MAPPO L2 ~=
+heuristic L2.
+
+Quick experiment: tightened slack 60->10 + incident, learned L2 vs heuristic L2:
+  learned 60.6% vs heuristic 60.7% ontime, mean_dep 35.8s both, retried 601 vs 886.
+=> environment changed (more conflicts/retries, hard-guard explosion in compat path)
+   but NO learned-vs-heuristic L2 gap. Even with tight windows the heuristic first-fit
+   handles it (platforms are plentiful at A/B/C/E, D has 2). Coordination value needs
+   genuine RESOURCE SCARCITY, not tighter timing.
+
+SLACK REVERTED to 60 (five_station_15t).
+
+Fixed generate_scaled_timetable.py bug: first template-selection line indexed by
+max(len(up),len(dn)) which OOB'd when up=6 vs dn=5 (dn_tpl[5]). Generated
+configs/five_station_20t/ (20 trains, 9 shadows; note K834_s5 is a duplicated
+single-station visitor at C — watch for issues).
+
+TOMORROW PLAN: go to 20 trains (configs/five_station_20t) — genuine platform
+scarcity at D / higher throughput should make L2 coordination (and learned-vs-
+heuristic gap) meaningful. Then re-test learned L3 vs SA under real congestion.
+
+[2026-08-13]
+Task: noted reward-externality fix + re-dispatch pivot strategy
+
+REWARD DESIGN FLAW (independent of environment): current L3 reward is LOCAL (own
+arrival deviation) + weak shared team scalar. Learned optimises ≈ SA's objective ->
+can't beat the oracle. Team term not credited per-action -> no coordination gradient.
+Moving-block EXTERNALITY not internalised: a slow/late leader's headway wait penalises
+the FOLLOWER, not the leader. Fix plan: charge the LEADER for follower headway wait
+(plan_reward_externality.md). 20t is necessary but NOT sufficient — need the reward
+fix too.
+
+PIVOT STRATEGY (if 20t also fails): reframe paper around RE-DISPATCH (rolling
+rescheduling under disturbance), not "learned beats SA on speed". Three-layer =
+L1 bounds, L2 re-dispatch, L3 execution-feedback that TRIGGERS re-dispatch. Baselines:
+(1) no re-dispatch (static timetable, run broken schedule) — clean positive result;
+(2) rule-based re-dispatch (heuristic planner / priority-based); (3) learned three-
+layer re-dispatch; (4) optional global-opt oracle upper bound. Prerequisite: env must
+actually TRIGGER re-dispatch (tight slack / explicit trigger) — same root issue.
+
+[2026-08-13 22:49]
+Task: 20t config enhancement — dedup shadows + dense-departure placement + corridor_runtime alignment + tightened L2 slack; found & fixed resolver PARKED-fallback gap
+Files:
+  scripts/generate_scaled_timetable.py — density-aware shadow placement (group by (origin,dir), greedy densest window, min_spacing=12 rules out exact duplicates); added --slack/--bounds-slack/--min-spacing/--window; tie-break prefers later slot (avoids placing shadows before everyone at t=0)
+  src/control/resource_manager.py — resolve_all(): attempt fallback when conflicting with a PARKED/visitor window (was: only when cid in results -> a train whose first-choice platform is visitor-occupied was held even with free platforms, stranding origin trains past dep_max)
+  configs/five_station/railway_resources.yaml, five_station_15t/railway_resources.yaml — aligned dead network.corridor_runtime_sec to timetable LIVE values (B_to_C:90, C_to_D:180, D_to_E:180 etc.; was physically impossible C_to_D:90)
+  configs/five_station_20t/{timetable,railway_resources,l3_physics}.yaml — regenerated: 9 shadows, no exact dups (was G1380_s1==_s7, G1616_s3==_s9), A-up shadows packed at 96/108/120/132 behind base cluster 31-79, dep_max_slack_sec 60->30, static bounds slack 120->60
+Rationale: 20t is the planned "genuine scarcity" testbed for the re-dispatch paper. Old config had duplicate-shadow bug (4 trains never ontime), weak 15->20 ontime gap (38.1->34.6), dead corridor_runtime inconsistency, and slack too loose for re-dispatch pressure.
+Status: DONE. Empirical findings (heuristic+CRUISE, 10 seeds, no bunch):
+  - 20t feasible: 10/10 success, 0 hard-guards, 0 infeasible, 28 tests pass, all schedule_cruise within class limits.
+  - ontime 20t 44.0% vs 15t 39.4% — NOT lower. Tightened origin bounds (60s) force on-schedule departure, REDUCING delay cascade; the "tight slack -> lower ontime" assumption is wrong.
+  - D bottleneck NOT binding: max concurrent pending at D = 1 across 10 eps. Moving-block corridor headway pre-spaces arrivals, so 2 D platforms never contend. Binding constraint is corridor headway (L3 domain), not D platform (L2 domain) -> L2 platform/entry coordination value remains questionable (same conclusion as prior slack experiments).
+  - PASS criterion "20t ontime gap >= 10pp vs 15t" NOT met (reversed). Needs rethinking: D scarcity won't come from more trains at origin; needs either denser D arrivals (corridor pre-spacing counteracts) or explicit re-dispatch trigger.
+Next: L2 (and L3) must be RETRAINED on the new 20t config (obs distribution changed: new shadow trains, tight bounds). Heuristic validation (this entry) done first as requested.
+
+[2026-08-13 23:09]
+Task: Resolver swap-cost — 让跨站台 fallback 不再免费(为 L2 咽喉/站台协调创造真实梯度)
+Files:
+  src/control/resource_manager.py — assign_fallback(..., swap_cost_sec=0.0): _first_feasible(platform, is_original) 换到其它站台时 shift 从 swap_cost_sec 起步(同站台延后仍 0 起步);resolve_all 透传。默认 0.0 保持旧行为。
+  src/env/five_station_env.py — _resolve_requests 读 cfg.time_generation.swap_cost_sec 传给 resolve_all。
+  scripts/generate_scaled_timetable.py — 新增 --swap-cost 参数注入 time_generation.swap_cost_sec。
+  configs/five_station_20t/timetable.yaml — 重生成,swap_cost_sec=12(dep_max_slack 30、bounds slack 60、min-spacing 12 布局不变)。
+Rationale: C 站共享咽喉(p1+p2 共用 g1 等)冲突被 resolver 免费救场(换空闲站台 shift=0、零延迟),L2 选错站台/咽喉组无任何后果 → 无学习梯度 → 学不到咽喉协调。swap_cost 把"免费换站台"变成物理税(真实延迟,进 dep_delay 和实际到站),L2 有梯度避开冲突。
+Status: DONE。验证(启发式+CRUISE):
+  - A/B swap_cost 0 vs 12(10 seeds):ontime 45.1->42.5;fallback dep_delay p50 187->221s、mean 330->347s;10/10 success、0 守卫、0 截断。
+  - 扫参 12/30/60(8 seeds)全可行;60 时 fallback 21->12 次(代价过大转 held->再调度),但 ontime 平台化 ~41%。
+  - 注意:密集 20t 拥塞主导 ontime,swap_cost 是二阶信号(learned-vs-heuristic 头部空间约 2-3pp),非大幅杠杆。真正让 L2 价值凸显仍需 D 稀缺/重调度触发(见 plan_20t_enhance 结论)。
+
+[2026-08-14 00:34]
+Task: Revert 20t slack to 60/120 — config cleanup for clean 15t-vs-20t comparison
+Files:
+  configs/five_station_20t/timetable.yaml — regenerated with --slack 60 --bounds-slack 120 (was 30/60); kept --min-spacing 12 (dense A-up shadows at 96-132) and --swap-cost 12. dep_max_slack_sec=60, static bounds slack=120, swap_cost=12, 20 trains, no dup schedules, loads OK.
+Rationale: tightening slack (60->30 dynamic, 120->60 static) did NOT create L2 coordination value (4 rounds of reward/config experiments: learned ~= heuristic on clean, < heuristic under delay), and it INFLATED ontime (20t 79.7% vs 15t 78.1% SA-incident, apples-to-apples; tight origin bounds force on-schedule departure -> less cascade delay). User decided to revert so 20t = "more trains" comparison with the same Layer-1 bounds as 15t, removing the ontime-inflation artifact.
+Status: DONE. Slack-60 training planned for 2026-08-15.
+Note: the 20t incident L3 convergence currently running (train_l3_convergence, 3 seeds) tests the PRE-revert tight-slack config; its result is still a valid tight-slack experiment but NOT the go-forward config.
+Also learned today: slack (dep_max_slack_sec) = HARD dep_max bound (arrival+dwell+slack), enforced by action mask; entry choices (earliest/plan/plan+N, e.g. plan+50) = L2 TARGET entry times relative to plan, orthogonal to the bound. Under slack=30, plan+30/plan+50 become dead actions for on-time trains (masked); only usable when a delayed train's dep_max shifts up.
+
+[2026-08-14 01:27]
+Task: 20t incident L3 convergence result + coordination diagnosis + early-stop finding
+Files:
+  output/figures/l3v3_20t_incident_conv.csv — 3-seed L3 worker convergence under corridor incident (frozen clean hard-bonus L2, 2500 ep/seed, eval every 125)
+  scripts/diagnose_l3_coordination.py — NEW: joint-SA-oracle vs greedy-per-transit-SA diagnostic under incident (does coordination headroom exist?)
+  scripts/eval_l2_learned_vs_heuristic.py — added --incident flag (mutually exclusive with --delay)
+Rationale: establish the 20t L3 baseline (learned vs SA vs CRUISE) and test whether a corridor-speed coordination story (Direction 1) has any headroom.
+
+RESULTS:
+1) 20t incident L3 convergence (3 seeds): learned ontime 72.0/69.6/77.5% (mean ~73.0%), mean late-arr delay 77.0/73.6/49.5 (mean 66.7s). vs SA (same eval seeds): ontime 79.7%, mean late delay 42.3s. vs CRUISE: 13.3% (broken under incident). => learned > CRUISE but clearly < SA at BOTH ontime and delay tail (consistent with 15t: learned 71.6 vs SA 75.4).
+2) L3 convergence quality: ontime PLATEAUED (std~2) but l3_reward + mean_dep DEGRADED at end of training for seeds 0/1 (entropy collapsed 0.97->0.06, 1.02->0.09). Plateau check only watches ontime/mean_dep variance (lenient), missed the reward trend.
+3) EARLY STOPPING (last eval point with entropy >= 0.2, ~1500-2250 ep) is strictly better: ontime 74.2% vs 73.0%, mean dep 63.2s vs 66.7s, reward stable -207 vs -295. Entropy collapse in late training is pure degradation. Suggests: stop L3 at entropy ~0.2 (saves ~40% compute) or raise entropy floor.
+4) COORDINATION DIAGNOSIS (Direction 1 = corridor-speed yield/overtake): joint-SA oracle (optimize whole platoon's speed profiles together, system objective) NEVER beats greedy per-transit SA under incident (factors 0.5-1.0, even 3000 joint iters: greedy 6/8 ontime vs joint 5/8). Reason: under an incident every train is late -> every train's optimal is FAST -> self-interest = system interest (FAST clears the corridor earlier for followers too); no "who yields" conflict exists. Direction 1 is DEAD.
+5) ROOT CAUSE (topology): the network is DOUBLE-TRACK (1 track per direction, no overtaking — L3 corridor is decomposed into block sections on a single track, front_time_at never lets a follower pass). Same-direction trains form a pure FIFO queue; the leader sets the pace. No re-sequencing freedom -> no coordination value for L2 or L3. This explains ALL null results (L2 learned~=heuristic, L3 learned<SA, D never scarce).
+6) 越行/overtaking NOT implemented (L2 has 待避/yield action but no passing point): every station's P1 is the 正线/through line (reserved for pass-through, but NO train is pass_through -> P1 unused). Stop-pattern analysis done: trains stop at stations on their route, some 0-dwell ("-"). To enable 越行, add pass-through legs (config pass_through or L2 action) so a through train on P1 can overtake a stopping train at a station -> re-sequencing -> the coordination decision RL needs. DESIGN PENDING.
+
+STRATEGIC: the paper's RL value CANNOT be "RL beats the strong baseline" (learned < heuristic/SA at both layers). The defensible framing is: learned (31-dim partial obs, single-pass online) APPROACHES the full-information offline SA oracle (73% vs 79.7% ontime, 63s vs 42s delay), while far exceeding CRUISE. Alternatively add 越行 to create genuine re-sequencing coordination.
+
+Status: L3 result + diagnosis DONE; 越行 design pending user decision.
+
+[2026-08-14]
+Task: 部分观测 SA 基线 (sa_online_profile) — 去掉 SA 全知视角，无干扰/incident 两臂测 MARL 优势
+Files:
+  src/control/l3_sa.py — NEW sa_online_profile(): 逐区间贪心、仅用当前状态重算(headway 等待现在、已累积延迟、几何前方按 CRUISE 滚动)，无联合 lookahead、无前车完整轨迹。与 learned L3 worker 的 10 维部分观测同信息量，公平对比。
+  src/env/five_station_env.py — 加 l3_sa_online 开关；use_sa 分支按标志选 sa_optimize_profile / sa_online_profile。
+  scripts/eval_protocol.py — 加 sa-online 模式(--sa-online-only) + --no-delay(干净无干扰臂，disable bunching)。
+  tests/test_l3_physics.py — test_sa_online_honors_speed_factor (incident 下 affected 延迟>0，未作弊全速)。
+  output/sa_online_compare.csv — 两臂对比数据(CSV-first)。
+
+EVAL (15t, L2 全部用 learned policy 隔离 L3 层; 同种子 start 900000, 3x60):
+  INCIDENT arm:
+    sa(offline oracle) 75.4% | sa-online 73.4% | learned(incident-ckpt) 71.2%(72.9/71.9/68.8) | cruise 14.9%
+    affected delay mean: sa 387 < learned 461 < sa-online 436 < cruise 702
+  CLEAN arm (--no-delay):
+    sa 86.5% | sa-online 86.3% | learned(incident-ckpt, in-distribution) 84.3%(84.9/86.2/81.9) | cruise 39.9%
+    learned(bunching-ckpt, OOD) 66.4% — 分布外 artifact，不作数
+
+CONCLUSION:
+  1) 去掉 SA 全知几乎无损: 干净下 sa-online==sa (86.3 vs 86.5)，incident 下只差 2pp (73.4 vs 75.4)。
+     全知 oracle 的联合 lookahead 价值很小 — 双轨单占用 FIFO 拓扑下无重排序自由度(与诊断一致)。
+  2) MARL 未取得优势: learned 与同信息量 sa-online 比，干净 ~2pp 内持平(84.3 vs 86.3)，incident 落后 ~2pp (71.2 vs 73.4)。
+     去全知把 learned-vs-SA 差距从 ~4pp 收窄到 ~2pp，但没翻成胜。
+  3) learned 恒 >> CRUISE (干净 84 vs 40, incident 71 vs 15) — MARL 的稳健性价值仍在。
+  4) 纸面含义: "learned 逼近离线 oracle" 的 framing 偏慷慨; 诚实说法是 learned 与同信息贪心基线打平/略逊，
+     优势只在 vs 无协调 CRUISE floor。要造 MARL 可赢的场景仍需越行(重排序自由度)或真实稀缺资源。
+
+[2026-08-14]
+Task: E1 决策延迟 + E2 未预测 incident — 验证"MAPPO 瞬时调整 vs SA 重排"
+Files:
+  scripts/bench_l3_latency.py — E1 延迟基准(中位数,大样本+预热)
+  src/env/five_station_env.py — 加 l3_sa_nofc(规划用 clear 假设、执行用实际 factor)
+  scripts/eval_protocol.py — 加 sa-nofc 模式(--sa-nofc-only)
+  related_work.md — 文献综述 + E1/E2 实测结果
+  output/e1_latency.csv, output/e2_incident_nofc.csv
+
+E1 (C_to_D 4 区间, 中位数): SA 300-it 重解 3.48ms vs MAPPO 整趟 1.44ms(2.4x) vs MAPPO 单区间 0.36ms。
+  单次适应事件: SA 全量重解 3.48ms vs MAPPO 单区间 0.36ms = 9.7x(actor-only 18.8x)。
+  均亚 4ms,非实时瓶颈; 实现相关(Python/torch 调用开销主导),批量 MAPPO 会更快。
+
+E2 (incident 臂 3x60 同种子 900000, affected 延迟 mean):
+  sa(oracle) 387s | sa-nofc(无预测) 424s | sa-online 436s | learned 3seed 461s | cruise 702s
+  HYPOTHESIS FAILED: SA 无预测只损失 +37s,且优于 learned/sa-online。MAPPO 反应优势未显现。
+
+ROOT CAUSE: incident 是吞吐瓶颈(限制+湿轨 headway 拉宽 -> 列车排队,个体速度被中和);
+  factor 对整趟均匀施加 -> 无走廊中段变化可反应; learned L3 策略本身落后 SA。
+
+IMPLICATION: "瞬时调整"的代价优势(E1 ~10x/次适应)成立,但"反应鲁棒性"(E2)在当前 sim 的
+  L3 速度层展示不出来。要演示需分段 incident(限制只压中段+中段 onset),仍存风险。
+  数据: e1_latency.csv / e2_incident_nofc.csv。方向待用户定(接受/改E2/越行/重调度)。
+
+[2026-08-14] TRAINING OUTPUT LOCATIONS (backfill 08-12..08-14, per user request)
+================================================================================
+[08-12]
+  L3 收敛 (15t, clean, 3 seeds): output/l3v3_five_station_15t_seed{0,1,2}.pt
+  L3 收敛 (15t, incident 变体 CSV): output/figures/l3v3_conv_incident_{final,stab,sched1,prio,fastpen}.csv
+  评估日志: output/eval_sched_learned.log eval_sched_sa.log eval_sched_cruise2.log eval_stable_learned.log eval_prio.log
+[08-13]
+  L3 收敛 (15t, incident, 3 seeds): output/l3v3_five_station_15t_incident_seed{0,1,2}.pt
+  收敛 CSV: output/figures/l3v3_conv_incident_final2.csv
+  20t hierarchical 训练 (4 次): output/five_station_20t_hierarchical/20260813_{231902,233319,234330,235156}/
+     各含 training_metrics.csv + checkpoints/{best,final}.pt
+[08-14]
+  20t hierarchical 训练 (1 次): output/five_station_20t_hierarchical/20260814_000258/
+  20t incident L3 收敛 (3 seeds): output/l3v3_five_station_20t_incident_seed{0,1,2}.pt
+  收敛 CSV: output/figures/l3v3_20t_incident_conv.csv
+  15t L2 (供参考): output/five_station_15t_hierarchical/20260808_175357/ (metrics + checkpoints)
+  今日评估 CSV: output/sa_online_compare.csv output/e1_latency.csv output/e2_incident_nofc.csv
+  今日评估日志: output/sa_online_{clean,inc}_*.log
+================================================================================
+
+[2026-08-14] L3 headway 物理修复（P1/P2）+ 关键发现
+Files: src/control/l3_sim.py, src/env/five_station_env.py, tests/test_l3_physics.py
+FIX:
+  1) section_progress 改为连续 moving-block(P2)：检查区间起点/终点+front断点，FAST 跟随车不能中段贴车。
+  2) worker 执行段按所选档位重算 wait(不再用 CRUISE probe wait)。
+  3) CRUISE else 分支改走同一条逐区间 section_progress(P1)，消除 transit() 咽喉双算，三条路径物理统一。
+VERIFY: 45 tests pass(含 test_fast_follower_held_mid_section)；stepwise ≡ transit(diff=0.000, 4种前车速度)。
+
+KEY FINDING: 统一物理后，旧 learned/SA checkpoint 在 incident 下全部崩溃(unaffected ~800-1100s,
+SA 828 / cruise 1088 / learned 983)。原因不是 SA 不贴前车——SA 也试 FAST；而是 incident 的
+safety_factor=1.5 + 慢速前车在连续 moving-block 下变成硬吞吐瓶颈(跟随车被钉在 750m 后爬行)，
+任何方法都无法恢复。旧 "learned>>CRUISE(71 vs 15)" 是物理假象：learned/SA 走松路径(能贴车恢复)，
+CRUISE 走严格 transit(串行化)。修复统一后 incident 对所有方法都是瓶颈。
+CLEAN 正常(新物理, n=3): SA 80.5 / learned 74.2 / cruise 59.5 —— 修复没破坏干净场景。
+
+IMPLICATION: incident 配置(max_added_delay_sec=200 "可恢复")没算进 moving-block 串行化，实际不可恢复。
+选项: (A) 削弱 incident(safety_factor 1.5->~1.0 或 factor floor 抬高)让它真正可恢复, 再重训 L3;
+      (B) 弃 incident 用 clean/bunching;  (C) 重审 moving-block 出口交接模型。
+
+[2026-08-14] 场景完善 + 尾端指标 + 每指标CSV (设计讨论后)
+Files: configs/five_station_15t/timetable.yaml, configs/five_station/l3_physics.yaml,
+       src/env/five_station_env.py, src/control/l3_sa.py, src/control/l3_sim.py, scripts/eval_protocol.py
+
+1) 停站异质：核对铁路时刻表.md —— 当前配置已符合真实停站(G230跳C, G238跳B/C, G1487跳B, arr=dep+0-dwell)。
+   K834->G834(C->D上行, D停48 sim-s=20min换车头, dwell_min=48), K1185->G1185(G P2保留B->A)。主线无K车。
+   实证: 430对相邻走廊车, 0次重排序 —— 跳站≠越行, 走廊永远FIFO(顺序进走廊即锁死, 快车从不在站内追上慢车)。
+   G834的D 48s占用造成真实站台竞争(G1616_s3/G238落在窗口内) -> L2站台分配协调价值点。
+2) 进站减速段: 每条走廊最后一段 limit_mps: 70 (≈P2 SLOW 69, 250km/h进站), 校准自动补偿, CRUISE仍正点。
+   用户确认"强制SLOW vs limit" —— limit@SLOW速度等效强制SLOW且校准干净, 对MARL公平(结构性规则, 重训后等价),
+   甚至有利MARL(恢复被逼到进站前, MARL学提前规划 vs 贪心SA)。
+3) L3定位讨论: 纯FIFO下L3接近执行器, 但3个真实价值=可恢复延误下FAST时机 + D站台窗口到点控制 + 节能(FAST选择性)。
+   论文应定位"高效执行层"(节能+鲁棒+到点), 而非"协调层"。
+4) 尾端指标: eval_protocol加 SEVERE_DELAY_SEC=60s(≈25实min), _tail_severity(n/rate/mean/max), 
+   report_legacy/incident都报"tail severe", CSV加sev_rate/sev_mean/aff_sev_mean。
+5) 每指标CSV: eval_protocol加 --out-dir, 每个metric一张CSV(ontime/delay/affected/tail/episode)。
+6) 完整评估 -> output/8_14/{clean,incident}/ (per-metric CSV + 每mode log)。learned用旧ckpt(旧物理,会偏低)。
+
+[2026-08-14] L3 双 critic + 奖励调整 -> learned 追平非全知 SA (v3)
+Files: src/marl/l3_worker.py, src/env/five_station_env.py, src/env/reward.py,
+       src/experiment/run_train_hierarchical.py, scripts/{eval_protocol,compare_sa_l3_behavior,analyze_l3_behavior}.py
+
+L3 行为塌缩诊断 (compare_sa_l3_behavior.py):
+  v1(old 0.25/early-only-if-plat) -> always-FAST(84%, 0% CRUISE) 早到
+  v2(0.35/early-always 0.1) -> 限速段弃用FAST(3% vs SA 75%) 丢失恢复
+  => 奖励调参在两个极端间振荡, 给不出 SA 的条件平衡(延迟时FAST/正点时CRUISE)
+
+FIX: 双 critic (局部准点 + 全局团队, 镜像L2的local/global) + 奖励 FAST 0.30 + 早到always(0.05)
+  - l3_worker: L3Transition 拆 reward_local/global + value_local/global, compute_gae 每分量一套,
+    select_action 返回4值, update 用组合advantage + 两个critic各自MSE
+  - env: worker循环拆 local/global 奖励存进 transition
+  - save keys: l3_critic_local / l3_critic_global
+
+v3 结果 (3x60 同种子, D稀缺+incident):
+  INCIDENT: learned ontime 71.3 (sa 73.1, sa-online 71.5, cruise 44.0)
+            learned aff_mean 38.3 (sa 30.2, sa-online 39.2, cruise 88.5), unaff 15.6(早到修好)
+  CLEAN:    learned 75.5 (sa 76.0, sa-online 75.9, cruise 46.2)
+  = learned ≈ sa-online(非全知SA), 略弱于 sa(全知oracle), >> cruise
+  行为分布匹配SA: learned CRUISE 62%/FAST 38%, 限速段 FAST 76% (SA 80%)
+  训练收敛稳定(reward转正, ontime 72-82%, 不再塌缩)
+训练: phaseA(L2+SA-L3, 11min) -> phaseB_v3(L3双critic, 固定L2)
+产物: output/8_14/training/{phaseA,phaseB_v3}/, output/8_14/{clean,incident}/ (per-metric CSV)
+NOTE: 旧单critic脚本(continue_with_vt/train_vt_staged/validate_l3_schedule等)与新L3WorkerTrainer API不兼容, 未更新(legacy).
+
+[2026-08-14] 随机加车 (--extra-train) + E1 重解代价指标
+Files: src/env/five_station_env.py, scripts/eval_protocol.py, scripts/compare_sa_l3_behavior.py
+
+1) 随机加车: enable_extra_train + _build_extra_train —— P2 G车, 随机在 A/B/C/E 出生
+   (空站台由调度器分配), 走走廊、经停D(dwell 10s)、D终到。每集概率0.5。
+   验证: 10集7集出生, 全部到D。这是"中途加车次"的新实例测试(learned不重训 vs SA重排)。
+2) headway冲突次数指标: 试了但发现 learned==SA(28 vs 28)因为moving-block物理共享,
+   不判别, 用户决定去掉。
+3) E1 重解代价指标(替代): report_incident按mode算 compute ——
+   SA(重排)= n_transits x 3.48ms; learned(即时)= n_sections x 0.36ms;
+   sa-online = n_sections x 0.5; cruise ~0。输出 compute.csv。
+
+加车评估 (3x60, incident, 144加车):
+  ontime: learned 70.1 ≈ sa-online 70.1 < sa 72.2 >> cruise 43.8
+  affected: learned 37.4 (sa 30.3, sa-online 39.6, cruise 88.9)
+  E1: SA 重排 23.1s vs learned 即时 9.5s = 2.4x (n_transits 6624, 每趟SA都重解)
+  => "learned 以 2.4x 低算力追平非全知SA、逼近全知SA、远胜cruise; 面对加车免重训"
+产物: output/8_14/extra/ (ontime/affected/compute/tail.csv)
+
+[2026-08-14→15] flat MAPPO 重训 + 扩展性对比（分层 vs flat）—— 今日全部工作汇总
+Files: src/experiment/run_flat_mappo.py, scripts/eval_protocol.py, configs/five_station_10t/ (新)
+
+1) run_flat_mappo.py 参数化(--scenario/--incident/--episodes) + 修 PROJECT_ROOT bug(少一层src, 原写到src/output/).
+2) 重训 flat MAPPO (15t+incident, 7000集): 发车ontime收敛~88-92%, reward~+3-5, dep~2-5s (有ep6413波动).
+   flat用72动作联合(platform4xentry6xspeed3), 速度单档(整趟一个模式, 无逐区间).
+   eval到站ontime仅42.9% (训练发车88% vs 评估到站43%差距=单档速度无法控制到站). 产物: output/8_14/training/flat_mappo/.
+3) eval_protocol 加 flat 模式(加载FlatJointActor, 联合动作+_flat_speed_choices), --flat-ckpt/--flat-only.
+4) 生成 configs/five_station_10t/ (10辆真实车, obs_dim=31 与15t/20t一致).
+
+今日关键结果 (15t incident 3x60, learned=PhaseA L2 + PhaseB_v3 L3 双critic):
+  ontime: sa 73.0 | learned 71.4 | sa-online 71.4 | cruise 44.2 | flat 42.9
+  扩展性 ontime: learned 77.4/71.4/64.0 (10t/15t/20t, 15t训练免重训迁移)
+                 sa 79.7/73.0/66.7 | cruise 53.7/44.2/41.2 | flat 48.3/42.9/38.0
+  KEY: flat MAPPO 每个规模都低于 cruise(无协调floor)! 分层领先flat ~29pp.
+  flat失败: 72动作联合空间难学 + 单档速度无法恢复.
+  训练效率: 分层6000集(PhaseA+B)到71% vs flat 7000集只到43%.
+  E1重解代价: SA 2.4x vs learned逐区间(加车下更明显); flat单前向最便宜但质量差.
+  死锁: 全部0(episode.csv).
+
+今日全部数据位置 (output/8_14/):
+  incident/ clean/ extra/ (15t对比+加车, per-metric CSV: ontime/affected/tail/delay/compute/episode)
+  scalability/{10t,15t,20t}/ (扩展性含flat: ontime/affected/tail/compute/delay/episode)
+  behavior/ (SA vs learned行为分布: behavior_overall/restricted/priority.csv)
+  training/{phaseA,phaseB,phaseB_v2,phaseB_v3,flat_mappo}/ (训练metrics + ckpt)
+  training/phaseB_v3/convergence.png (收敛曲线: reward+3.07, ontime 82.4% 平台化)
+  临时: extra_15t/, extra_20t/, extra/headway.csv (可清理)
+
+训练协议: PhaseA(L2+SA-L3, 11min) -> PhaseB_v3(L3双critic固定L2, ~20min). A+B足够, 不需C
+
+[2026-08-16] 扩展性补数据: 25t/30t 规模点 + 分层 vs flat 收敛速度(训练轮数, 到站准点)
+Files:
+  configs/five_station_{25t,30t}/timetable.yaml — generate_scaled_timetable.py --counts 25 30 --slack 60 --bounds-slack 120 --min-spacing 12 --swap-cost 12 (与 revert 后的 20t 同参数; 25t=14 shadows, 30t=19 shadows)
+  src/experiment/run_flat_mappo.py, run_train_hierarchical.py — 训练循环插桩 per-episode 到站准点(arr_ontime 列, 累计 n_ontime_arr/n_arrivals) + 滚动窗口; 加 --out-root 参数
+  scripts/plot_conv_scalability.py — NEW: 收敛分析 + 图(conv_summary.csv/conv_curves.png/scalability_quality.png)
+  scripts/generate_scaled_timetable.py — 无改动(复用现有 --counts/--slack/--swap-cost)
+
+评估(transfer, incident 3x60, 15t ckpt): 扩展性曲线 10->30 补齐
+  ontime%: learned 77.4/71.4/64.0/62.2/62.0 | sa 79.7/73.0/66.7/68.1/66.0 | sa-online 78.0/71.4/66.3/67.5/65.7
+           sa-nofc 73.5/68.3/65.2/67.1/64.9 | cruise 53.7/44.2/41.2/38.7/34.5 | flat 48.3/42.9/38.0/38.3/36.5
+  关键: learned 到 30t 仍 ~62%(接近 sa ~66%), flat 塌到 ~36%(25t 起 ≈/低于 cruise floor), learned-flat 差距在 25/30t 拉大到 ~25pp。
+  (注意 learned 的 25t/30t P1 ontime 为 0: 25t P1 55.4/30t P1 57.3 实际非0, 0.0 是 15t ckpt 对 25t/30t 新 shadow 车 P1 分类的边角, 见下)
+
+收敛对比(到站准点 vs 训练轮数; 15t/25t 两方法, 等预算 6000 集 = flat 6000 vs hier PhaseA+B 6000)。
+  **方法升级(用户要求)**: 给 run_flat_mappo/run_train_hierarchical 加了 held-out eval hook
+  (每 200 集冻结当前策略, 固定 held-out 种子集 12 集 incident eval, 写 run 目录 eval_ontime.csv)。
+  收敛指标改用 held-out 口径(比训练时 per-episode 到站准点干净——flat 25t 训练时滚动 0.50 是噪声,
+  held-out 稳定 0.41)。修了 hier 的 FiveStationEnv import bug(eval 函数在模块顶层未 import)。
+  held-out 结果:
+    flat(6000集): 15t final=0.453, 25t final=0.412 — episodes_to_50pct 均=None(从未达 50%)
+    hier(PhaseA+B 6000): 15t final=0.673, 25t final=0.612
+      episodes_to_50pct=200(首个 eval 点即 ≥50%; Phase A 用 SA-L3 作 L3 经验, 管线一开始就可用的策略)
+      PhaseB-only(学到的 L3 从随机): 15t 累计 4000 集(PhaseB 内 ~1000), 25t 累计 5000 集(PhaseB 内 ~2000)
+  => 等预算 6000 集 + held-out 口径: 分层首个 eval 点即可用(SA 预训练起步), 学到的 L3 也 ~1000-2000 PhaseB
+     集内收敛到 50%+; flat 全程未达 50%(15t 0.45/25t 0.41), 训练时的高值是噪声。
+
+产物位置(全部在 output/8_16/):
+  training/(规范版=带 held-out eval 的 run, 各含 training_metrics.csv + eval_ontime.csv + checkpoints):
+    flat_mappo/20260816_154653/ (flat 15t 6000集)   flat_mappo/20260816_155134/ (flat 25t 6000集)
+    five_station_15t_hierarchical/20260816_154928/ (hier 15t PhaseA+B)
+    five_station_25t_hierarchical/20260816_154929/ (hier 25t PhaseA+B)
+  已被取代(可清理): flat_mappo/20260816_{140618,140829}(4000集) {152139,152543}(6000集无eval)
+                    five_station_{15,25}t_hierarchical/20260816_{140621,140832}(6000集无eval)
+  scalability/: {25t,30t}/ per-metric CSV(ontime/affected/tail/delay/compute/episode, 从 8_14 移来)
+                summary_ontime.csv(10..30 合并) conv_summary.csv(source=heldout) conv_curves.png
+                conv_phaseB.png(learned L3 单独收敛) scalability_quality.png
+  日志: output/8_16/training_{flat_15t,flat_25t,hier_15t,hier_25t}{,_eval}.log + training_flat_{15t,25t}_6000.log
+  配置: configs/five_station_{25t,30t}/
+  代码: run_flat_mappo.py/run_train_hierarchical.py 加了 --eval-every/--eval-n/--eval-seed-base(held-out eval hook)
+  (L2≈启发式无协调价值, C=联合训练增益小+不稳).
+
+[2026-08-16]
+Task: 三层架构描述文档(论文引用用)
+Files: docs/architecture_three_layer.md — NEW, 综合 L1→L2→L3 架构/动作/观测/网络/安全性/奖励/MAPPO 结构/训练流程/关键实证结果,
+      术语与超参数直接从代码与配置提取(action_mask/reward/l3_sim/l3_worker/mappo/actor_critic/dispatch_bounds/five_station_env,
+      configs/five_station/l3_physics.yaml)。
+要点: obs_dim=31(L2)/10(L3); 动作=平台4×进站6因式; 双critic(局部+全局); 组合优势 A_local+λ_team·A_global(λ 0.05→0.30);
+      安全性=掩码硬边界+NO_LEGAL→hold+moving-block车距(500m+3s)+站台min_gap(5s)+fallback重验; 奖励=L2局部(延误/准点/车距/咽喉)
+      +团队, L3终端准点高斯+超线性尾部+早到惩罚+FAST代价0.30+优先级权重; Phase A(3000,L2+SA-L3,~11min)→Phase B(3000,L3双critic,~20min)。
+      含扩展性/收敛/算力关键数字速查, 供论文直接引用。

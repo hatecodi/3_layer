@@ -8,35 +8,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. Read `.claude/skills/coding-workflow.md` — this is the mandatory workflow discipline.
 3. Write a plan to `.claude/plans/` before making code changes.
 4. Append to `coding_log` after every completed task.
+5. After any training run, record in `coding_log` the **save location of every training run done that day** (CSV/ckpt/log paths), so the user can find them later — training outputs live under `output/<scenario>_hierarchical/<timestamp>/` (training_metrics.csv + checkpoints/) and `output/figures/*.csv` (convergence/eval), and are easy to lose.
 
 ## Project overview
 
-Three-layer hierarchical MARL framework for railway dispatch on a two-station double-track corridor. Research question: can a three-layer design (dispatch bounds → MAPPO scheduling → rule-based execution) scale better than flat MAPPO while maintaining low delay and zero hard-constraint violations?
+Three-layer hierarchical MARL framework for railway dispatch on a five-station (A–E) double-track corridor, scaled to 15 trains (`configs/five_station_15t/`). Research question: can a three-layer design (dispatch bounds → MAPPO scheduling → learned corridor speed control) scale better than flat MAPPO while maintaining low delay and zero hard-constraint violations?
 
-- **Layer 1** (rule-based, fixed): dispatch bounds from `configs/timetable_layer1.yaml` — hard time envelopes per train
-- **Layer 2** (learned, MAPPO): scheduling within Layer 1 bounds — platform, entry timing, dwell decisions
-- **Layer 3** (rule-based, fixed): SUMO TraCI execution of granted schedules
+- **Layer 1** (rule-based, fixed): dispatch bounds from `configs/{scenario}/timetable.yaml` — hard time envelopes per train
+- **Layer 2** (learned, MAPPO): scheduling within Layer 1 bounds — platform + entry timing (dwell fixed at min)
+- **Layer 3** (learned, per-corridor worker): sequential per-section speed control (CRUISE/FAST/SLOW) with moving-block headway as a hard boundary — `l3_worker.py` + `l3_sim.py`
 
 ## Key commands
 
 ```bash
-# Run unit tests (10 tests for Phase 1+2)
+# Run unit tests (15 tests for Phase 1+2)
 python -m pytest tests/test_phase12.py -v
-
-# Run heuristic baseline (Phase 2 — no learning)
-python -m src.experiment.run_heuristic
 
 # Validate config loading
 python -m src.experiment.scenario_loader
 
-# SUMO sanity check (Phase 0)
-python scripts/validate_sumo.py
+# Hierarchical three-phase training (L2 → L3 → joint)
+python -m src.experiment.run_train_hierarchical --env five_station
 
-# SUMO executor baseline (Phase 3 — heuristic grants → SUMO via TraCI)
+# Train L3 worker only (frozen L2) — current L3-only workflow
+python -m src.experiment.run_train_l3_only --ckpt <l2.pt> --episodes 2000
+
+# L3 convergence protocol (multi-seed) + paper figure
+python scripts/train_l3_convergence.py --l2 <l2.pt> --out output/figures/l3v3_conv.csv
+python scripts/plot_l3_conv_protocol.py --csv output/figures/l3v3_conv.csv
+
+# L2/L3 schedule safety audit
+python scripts/validate_l3_schedule.py
+
+# Heuristic baseline (no learning)
+python -m src.experiment.run_heuristic
+
+# Legacy two-station SUMO executor baseline (Phase 3 era — not the main path)
 python -m src.experiment.run_executor_baseline
 ```
 
-Requires SUMO installed with `SUMO_HOME` environment variable set (TraCI import falls back to `$SUMO_HOME/tools`).
+SUMO + `SUMO_HOME` are only needed for the legacy two-station executor baseline.
 
 ## Architecture
 
@@ -46,12 +57,12 @@ All train IDs, station names, platform IDs, and corridor references come from co
 
 ### Data flow (per decision step)
 
-1. `sumo_env.py` pulls train states → `disturbance.py` injects delays → decides Layer 2 activation
-2. Triggered trains get 74-dim observations via `observation_builder.py`
-3. `action_mask.py` builds joint action mask (Layer 1 hard bounds enforced pre-sampling)
-4. Policy selects `(platform, entry_choice, dwell_extend)` → `action_to_request()` → `WindowRequest`
-5. `resource_manager.py` resolves conflicts (deterministic priority-weighted resolver, fallback assignment)
-6. Resolved grants → `ExecutionTarget` → Layer 3 `executor.py` → SUMO TraCI
+1. `five_station_env.py` pulls train states → `disturbance.py` injects bunched origin delay → scheduling loop starts
+2. Triggered trains get ~29-dim observations via `observation_builder.py`
+3. `action_mask.py` builds factored `(platform, entry)` action mask (Layer 1 hard bounds enforced pre-sampling)
+4. Policy selects `(platform_idx, entry_idx)` → `action_to_request()` → `WindowRequest`
+5. `resource_manager.py` resolves conflicts (deterministic priority-weighted resolver, fallback assignment) → `GrantResult`
+6. Granted trains transit the corridor: L3 worker (`l3_worker.py`) picks CRUISE/FAST/SLOW per block section in `l3_sim.py` (moving-block headway is a hard boundary); the actual arrival feeds the next station's scheduling
 
 ### Key modules
 
@@ -59,37 +70,43 @@ All train IDs, station names, platform IDs, and corridor references come from co
 |--------|--------|---------|
 | `src/experiment/scenario_loader.py` | DONE | Loads + validates all config files |
 | `src/control/dispatch_bounds.py` | DONE | Layer 1 per-train bounds wrapper |
-| `src/control/action_mask.py` | DONE | Action space, `derive_schedule`, `is_legal_action`, mask |
+| `src/control/action_mask.py` | DONE | Action space, `is_legal_action`, factored (platform, entry) mask |
 | `src/control/resource_manager.py` | DONE | `ResourceCalendar`, conflict resolver, `assign_fallback` |
-| `src/control/executor.py` | DONE | Rule-based SUMO executor via TraCI |
-| `src/control/execution_target.py` | DONE | Layer 2 → Layer 3 interface dataclass |
-| `src/env/sumo_env.py` | PARTIAL | Gym-style env (scheduling level — no live SUMO yet) |
-| `src/env/disturbance.py` | DONE | `DisturbanceInjector`, `ControlStatus` (nominal/L2 active/monitoring) |
-| `src/env/observation_builder.py` | DONE | 74-dim fixed obs with K_max=5 neighbor padding |
-| `src/env/reward.py` | DONE | Hybrid individual + team reward, `Metrics` dataclass |
-| `src/marl/actor_critic.py` | DONE | `MaskedActor` (74→hidden→action), `LocalCritic` ((K+1)×74→1), `GlobalCritic` |
-| `src/experiment/heuristic_planner.py` | DONE | Reusable heuristic plan builder |
-| `src/experiment/run_heuristic.py` | DONE | CLI baseline |
-| `src/experiment/run_executor_baseline.py` | DONE | CLI: heuristic grants → SUMO execution |
+| `src/control/l3_sim.py` | DONE | L3 corridor physics — per-section speed profiles, moving-block headway, throat headway |
+| `src/control/l3_sa.py` | DONE | SA per-transit baseline (eval only) |
+| `src/control/executor.py` | LEGACY | Rule-based SUMO executor via TraCI — two-station baseline only |
+| `src/control/execution_target.py` | LEGACY | L2 → L3 interface dataclass — two-station baseline only |
+| `src/env/five_station_env.py` | DONE | Five-station scheduling env — L2/L3 loop, team reward, min_gap safety |
+| `src/env/disturbance.py` | DONE | Bunched origin-delay injection, deadlock detection |
+| `src/env/observation_builder.py` | DONE | Config-driven ~29-dim L2 obs + 10-dim L3 section obs |
+| `src/env/reward.py` | DONE | Layered reward, `compute_l3_terminal_reward`, episode team reward |
+| `src/marl/actor_critic.py` | DONE | `Layer2ActorCritic` (obs→platform/entry), local + global critic |
+| `src/marl/l3_worker.py` | DONE | `CorridorActor`/`CorridorCritic` + `L3WorkerTrainer` (PPO), 10-dim obs |
+| `src/marl/mappo.py` | DONE | MAPPO update loop with action masks |
+| `src/marl/rollout_buffer.py` | DONE | RolloutBuffer with GAE |
+| `src/experiment/run_train_hierarchical.py` | DONE | Three-phase training (L2 → L3 → joint) |
+| `src/experiment/run_train_l3_only.py` | DONE | Freeze L2, train L3 worker only |
+| `src/experiment/run_flat_mappo.py` | DONE | Flat MAPPO baseline (no L3) |
+| `src/experiment/run_heuristic.py` | DONE | CLI heuristic baseline |
+| `src/experiment/run_executor_baseline.py` | LEGACY | CLI: heuristic grants → SUMO execution (two-station) |
 
 ### What needs to be built next
 
-- `src/marl/mappo.py` — PPO update loop with action masks
-- `src/marl/rollout_buffer.py` — stores (obs, action, mask, reward, value, logprob)
-- `src/experiment/run_train.py` / `run_eval.py` — training and evaluation scripts
-- `src/experiment/metrics.py` — CSV/JSON export
+- `src/experiment/run_eval.py` — consolidated held-out evaluation (currently `scripts/eval_protocol.py`)
+- `src/experiment/metrics.py` — consolidated CSV/JSON export helpers
+- Corridor speed-restriction incident disturbance (暴雨限速) — makes L3 coordination matter (see coding_log + plan_corridor_incident_scenario.md)
 
 ### Key design invariants
 
 1. **Hard boundaries via masking, not reward**: `t_arr_min`, `t_dep_max`, dwell_min, route compatibility enforced by action mask (illegal actions get -inf logits). No boundary-violation terms in reward.
-2. **Local critic**: critic input is `(K_max+1)×74 = 444` dim, not global — O(1) scaling with train count.
+2. **Local critic**: critic input is `(k_local+1)×obs_dim` (~29 obs, k_local=1 → 58 dims), not global — O(1) scaling with train count.
 3. **Fallback must re-verify bounds**: `assign_fallback` uses `RebuildFn` callback that creates fresh `WindowRequest` with correct resource IDs and re-checks all Layer 1 bounds.
-4. **Corridor headway is Layer 3 only**: corridor is NOT in `_resource_windows` — the resolver only owns station resources (platform, in-throat, out-throat). Minimum tracking headway enforced by execution-layer speed control.
+4. **Corridor headway is Layer 3 only**: corridor is NOT in `_resource_windows` — the resolver only owns station resources (platform, in-throat, out-throat). Minimum tracking headway enforced by the L3 sim's moving-block headway (never a reward term).
 5. **NO_LEGAL_ACTION → hold/replan**: if all actions masked, train is held and replanned next step; never sample from policy.
 
 ### Network (training scale)
 
-Two stations A/B connected by 1200m double-track corridor, 3 platforms each, 2 conflicting throat routes each. 8 scheduled trains + 1 conflict-test train (K999). All physical and time parameters scaled from real values (~4-10× compression).
+Five stations A–E on a double-track corridor, 4 platforms each (D has 2). 15 trains in `configs/five_station_15t/` (11 base + 4 scaled copies from `scripts/generate_scaled_timetable.py`) plus config-driven visitor trains. Time compression: real seconds / 25 = sim seconds.
 
 ### Conflict resolution rule (deterministic)
 

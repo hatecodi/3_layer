@@ -47,7 +47,13 @@ l3_physics:
   corridor_headway_sec: 5.0
   replan_threshold_headway_mult: 4   # legacy — see replan_max_headway_delay_sec
   # L3 hard guard: hold/replan if headway delay exceeds this absolute threshold.
-  replan_max_headway_delay_sec: 120.0
+  # 250s: corridor-incident moving-bottleneck headway is naturally large; 120s
+  # fired ~7 replans/episode and destabilised training.
+  # Raised to 1000 (2026-08-14): a speed-restriction incident's moving-bottleneck
+  # headway hold is a QUEUE, not a re-planning problem — re-transiting a
+  # headway-held train only re-accumulates delay (snowball).  Suppress replan for
+  # incident-induced headway so it never amplifies.
+  replan_max_headway_delay_sec: 1000.0
 
   # Platform
   platform_min_gap_sec: 5.0
@@ -80,39 +86,39 @@ l3_physics:
       - {length_m: 1400}
       - {length_m: 1400}
       - {length_m: 1400}
-      - {length_m: 1400}
+      - {length_m: 1400, limit_mps: 70.0}   # 进站减速段 ≈ SLOW 速度 (~250km/h approach)
     B_to_A:
       - {length_m: 1400}
       - {length_m: 1400}
       - {length_m: 1400}
-      - {length_m: 1400}
+      - {length_m: 1400, limit_mps: 70.0}
     B_to_C:
       - {length_m: 1010}
       - {length_m: 1010}
       - {length_m: 1010}
-      - {length_m: 1010}
+      - {length_m: 1010, limit_mps: 70.0}
     C_to_B:
       - {length_m: 1010}
       - {length_m: 1010}
       - {length_m: 1010}
-      - {length_m: 1010}
+      - {length_m: 1010, limit_mps: 70.0}
     C_to_D:
       - {length_m: 3410}
       - {length_m: 3410}
       - {length_m: 3410}
-      - {length_m: 3410}
+      - {length_m: 3410, limit_mps: 70.0}
     D_to_C:
       - {length_m: 3410}
       - {length_m: 3410}
       - {length_m: 3410}
-      - {length_m: 3410}
+      - {length_m: 3410, limit_mps: 70.0}
     D_to_E:
       - {length_m: 2560}
       - {length_m: 2560}
       - {length_m: 2560}
-      - {length_m: 2560}
+      - {length_m: 2560, limit_mps: 70.0}
     E_to_D:
       - {length_m: 2560}
       - {length_m: 2560}
       - {length_m: 2560}
-      - {length_m: 2560}
+      - {length_m: 2560, limit_mps: 70.0}

@@ -12,7 +12,33 @@ from ..experiment.scenario_loader import ScenarioConfig
 
 ONTIME_THRESHOLD_SEC = 15.0   # within 15s of plan = on-time (both early and late)
 ONTIME_BONUS = 2.0            # per-train local reward bonus
+# Hard ontime trigger aligned with ONTIME_THRESHOLD_SEC.  The exp-decay bonus
+# below rewards "less delay" continuously, so a policy can shrink 40->20s delay
+# (reward improves) without ever crossing the 15s punctuality window (ontime rate
+# flat) — training optimises delay reduction, not punctuality.  This hard bonus
+# makes the eval threshold the explicit objective so the reward tracks ontime.
+ONTIME_HARD_BONUS = 2.0
 AVOIDANCE_BONUS = 2.0         # bonus for proactively choosing non-p1 when p1 is contested
+# Per-section energy cost of the FAST mode (per block section).  Without it FAST
+# is free and the policy collapses to "always FAST under any stress" — no
+# intelligent speed choice.  With it, FAST is used only when recovering delay is
+# worth the energy.  0.25/section was calibrated: 0.5 over-corrected (policy gave
+# up on FAST entirely, ontime stuck ~58%, entropy collapsed to 0).
+# 0.35 (2026-08-14): the always-FAST collapse (84% FAST, 0% CRUISE) in the D-scarcity
+# scenario needs a slightly heavier FAST cost than 0.25, but below the 0.5 cliff.
+# 0.30 (2026-08-14, v3): 0.35 + always-early over-corrected (avoided FAST on restricted
+# sections -> lost delay recovery, affected 98s vs SA 30s).  Gentler FAST cost with the
+# always-early penalty (0.05) should keep recovery while stopping the overshoot.
+L3_FAST_PENALTY = 0.30
+
+# Punctuality demand by train priority (railway rule: higher-class more on-time).
+# Priority 1 = 复兴号 (highest), 2 = 和谐号, 3 = 普速 (lowest).
+PRIORITY_WEIGHT = {1: 1.4, 2: 1.0, 3: 0.6}
+# Cap the late-penalty magnitude so a few extreme-late (physics-bound) trains don't
+# dwarf the ontime-rate incentive (railway KPI = rate primary).  The superlinear
+# penalty still applies up to ~85s; beyond that it's flat, keeping the tail
+# SECONDARY to the ontime rate.
+L3_LATE_CAP = 20.0
 
 
 @dataclass
@@ -30,9 +56,10 @@ class Metrics:
     deadlock_flag: int
     completion_rate: float
     hard_bound_infeasible_count: int
-    n_ontime_dep: int = 0          # trains departing within threshold
-    n_ontime_arr: int = 0          # trains arriving within threshold
-    ontime_rate: float = 0.0       # ontine departures / n_granted
+    n_ontime_dep: int = 0          # trains departing within threshold (L2 grant)
+    n_ontime_arr: int = 0          # trains arriving within threshold (realized)
+    n_arrivals: int = 0            # realized corridor arrivals (transit events)
+    ontime_rate: float = 0.0       # realized ontime arrivals / n_arrivals
     platform_utilization: float = 0.0  # distinct platforms used / total platforms (per station avg)
 
 
@@ -51,32 +78,52 @@ def compute_metrics(
     unresolved_conflicts: int = 0,
     hard_bound_infeasible_count: int = 0,
     station_map: Optional[Dict[str, str]] = None,
+    transit_events: Optional[List[dict]] = None,
 ) -> Metrics:
-    """Compute scheduling metrics.
+    """Compute scheduling + realised-execution metrics.
 
     If station_map is provided (train_id → current station), delays are
     computed relative to that station's timetable.  Otherwise, each train's
     origin_station is used (backward-compatible for two-station env).
+
+    Arrival metrics use the REALISED arrivals from `transit_events` (L3 corridor
+    execution: actual_arrival - planned_arrival) when provided — the physically
+    meaningful punctuality.  Without events, they fall back to the L2 grant
+    window (W_in), which is scheduling-level, not execution.
     """
     layer1 = DispatchBounds(cfg)
     held: Set[str] = set(held_train_ids)
     active: Set[str] = set(active_train_ids or cfg.trains.keys())
 
     dep_delays: List[float] = []
-    arr_delays: List[float] = []
     for grant in grants:
         train = cfg.trains[grant.train_id]
         sid = station_map.get(grant.train_id) if station_map else train.origin_station
         bounds = layer1.for_train(grant.train_id, sid)
         dep_delays.append(abs(grant.W_out[0] - bounds.t_dep_plan))
-        arr_delays.append(abs(grant.W_in[0] - bounds.t_arr_plan))
 
     total_dep = sum(dep_delays)
-    total_arr = sum(arr_delays)
     n_granted = len(grants)
     n_active = max(len(active), 1)
     n_ontime_dep = sum(1 for d in dep_delays if d <= ONTIME_THRESHOLD_SEC)
-    n_ontime_arr = sum(1 for d in arr_delays if d <= ONTIME_THRESHOLD_SEC)
+
+    # ---- realised-arrival metrics (L3 execution) ----
+    if transit_events:
+        arr_delays = [ev["arr_delay"] for ev in transit_events]
+        n_arrivals = len(arr_delays)
+        n_ontime_arr = sum(1 for d in arr_delays if abs(d) <= ONTIME_THRESHOLD_SEC)
+        total_arr = sum(max(0.0, d) for d in arr_delays)   # late-only realized delay
+        max_arr = max(arr_delays) if arr_delays else 0.0
+    else:
+        arr_delays = []
+        for g in grants:
+            train = cfg.trains[g.train_id]
+            sid = station_map.get(g.train_id) if station_map else train.origin_station
+            arr_delays.append(abs(g.W_in[0] - layer1.for_train(g.train_id, sid).t_arr_plan))
+        n_arrivals = n_granted
+        n_ontime_arr = sum(1 for d in arr_delays if d <= ONTIME_THRESHOLD_SEC)
+        total_arr = sum(arr_delays)
+        max_arr = max(arr_delays) if arr_delays else 0.0
 
     # Platform utilization: per-station average of (distinct_platforms_used / total_platforms)
     plat_by_station: Dict[str, set] = {}
@@ -99,16 +146,17 @@ def compute_metrics(
         total_dep_delay=total_dep,
         total_arr_delay=total_arr,
         mean_dep_delay=total_dep / max(n_granted, 1),
-        mean_arr_delay=total_arr / max(n_granted, 1),
+        mean_arr_delay=total_arr / max(n_arrivals, 1),
         max_dep_delay=max(dep_delays) if dep_delays else 0.0,
-        max_arr_delay=max(arr_delays) if arr_delays else 0.0,
+        max_arr_delay=max_arr,
         unresolved_conflicts=unresolved_conflicts,
         deadlock_flag=1 if len(held) >= n_active else 0,
         completion_rate=n_granted / n_active,
         hard_bound_infeasible_count=hard_bound_infeasible_count,
         n_ontime_dep=n_ontime_dep,
         n_ontime_arr=n_ontime_arr,
-        ontime_rate=n_ontime_dep / max(n_granted, 1),
+        n_arrivals=n_arrivals,
+        ontime_rate=n_ontime_arr / max(n_arrivals, 1),
         platform_utilization=platform_util,
     )
 
@@ -171,6 +219,10 @@ def compute_layered_rewards(
                 -0.02 * dep_delay * prio_weight * dep_mult
                 + ONTIME_BONUS * dep_improve * prio_weight
             )
+            # Hard ontime bonus: crossing the 15s threshold is explicitly rewarded
+            # (aligns training with the eval metric), on top of the smooth decay.
+            if dep_delay <= ONTIME_THRESHOLD_SEC:
+                local += ONTIME_HARD_BONUS * prio_weight
             # Early/late arrival penalty (intermediate stations only).
             # L3 decomposition can make transit faster than planned; penalising
             # arrival deviation gives MAPPO incentive to adjust departure timing
@@ -251,36 +303,47 @@ def compute_l3_reward(
 # ---------------------------------------------------------------------------
 
 def compute_l3_terminal_reward(arrival_deviation_sec: float, platform_free: bool,
+                               priority: int = 2,
                                ontime_sigma: float = 10.0,
-                               ontime_bonus: float = 2.0,
-                               late_coef: float = 0.05,
+                               ontime_bonus: float = 3.0,
+                               late_coef: float = 0.15,
+                               late_sq_coef: float = 0.001,
                                early_coef: float = 0.05,
                                global_delay_sec: float = 0.0,
                                global_coef: float = 0.002) -> float:
-    """Terminal reward at corridor end.
+    """Terminal reward at corridor end — railway KPI = ontime ARRIVALS / total.
 
-    - SMOOTH ontime bonus: ontime_bonus * exp(-(dev/ontime_sigma)^2) — a Gaussian
-      around dev=0 gives a continuous gradient that pulls MARGINAL trains (the
-      5-15s boundary) back toward on-time, instead of a binary threshold that the
-      coarse FAST/SLOW modes could only overshoot.  Near-on-time trains are best
-      served by CRUISE (stays in the window), matching SA's behaviour.
-    - late: -late_coef * late seconds (dominates beyond ~sigma).
-    - early: only penalised when the destination platform is NOT free yet.
+    HIERARCHY (per railway ontime-rate assessment):
+      1. PRIMARY = maximise the ontime arrival RATE: a LARGE smooth ontime bonus
+         (Gaussian around dev=0) applies to EVERY arrival, so in expected reward it
+         dominates (frequent term) and the policy learns to get as many trains on
+         time as possible.
+      2. SECONDARY = minimise the tail: superlinear late penalty (late_coef*dev +
+         late_sq_coef*dev^2) is applied only to the late few, shaping behaviour
+         among unavoidably-late trains without outranking the ontime rate.
+    - PRIORITY: the whole local reward is scaled by PRIORITY_WEIGHT[priority] so
+      higher-class trains (复兴号 > 和谐号 > 普速) are held to higher punctuality.
+    - early: penalised REGARDLESS of platform state (2026-08-14) — the old
+      "only if platform not free" rule let the policy collapse to always-FAST
+      (arrive early when platforms are free = unpunished).  early_coef kept at
+      0.05 (always-early at 0.1 over-corrected in v2: avoided FAST on restricted).
     - GLOBAL team term: -global_coef * system_delay for cross-train coordination.
     """
+    w = PRIORITY_WEIGHT.get(priority, 1.0)
     r = ontime_bonus * math.exp(-(arrival_deviation_sec / ontime_sigma) ** 2)
     if arrival_deviation_sec > 0:
-        r -= late_coef * arrival_deviation_sec
-    elif not platform_free:
+        late = late_coef * arrival_deviation_sec + late_sq_coef * arrival_deviation_sec ** 2
+        r -= min(late, L3_LATE_CAP)
+    else:
         r -= early_coef * abs(arrival_deviation_sec)
     if global_delay_sec > 0:
         r -= global_coef * global_delay_sec
-    return r
+    return w * r
 
 
 def compute_l3_team_reward(episode_ontime_rate: float, episode_mean_dep: float,
                            ontime_bonus: float = 2.0,
-                           delay_coef: float = 0.02) -> float:
+                           delay_coef: float = 0.05) -> float:
     """Episode-level team reward for L3 coordination.
 
     Rewards the SYSTEM's running ontime rate and penalises the SYSTEM's mean

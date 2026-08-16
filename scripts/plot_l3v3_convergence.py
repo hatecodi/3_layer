@@ -45,7 +45,11 @@ def _rolling(y: np.ndarray, w: int = 9) -> np.ndarray:
     if w <= 1 or len(y) < w:
         return y.astype(float)
     kernel = np.ones(w) / w
-    return np.convolve(y, kernel, mode="valid")
+    pad_l = (w - 1) // 2
+    pad_r = w - 1 - pad_l
+    # edge-pad so the smoothed series keeps the full input length (mode="valid"
+    # alone trims w-1 trailing points, cutting the line short near the end)
+    return np.convolve(np.pad(y, (pad_l, pad_r), mode="edge"), kernel, mode="valid")
 
 
 def _band(by_seed: dict, key: str, episodes: np.ndarray, w: int):

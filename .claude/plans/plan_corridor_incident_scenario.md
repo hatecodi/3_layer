@@ -1,7 +1,15 @@
 # Plan: Corridor speed-restriction incident scenario (coordination-rich disturbance)
 
 Date: 2026-08-08
-Status: draft
+Status: steps 1-5 + config + tests + eval/behavior arms IMPLEMENTED 2026-08-12.
+  Eval/behavior audit fixed pre-wiring: (B1) CRUISE baseline now honours the
+  incident via transit() factors; (B2/B3) eval_protocol is incident-aware with
+  realised-ARRIVAL-delay metrics from env l3_transit_events and affected/unaffected
+  stratification; (B4) --blocks seed-block variance; (B5) paired excess-vs-CRUISE;
+  (B6) deadlock/trunc separate; (B7) absolute >60s replaced by paired excess;
+  behavior script gains --incident + restriction-signal binning (obs slot 9).
+  Remaining: TRAIN (train_l3_convergence --incident) + behavior + held-out eval,
+  then 20/25-train arm.
 
 ## What
 
@@ -68,21 +76,53 @@ Real HSR heavy-rain rules (防灾安全监控系统 / 雨量监测, multiple sou
   INCREASES it (wet rails -> longer braking distance -> larger spacing), which
   is the physical mechanism for capacity drop under rain.
 
-Config defaults (sources cited in coding_log / handoff):
+Config defaults (sources cited in coding_log / handoff; min_time replaced by
+traffic-anchored timing per optimization (a)).  `enabled` is DOC-ONLY: the env
+gates incidents via `enable_corridor_incident` (default off) so existing
+baselines (run_train_l3_only / hierarchical / eval) are unchanged; incident runs
+pass `--incident` / `enable_corridor_incident=True`.
 ```yaml
 corridor_incident:
-  enabled: true
-  prob: 0.6            # probability an incident occurs per episode
-  min_time: 100        # earliest incident start (s)
+  enabled: false        # doc-only; gate is env enable_corridor_incident
+  prob: 0.6             # probability an incident occurs per episode
   duration_range: [100, 200]
   factor_range: [0.15, 0.4]   # 大暴雨(45km/h) .. 暴雨(120km/h); HARD DATA
-  safety_factor: 1.5   # moving_block_safety_m multiplier (wet-rail braking
-                       # distance increase) — ESTIMATED, no direct citation;
-                       # flag as such in the paper
+  safety_factor: 1.5    # moving_block_safety_m multiplier (wet-rail braking
+                        # distance increase) — ESTIMATED, no direct citation;
+                        # flag as such in the paper
+  min_trains: 2         # incident window must cover >= this many corridor transits
+  max_added_delay_sec: 200   # calibration cap (optimization (c))
 ```
 The incident applies BOTH the speed-factor restriction AND the safety-distance
 increase (`moving_block_safety_m * safety_factor` during the window) — that
 combination is the physical model of "跟车间距增大" under rain.
+
+### 7. Optimizations (2026-08-12 code review — incorporated into steps 1-5)
+
+**(a) Anchor incident timing to corridor traffic — REQUIRED.**
+Random corridor + random start `[100,300]` catches **0 trains 50.8%** of the time
+(measured on the 15t timetable: per-corridor transit bursts are staggered, and
+`min_time:100` misses the A_B burst at 31-79s). Follow `inject_bunched_delay`'s
+pattern (disturbance.py:100-111): pick corridor → pick a window overlapping
+≥ `min_trains` transits (default 2). Guarantees every incident is meaningful and
+populates the eval's "incident-affected subset".
+
+**(b) Decouple from origin-bunching for incident runs.**
+`train_l3_convergence.py`/behavior/eval scripts run incident experiments with
+`enable_initial_delay=False`, `enable_corridor_incident=True` (+ `--vt` optional).
+Otherwise the unrecoverable 60-160s bunching still swamps the recoverable
+incident delay and we re-observe learned ≈ SA.
+
+**(c) Severity calibration — keep delay recoverable.**
+0.15x on a short corridor (A_B 5600m) fully covered by a 200s window adds ~360s
+delay = unrecoverable (recreates the origin-bunching failure). Add
+`max_added_delay_sec` (default 200): after picking corridor/window/factor,
+estimate worst-case added delay
+`~ min(corridor_transit, duration) * (1/factor - 1)` and raise `factor` toward
+1.0 until within budget. Keeps the plan's promise that L3 speed control can
+operate on the delay.
+
+**(d) Corridor selection weighted by traffic** (fewer near-empty incidents).
 
 ### 6. Verification protocol (existing infra)
 - `scripts/train_l3_convergence.py` — 3-seed L3 training with plateau check.

@@ -209,22 +209,29 @@ class L3Simulator:
 
     def transit(self, train_id, from_station, to_station, corridor_id,
                 planned_total_sec, actual_departure, speed_choice=SpeedMode.CRUISE,
-                throat_conflict_group=None, priority=2):
+                throat_conflict_group=None, priority=2,
+                speed_factor=1.0, safety_factor=1.0,
+                schedule_cruise_mps: Optional[float] = None):
+        """Single-shot transit (legacy CRUISE baseline).  speed_factor slows the
+        run; safety_factor widens the moving-block gap — so the rule-based CRUISE
+        baseline faces the SAME speed-restriction physics as worker/SA.
+        schedule_cruise_mps = per-train schedule speed (CRUISE = on-time)."""
         p = self.p
         speeds = p.get_speeds(priority)
+        cruise_spd = schedule_cruise_mps if schedule_cruise_mps else speeds.cruise_mps
         sections = self._sections.get(corridor_id)
         run_list: List[float] = []
         if sections:
-            cruise_t = self._section_run_times(sections, speeds.cruise_mps)
+            cruise_t = self._section_run_times(sections, cruise_spd)
             fast_t = self._section_run_times(sections, speeds.max_mps)
-            slow_t = self._section_run_times(sections, speeds.cruise_mps / 1.2)
+            slow_t = self._section_run_times(sections, cruise_spd / 1.2)
             cruise = sum(cruise_t); fast = sum(fast_t); slow = sum(slow_t)
             recovery = max(cruise - fast, 0.0)
             distance = sum(s.length_m for s in sections)
         else:
             distance = self._distances.get(corridor_id, 0.0)
             if distance > 0:
-                cruise = distance / speeds.cruise_mps
+                cruise = distance / cruise_spd
                 fast = distance / speeds.max_mps
                 slow = cruise * 1.2
                 recovery = max(cruise - fast, 0.0)
@@ -245,6 +252,10 @@ class L3Simulator:
         else:
             run = cruise
             if sections: run_list = cruise_t
+        if speed_factor != 1.0:
+            run = run / max(speed_factor, 1e-3)
+            if run_list:
+                run_list = [rt / max(speed_factor, 1e-3) for rt in run_list]
 
         # Throat headway check (before corridor entry)
         throat_exit = actual_departure + p.throat_out_sec
@@ -263,7 +274,7 @@ class L3Simulator:
                 self._corridors.earliest_entry(corridor_id, p.corridor_headway_sec),
                 self._corridors.earliest_moving_entry(
                     corridor_id, run_list, self._sec_bounds.get(corridor_id, []),
-                    p.moving_block_safety_m, p.moving_block_margin_sec))
+                    p.moving_block_safety_m * safety_factor, p.moving_block_margin_sec))
         else:
             hw = self._headways.get(corridor_id, p.corridor_headway_sec)
             earliest = self._corridors.earliest_entry(corridor_id, hw)
@@ -298,33 +309,97 @@ class L3Simulator:
         return times
 
     def section_run_time(self, section: L3Section, speed_mode: SpeedMode,
-                         priority: int) -> float:
-        """Traverse time for one section at a speed mode (min with section limit)."""
+                         priority: int, speed_factor: float = 1.0,
+                         schedule_cruise_mps: Optional[float] = None) -> float:
+        """Traverse time for one section at a speed mode (min with section limit).
+
+        CRUISE uses the train's SCHEDULE speed — per-train per-corridor, derived
+        from the INITIAL timetable (distance/(planned_transit - overhead)) — so
+        running at schedule = on-time for every class.  FAST = class max (real
+        recovery), SLOW = schedule/1.2 (coordination).  Falls back to the class
+        cruise when no schedule speed is given.
+        speed_factor (< 1 = speed-restriction incident) scales the effective
+        speed down, lengthening the run time.
+        """
         speeds = self.p.get_speeds(priority)
+        cruise = schedule_cruise_mps if schedule_cruise_mps else speeds.cruise_mps
         if speed_mode == SpeedMode.FAST:
             v = speeds.max_mps
         elif speed_mode == SpeedMode.SLOW:
-            v = speeds.cruise_mps / 1.2
+            v = cruise / 1.2
         else:
-            v = speeds.cruise_mps
+            v = cruise
+        v *= max(speed_factor, 1e-3)
         lim = section.limit_mps
         eff = min(v, lim) if lim else v
         return section.length_m / max(eff, 1e-6)
 
+    @staticmethod
+    def incident_section_factors(start: float, end: float, f_inc: float,
+                                 sf_inc: float, t: float,
+                                 run_est: float) -> Tuple[float, float]:
+        """(speed_factor, safety_factor) for a section traversed over
+        [t, t+run_est] under an incident window [start, end].
+
+        The restriction applies ONLY to sections whose traversal overlaps the
+        window (section-resolved).  A train is NOT slowed for its whole transit
+        just because its corridor leg briefly overlaps the restriction — that
+        over-restriction turned the affected train into a slow-moving front and
+        stacked an unbounded moving-block queue behind it.
+        """
+        if not (t + run_est <= start or t >= end):
+            return f_inc, sf_inc
+        return 1.0, 1.0
+
     def section_progress(self, corridor_id: str, t: float, pos_k: float,
                          section: L3Section, speed_mode: SpeedMode,
-                         priority: int) -> Tuple[float, float]:
+                         priority: int, speed_factor: float = 1.0,
+                         safety_factor: float = 1.0,
+                         schedule_cruise_mps: Optional[float] = None) -> Tuple[float, float]:
         """(wait, run) to traverse one section starting at position pos_k at
-        absolute time t.  Headway is a HARD moving-block boundary: the train
-        waits until the front occupant is a safety distance ahead of pos_k.
-        Used by both the learned worker loop and the SA baseline so the physics
-        stays in one place."""
-        front_at = self._corridors.front_time_at(
-            corridor_id, pos_k + self.p.moving_block_safety_m,
-            self._sec_bounds.get(corridor_id, []))
-        wait = 0.0 if front_at == float("inf") else max(
-            0.0, front_at + self.p.moving_block_margin_sec - t)
-        run = self.section_run_time(section, speed_mode, priority)
+        absolute time t.  Headway is a HARD CONTINUOUS moving-block boundary:
+        the follower may occupy position x in [pos_k, pos_k+len] only once the
+        front occupant is *safety_m* ahead of x — enforced through the WHOLE
+        section, not just at the section start, so a FAST follower cannot close
+        the gap mid-section.  Used by the worker loop, the SA baselines and the
+        rule-based CRUISE baseline so all share identical physics.
+
+        speed_factor / safety_factor model a speed-restriction incident: slower
+        run times + a larger moving-block safety distance (wet-rail braking).
+        schedule_cruise_mps = per-train schedule speed (CRUISE = on-time).
+        """
+        safety = self.p.moving_block_safety_m * safety_factor
+        margin = self.p.moving_block_margin_sec
+        run = self.section_run_time(section, speed_mode, priority, speed_factor,
+                                    schedule_cruise_mps)
+        length = section.length_m
+        pos_end = pos_k + length
+        sec_bounds = self._sec_bounds.get(corridor_id, [])
+
+        def our_time_to(x: float) -> float:
+            """Run time from the section start (pos_k) to position x (linear)."""
+            if length <= 1e-9:
+                return 0.0
+            return max(0.0, x - pos_k) / length * run
+
+        # front_time_at(x+safety) is piecewise-linear with breakpoints where
+        # x+safety crosses a section boundary; our_time_to is linear within this
+        # homogeneous section, so the binding position is at the section ends or
+        # at those shifted boundaries.  Enforce the constraint over all of them.
+        wait = 0.0
+        positions = [pos_k, pos_end]
+        for b in sec_bounds:
+            xb = b - safety
+            if pos_k < xb < pos_end:
+                positions.append(xb)
+        for x in positions:
+            front_at = self._corridors.front_time_at(corridor_id, x + safety,
+                                                     sec_bounds)
+            if front_at == float("inf"):
+                continue
+            need = front_at + margin - (t + our_time_to(x))
+            if need > wait:
+                wait = need
         return wait, run
 
     def speed_info(self, corridor_id: str, priority: int) -> Tuple[float, float]:

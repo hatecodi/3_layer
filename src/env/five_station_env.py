@@ -14,7 +14,7 @@ state at station N+1.
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -49,8 +49,12 @@ from ..control.resource_manager import (
     resolve_all,
 )
 from ..experiment.heuristic_planner import make_rebuild_fn
-from ..experiment.scenario_loader import ScenarioConfig, TrainBound
-from .disturbance import DEADLOCK_THRESHOLD, inject_bunched_delay
+from ..experiment.scenario_loader import ScenarioConfig, TrainBound, TrainPlan, TrainTimetable
+from .disturbance import (
+    DEADLOCK_THRESHOLD,
+    inject_bunched_delay,
+    inject_corridor_incident,
+)
 from .observation_builder import build_observations
 from .reward import compute_layered_rewards, compute_metrics
 
@@ -125,9 +129,23 @@ class FiveStationEnv(BaseRailwayEnv):
         batch_window_sec: float = 120.0,
         enable_vt: bool = True,
         enable_initial_delay: bool = True,
+        enable_corridor_incident: Optional[bool] = None,  # None -> follow config
         l3_worker: Optional[object] = None,  # L3WorkerTrainer or None for rule-based
         l3_sa: bool = False,                 # SA per-transit baseline (eval only)
-        l3_team_lambda: float = 0.3,         # L3 episode-level team-reward weight
+        l3_sa_online: bool = False,          # partial-observation SA baseline (eval only)
+        l3_sa_nofc: bool = False,            # SA WITHOUT incident forecast: plans as if
+                                             # clear (factor=1) but executes the real
+                                             # restriction -> the cost of needing a forecast
+        enable_extra_train: bool = False,    # random mid-operation extra P2 train: spawns at
+                                             # a random station (empty platform), transits
+                                             # to D, stops at D (tests new-instance adaptation)
+        extra_train_prob: float = 0.5,
+        incident_scale: float = 1.0,         # >1 strengthens the incident (max_added x,
+                                             # factor /, duration x) WITHOUT changing the
+                                             # base config — opens the L2 re-dispatch window
+        l3_team_lambda: float = 1.0,         # L3 episode-level team-reward weight
+                                             # (>=1 so coordination pays; greedy SA
+                                             # does NOT see this term -> asymmetric)
     ):
         self.cfg = cfg
         self.layer1 = DispatchBounds(cfg)
@@ -135,14 +153,20 @@ class FiveStationEnv(BaseRailwayEnv):
         self.rng = random.Random(seed)
         self.batch_window_sec = batch_window_sec
         self._enable_initial_delay = enable_initial_delay
+        inc_cfg = cfg.time_generation.get("corridor_incident", {})
+        self._incident_enabled = (
+            enable_corridor_incident if enable_corridor_incident is not None
+            else inc_cfg.get("enabled", False))
         self._l3_worker = l3_worker  # None = rule-based cruise
         self._l3_sa = l3_sa
+        self._l3_sa_online = l3_sa_online
+        self._l3_sa_nofc = l3_sa_nofc
+        self._enable_extra_train = enable_extra_train
+        self._extra_train_prob = extra_train_prob
+        self._incident_scale = incident_scale
         self._l3_team_lambda = l3_team_lambda
-        # Running episode system stats (for the L3 team reward): cumulative
-        # over the episode, reset each reset().
-        self._l3_ep_grants = 0
-        self._l3_ep_ontime = 0
-        self._l3_ep_delay = 0.0
+        # (L3 team reward now uses a sliding window of recent arrivals — see
+        # _l3_win_delays — for a low-variance system punctuality signal.)
         # Visitor trains: config-driven, can be disabled per experiment.
         self._visitor_config = cfg.time_generation.get("visitors", {})
         self._visitor_enabled = self._visitor_config.get("enabled", True) and enable_vt
@@ -185,9 +209,18 @@ class FiveStationEnv(BaseRailwayEnv):
                                    sections=sections)
         self._corridor_delays: Dict[str, float] = {}  # train_id -> headway delay
         self._throat_delays: Dict[str, float] = {}    # train_id -> throat delay
+        self._corridor_incidents: Dict[str, Tuple[float, float, float, float]] = {}
         self._hard_guard_violations = 0
         self._l3_action_counts: Dict[int, int] = {}   # per-section speed choices (episode)
+        # behavior instrumentation: (mode, section_speed_factor, priority) per
+        # section — for comparing SA vs learned-L3 mode distributions
+        self._l3_behavior: List[Tuple[int, float, int]] = []
+        self._l3_transit_events: List[dict] = []      # realized corridor transits (this step)
         self._l3_ep_reward: float = 0.0               # cumulative L3 worker reward this episode
+        # Sliding window of recent realised arrival delays for the SMOOTH team
+        # reward (low-variance system punctuality signal; instantaneous running
+        # stats were too noisy early-episode and destabilised training).
+        self._l3_win_delays: deque = deque(maxlen=20)
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
 
         # State
@@ -229,14 +262,26 @@ class FiveStationEnv(BaseRailwayEnv):
         self._held_steps = {}
         self._corridor_delays = {}
         self._throat_delays = {}
+        self._corridor_incidents = {}
         self._hard_guard_violations = 0
         self._l3_action_counts = {}
+        self._l3_behavior = []
+        self._l3_transit_events = []
         self._l3_ep_reward = 0.0
-        self._l3_ep_grants = 0
-        self._l3_ep_ontime = 0
-        self._l3_ep_delay = 0.0
+        self._l3_win_delays.clear()
         self._l3_sim.reset()
         self._persistent_cal = ResourceCalendar(min_gap_sec=5.0)
+
+        # random mid-operation extra P2 train: drop the previous episode's, add
+        # one if triggered (a NEW instance out of the training distribution).
+        for tid in [t for t in self.cfg.trains if t.startswith("EXTRA_")]:
+            del self.cfg.trains[tid]
+            self._routes.pop(tid, None)
+        if self._enable_extra_train and self.rng.random() < self._extra_train_prob:
+            etid = "EXTRA_0"
+            extra = self._build_extra_train(etid, self.rng)
+            self.cfg.trains[etid] = extra
+            self._routes[etid] = self._get_train_route(extra)
 
         all_ids = sorted(self.cfg.trains.keys())
         self._journeys = {}
@@ -261,6 +306,9 @@ class FiveStationEnv(BaseRailwayEnv):
         # clears, creating corridor bunching and headway coupling.
         if self._enable_initial_delay:
             inject_bunched_delay(self._journeys, self.cfg.trains, self.rng)
+        if self._incident_enabled:
+            self._corridor_incidents = inject_corridor_incident(
+                self.cfg, self.rng, severity_scale=self._incident_scale)
 
         self._last_requests = []
         self._last_grants = []
@@ -319,6 +367,9 @@ class FiveStationEnv(BaseRailwayEnv):
         # 4. Advance trains
         newly_advanced, hard_guard_held = self._advance_trains(grants)
         effective_grants = [g for g in grants if g.train_id not in hard_guard_held]
+        # feed this step's realised arrivals into the team-reward sliding window
+        for ev in self._l3_transit_events:
+            self._l3_win_delays.append(ev["arr_delay"])
 
         # 5. Update held_steps for deadlock tracking
         for tid in granted_ids:
@@ -352,11 +403,8 @@ class FiveStationEnv(BaseRailwayEnv):
             unresolved_conflicts=unresolved,
             hard_bound_infeasible_count=infeasible + self._hard_guard_violations,
             station_map=grant_station,
+            transit_events=list(self._l3_transit_events),
         )
-        # Accumulate running episode system stats (L3 team reward signal)
-        self._l3_ep_grants += metrics.n_granted
-        self._l3_ep_ontime += metrics.n_ontime_dep
-        self._l3_ep_delay += metrics.total_dep_delay
 
         # 8. Advance time (single unified block)
         self._step_idx += 1
@@ -422,6 +470,7 @@ class FiveStationEnv(BaseRailwayEnv):
             "deadlock_counter": self._deadlock_counter,
             "l3_speed_choices": getattr(self, "_l3_speed_choices", {}),
             "l3_action_counts": dict(getattr(self, "_l3_action_counts", {})),
+            "l3_transit_events": list(getattr(self, "_l3_transit_events", [])),
             "retried_train_ids": retried,  # trains whose platform was changed by resolver
             "hard_guard_violations": self._hard_guard_violations,
             "hard_guard_held": hard_guard_held,
@@ -434,6 +483,50 @@ class FiveStationEnv(BaseRailwayEnv):
             truncated,
             info,
         )
+
+    def _build_extra_train(self, tid: str, rng: random.Random) -> TrainTimetable:
+        """Random mid-operation extra P2 train.
+
+        Spawns at a random station (A/B/C/E — a free platform is handled by the
+        scheduler), transits toward D (passing intermediate stations with 0
+        dwell), stops at D (经停), and terminates at D.  This is a NEW instance
+        out of the training distribution — tests whether the learned L2/L3 adapt
+        without retraining while SA must re-solve.
+        """
+        up = ["A", "B", "C", "D", "E"]
+        down = ["E", "D", "C", "B", "A"]
+        s = rng.choice(["A", "B", "C", "E"])
+        direction = "up" if s in ("A", "B", "C") else "down"
+        order = up if direction == "up" else down
+        i, j = order.index(s), order.index("D")
+        route = order[i:j + 1] if j >= i else order[j:i + 1][::-1]
+        spawn_dep = rng.uniform(150.0, 500.0)
+        d_dwell = 10.0
+        planned: Dict[str, TrainPlan] = {}
+        bounds: Dict[str, TrainBound] = {}
+        t = spawn_dep
+        for k, st in enumerate(route):
+            if st == s:
+                planned[st] = TrainPlan(arr=0.0, dep=t)
+            elif st == "D":
+                planned[st] = TrainPlan(arr=t, dep=t + d_dwell)
+            else:
+                planned[st] = TrainPlan(arr=t, dep=t)  # pass-through
+            bounds[st] = TrainBound(arr_min=0.0, dep_max=t + 200.0,
+                                    dwell_min=d_dwell if st == "D" else 0.0)
+            if k < len(route) - 1:
+                t += self._corridor_runtime(st, route[k + 1], direction)
+        cand = {}
+        for st in route:
+            plats = [p.id for p in self.cfg.stations[st].platforms]
+            if st != "D":  # non-pass-through: strip the through-line P1
+                plats = [p for p in plats if not p.endswith("_p1")]
+            cand[st] = plats
+        return TrainTimetable(
+            id=tid, direction=direction, train_class="G", priority=2,
+            pass_through=False, origin_station=s, destination_station="D",
+            corridor=f"{s}_to_{route[1]}" if len(route) > 1 else f"{s}_to_D",
+            planned=planned, bounds=bounds, candidate_platforms=cand)
 
     # ------------------------------------------------------------------
     # request building
@@ -767,10 +860,16 @@ class FiveStationEnv(BaseRailwayEnv):
                         tid, self._journeys[tid].current_station).candidate_platforms
                     for tid in [r.train_id for r in st_reqs]
                 }
+                # Cross-platform fallback pays a real re-routing delay
+                # (swap_cost_sec) so a policy picking a colliding platform /
+                # shared-throat group sees an actual departure delay, not a free
+                # platform-swap.  Config-driven; default 0 = legacy free rescue.
+                swap_cost_sec = self.cfg.time_generation.get("swap_cost_sec", 0.0)
                 grants.extend(resolve_all(
                     st_reqs, candidate_platforms,
                     make_rebuild_fn(self.layer1, station_id),
-                    parked_windows=parked if parked else None))
+                    parked_windows=parked if parked else None,
+                    swap_cost_sec=swap_cost_sec))
         # Book grants into persistent calendar (old bookings expire via t_now filter)
         granted_ids = {g.train_id for g in grants}
         for rid in self._persistent_cal._windows:
@@ -831,6 +930,7 @@ class FiveStationEnv(BaseRailwayEnv):
         advanced = 0
         hard_guard_held: List[str] = []
         self._l3_speed_choices: Dict[str, int] = {}
+        self._l3_transit_events = []
         grants = sorted(grants, key=lambda g: g.W_out[0])
         for g in grants:
             journey = self._journeys[g.train_id]
@@ -860,6 +960,11 @@ class FiveStationEnv(BaseRailwayEnv):
 
             train_prio = self.cfg.trains[g.train_id].priority
             speeds = p.get_speeds(train_prio)
+            # Per-train SCHEDULE (cruise) speed from the INITIAL timetable:
+            # running at schedule = on-time arrival for every class (fixes P1/P3
+            # structural early/late).  FAST = class max (recovery), SLOW = schedule/1.2.
+            schedule_cruise = distance / max(planned_transit - p.corridor_overhead_sec, 1.0)
+            schedule_cruise = min(schedule_cruise, speeds.max_mps)
 
             # Throat conflict group for this platform+direction
             station_cfg = self.cfg.stations[cur]
@@ -879,6 +984,17 @@ class FiveStationEnv(BaseRailwayEnv):
                     throat_exit = earliest_throat
                 self._l3_sim._throats.record_exit(throat_id, throat_exit)
 
+            # Corridor speed-restriction incident window (start, end, f_inc,
+            # sf_inc) or None.  Applied SECTION-RESOLVED via
+            # L3Simulator.incident_section_factors: only the sections whose
+            # traversal overlaps the window are slowed.  The old whole-transit
+            # rule (any overlap -> slow the entire leg) turned an affected train
+            # into a slow-moving front and stacked an unbounded moving-block
+            # queue behind it (absurd 400-1900s headway holds).  All branches
+            # (worker/SA/rule CRUISE) honor the same section-resolved physics.
+            inc = self._corridor_incidents.get(corridor_key)
+            affected = False
+
             headway_delay = 0.0
             flat_speeds = getattr(self, '_flat_speed_choices', {})
             flat_mode = None
@@ -886,7 +1002,8 @@ class FiveStationEnv(BaseRailwayEnv):
                 flat_mode = SpeedMode(flat_speeds[g.train_id])
 
             use_worker = self._l3_worker is not None and sections and distance > 0
-            use_sa = (not use_worker) and self._l3_sa and sections and distance > 0
+            use_sa = (not use_worker) and (self._l3_sa or self._l3_sa_online or self._l3_sa_nofc) \
+                and sections and distance > 0
             t_corridor_exit = None
 
             if use_worker:
@@ -895,7 +1012,11 @@ class FiveStationEnv(BaseRailwayEnv):
                 # reward term); the worker optimises terminal punctuality + a
                 # global team term (no energy objective).
                 from ..env.observation_builder import build_l3_section_observation
-                from ..env.reward import compute_l3_terminal_reward, compute_l3_team_reward
+                from ..env.reward import (
+                    L3_FAST_PENALTY,
+                    compute_l3_terminal_reward,
+                    compute_l3_team_reward,
+                )
                 from ..marl.l3_worker import L3Transition
                 t = throat_exit
                 accumulated_wait = 0.0
@@ -906,13 +1027,26 @@ class FiveStationEnv(BaseRailwayEnv):
                 nxt_station = self.cfg.stations.get(nxt)
                 nxt_total = len(nxt_station.platforms) if nxt_station else 4
                 planned_arrival = train_plan[nxt].arr
-                speed_ratio = speeds.cruise_mps / max(speeds.max_mps, 1.0)
+                speed_ratio = schedule_cruise / max(speeds.max_mps, 1.0)
                 last_action = 0
                 for k, sec in enumerate(sections):
                     pos_k = bounds[k] if k < len(bounds) else 0.0
+                    # section-resolved incident factors: this section's traversal
+                    # [t, t+run_est] overlaps the window -> slow this section only
+                    sf_k, saf_k = 1.0, 1.0
+                    if inc:
+                        i_start, i_end, f_inc, sf_inc = inc
+                        run_est = self._l3_sim.section_run_time(
+                            sec, SpeedMode.CRUISE, train_prio, 1.0, schedule_cruise)
+                        sf_k, saf_k = self._l3_sim.incident_section_factors(
+                            i_start, i_end, f_inc, sf_inc, t, run_est)
+                        if sf_k != 1.0:
+                            affected = True
                     # HARD moving-block wait at this section (mode-independent)
                     wait_k, _ = self._l3_sim.section_progress(
-                        corridor_key, t, pos_k, sec, SpeedMode.CRUISE, train_prio)
+                        corridor_key, t, pos_k, sec, SpeedMode.CRUISE, train_prio,
+                        speed_factor=sf_k, safety_factor=saf_k,
+                        schedule_cruise_mps=schedule_cruise)
                     cum_delay = max(0.0, g.W_out[0] - train_plan[cur].dep) + accumulated_wait
                     nxt_free = self._free_platforms_at(nxt, t + planned_transit)
                     obs_k = build_l3_section_observation(
@@ -927,63 +1061,114 @@ class FiveStationEnv(BaseRailwayEnv):
                         speed_ratio=speed_ratio,
                         next_platforms_free=nxt_free,
                         next_platforms_total=nxt_total,
-                        throat_gap=self._l3_sim.throat_gap(throat_id, g.W_out[0]) if throat_id else 0.0)
+                        throat_gap=self._l3_sim.throat_gap(throat_id, g.W_out[0]) if throat_id else 0.0,
+                        speed_factor=sf_k)
                     obs_t = torch.tensor(obs_k, dtype=torch.float32)
-                    action_k, logprob_k, value_k = self._l3_worker.select_action(obs_t)
+                    action_k, logprob_k, v_local, v_global = self._l3_worker.select_action(obs_t)
                     last_action = int(action_k)
                     self._l3_action_counts[last_action] = self._l3_action_counts.get(last_action, 0) + 1
+                    self._l3_behavior.append((last_action, sf_k, train_prio))
 
-                    run_k = self._l3_sim.section_run_time(sec, SpeedMode(action_k), train_prio)
+                    # Execute the CHOSEN mode with the continuous moving-block
+                    # hard boundary.  The obs probe (wait_k, CRUISE) above is the
+                    # nominal headway gap the worker sees; the actual wait may be
+                    # larger when FAST would close the gap mid-section — a FAST
+                    # follower cannot catch the front (P2 fix).
+                    wait_k_run, run_k = self._l3_sim.section_progress(
+                        corridor_key, t, pos_k, sec, SpeedMode(action_k), train_prio,
+                        speed_factor=sf_k, safety_factor=saf_k,
+                        schedule_cruise_mps=schedule_cruise)
 
                     entry_times.append(t)
-                    t += wait_k + run_k
+                    t += wait_k_run + run_k
                     exit_times.append(t)
-                    accumulated_wait += wait_k
+                    accumulated_wait += wait_k_run
                     total_run += run_k
 
                     done = (k == n_sections - 1)
-                    reward_k = 0.0  # no per-section reward (no energy objective)
+                    # per-section energy cost of FAST: it is NOT free, so the worker
+                    # only runs FAST when recovering delay is worth the energy —
+                    # otherwise it collapses to "always FAST under stress".
+                    # Decomposed rewards for the TWO critics: reward_local = own
+                    # corridor outcome; reward_global = episode-level team term.
+                    reward_local_k = -L3_FAST_PENALTY if action_k == 1 else 0.0
+                    reward_global_k = 0.0
                     if done:
                         arrival_dev = t + p.approach_sec + p.throat_in_sec - planned_arrival
                         platform_free = self._free_platforms_at(nxt, t) > 0
-                        # local punctuality/delay + episode-level team reward
-                        reward_k = compute_l3_terminal_reward(arrival_dev, platform_free)
-                        if self._l3_ep_grants > 0:
-                            running_ontime = self._l3_ep_ontime / self._l3_ep_grants
-                            running_dep = self._l3_ep_delay / self._l3_ep_grants
-                            reward_k += self._l3_team_lambda * compute_l3_team_reward(
-                                running_ontime, running_dep)
-                        self._l3_ep_reward += reward_k
+                        reward_local_k = compute_l3_terminal_reward(
+                            arrival_dev, platform_free, priority=train_prio)
+                        if self._l3_win_delays:
+                            w = self._l3_win_delays
+                            win_ontime = sum(1 for d in w if abs(d) <= 15.0) / len(w)
+                            win_dep = sum(max(0.0, d) for d in w) / len(w)
+                            reward_global_k = self._l3_team_lambda * compute_l3_team_reward(
+                                win_ontime, win_dep)
+                        self._l3_ep_reward += reward_local_k + reward_global_k
                     # done=False between sections (sections ARE a Markov chain under
                     # the worker's policy); done=True only at the corridor end.
                     self._l3_worker.buffer.add(L3Transition(
                         obs=obs_t, action=action_k, logprob=logprob_k,
-                        reward=reward_k, value=value_k, done=done))
+                        reward_local=reward_local_k, reward_global=reward_global_k,
+                        value_local=v_local, value_global=v_global, done=done))
                 headway_delay = accumulated_wait
                 t_corridor_exit = t + p.approach_sec + p.throat_in_sec
                 self._l3_speed_choices[g.train_id] = last_action
                 self._l3_sim._corridors.record_occupancy_abs(
                     corridor_key, g.train_id, entry_times, exit_times)
             elif use_sa:
-                # ---- SA baseline: per-transit simulated annealing over the SAME
-                # per-section speed space, SAME local objective (own arrival
-                # deviation, headway hard). Greedy local upper bound for the eval.
-                from ..control.l3_sa import sa_optimize_profile
+                # ---- SA baselines over the SAME per-section speed space, SAME
+                # local objective (own arrival deviation, headway hard).
+                # l3_sa          = full-information offline oracle (jointly anneals
+                #                  the whole profile, sees the front occupant).
+                # l3_sa_online   = partial-observation: per-section greedy recompute
+                #                  from current state only (headway now, delay now,
+                #                  geometry ahead), no lookahead — the fair match
+                #                  for the learned worker's 10-dim obs.
+                # l3_sa_nofc     = SA that does NOT know the incident: it PLANS as if
+                #                  clear (speed/safety factor 1.0) but EXECUTES the
+                #                  real restriction.  Demonstrates the reactive (vs
+                #                  forecast-needing) value: MAPPO sees reality each
+                #                  section and adapts; SA is locked to a stale plan.
+                if self._l3_sa_online:
+                    from ..control.l3_sa import sa_online_profile
+                    profile_fn = sa_online_profile
+                else:
+                    from ..control.l3_sa import sa_optimize_profile
+                    profile_fn = sa_optimize_profile
                 from ..env.reward import compute_l3_terminal_reward
                 planned_arrival = train_plan[nxt].arr
                 reward_fn = lambda dev, t: compute_l3_terminal_reward(
-                    dev, self._free_platforms_at(nxt, t) > 0)
-                modes, _ = sa_optimize_profile(
+                    dev, self._free_platforms_at(nxt, t) > 0, priority=train_prio)
+                # SA planning sees the incident as a section-resolved window
+                # (same physics as execution); the no-forecast variant plans as
+                # clear (window withheld).
+                plan_window = None if self._l3_sa_nofc else inc
+                modes, _ = profile_fn(
                     self._l3_sim, corridor_key, throat_exit, train_prio,
-                    sections, bounds, planned_arrival, reward_fn)
+                    sections, bounds, planned_arrival, reward_fn,
+                    incident_window=plan_window,
+                    schedule_cruise_mps=schedule_cruise)
                 t = throat_exit
                 accumulated_wait = 0.0
                 entry_times: List[float] = []
                 exit_times: List[float] = []
                 for k, sec in enumerate(sections):
                     pos_k = bounds[k] if k < len(bounds) else 0.0
+                    sf_k, saf_k = 1.0, 1.0
+                    if inc:
+                        i_start, i_end, f_inc, sf_inc = inc
+                        run_est = self._l3_sim.section_run_time(
+                            sec, SpeedMode(modes[k]), train_prio, 1.0, schedule_cruise)
+                        sf_k, saf_k = self._l3_sim.incident_section_factors(
+                            i_start, i_end, f_inc, sf_inc, t, run_est)
+                        if sf_k != 1.0:
+                            affected = True
                     wait_k, run_k = self._l3_sim.section_progress(
-                        corridor_key, t, pos_k, sec, SpeedMode(modes[k]), train_prio)
+                        corridor_key, t, pos_k, sec, SpeedMode(modes[k]), train_prio,
+                        speed_factor=sf_k, safety_factor=saf_k,
+                        schedule_cruise_mps=schedule_cruise)
+                    self._l3_behavior.append((int(modes[k]), sf_k, train_prio))
                     entry_times.append(t)
                     t += wait_k + run_k
                     exit_times.append(t)
@@ -994,23 +1179,80 @@ class FiveStationEnv(BaseRailwayEnv):
                 self._l3_sim._corridors.record_occupancy_abs(
                     corridor_key, g.train_id, entry_times, exit_times)
             else:
-                # ---- backward compat: single-shot transit (CRUISE / flat) ----
+                # ---- rule-based CRUISE / flat: SAME stepwise per-section
+                # physics as the worker and SA (continuous moving-block via
+                # section_progress).  Previously this called transit(), which
+                # enforced a stricter continuous ENTRY and double-counted the
+                # throat headway -> an unfair comparison with worker/SA.  The
+                # throat headway is already applied above (throat_exit).
                 speed_choice = flat_mode or SpeedMode.CRUISE
                 self._l3_speed_choices[g.train_id] = int(speed_choice)
-                l3_result = self._l3_sim.transit(
-                    g.train_id, cur, nxt, corridor_key,
-                    planned_total_sec=planned_transit,
-                    actual_departure=g.W_out[0], speed_choice=speed_choice,
-                    throat_conflict_group=throat_group,
-                    priority=train_prio)
-                t_corridor_exit = l3_result.actual_arrival
-                headway_delay = l3_result.headway_delay_sec
-                throat_delay = l3_result.throat_delay_sec
+                if sections:
+                    t = throat_exit
+                    accumulated_wait = 0.0
+                    entry_times: List[float] = []
+                    exit_times: List[float] = []
+                    for k, sec in enumerate(sections):
+                        pos_k = bounds[k] if k < len(bounds) else 0.0
+                        sf_k, saf_k = 1.0, 1.0
+                        if inc:
+                            i_start, i_end, f_inc, sf_inc = inc
+                            run_est = self._l3_sim.section_run_time(
+                                sec, speed_choice, train_prio, 1.0, schedule_cruise)
+                            sf_k, saf_k = self._l3_sim.incident_section_factors(
+                                i_start, i_end, f_inc, sf_inc, t, run_est)
+                            if sf_k != 1.0:
+                                affected = True
+                        wait_k, run_k = self._l3_sim.section_progress(
+                            corridor_key, t, pos_k, sec, speed_choice, train_prio,
+                            speed_factor=sf_k, safety_factor=saf_k,
+                            schedule_cruise_mps=schedule_cruise)
+                        self._l3_behavior.append((int(speed_choice), sf_k, train_prio))
+                        entry_times.append(t)
+                        t += wait_k + run_k
+                        exit_times.append(t)
+                        accumulated_wait += wait_k
+                    headway_delay = accumulated_wait
+                    t_corridor_exit = t + p.approach_sec + p.throat_in_sec
+                    self._l3_sim._corridors.record_occupancy_abs(
+                        corridor_key, g.train_id, entry_times, exit_times)
+                else:
+                    # no sections: fall back to the legacy single-shot transit
+                    # (whole-transit restriction, as before)
+                    w_sf, w_saf, w_aff = 1.0, 1.0, False
+                    if inc:
+                        i_start, i_end, f_inc, sf_inc = inc
+                        if not (throat_exit + planned_transit <= i_start
+                                or throat_exit >= i_end):
+                            w_sf, w_saf, w_aff = f_inc, sf_inc, True
+                            affected = True
+                    l3_result = self._l3_sim.transit(
+                        g.train_id, cur, nxt, corridor_key,
+                        planned_total_sec=planned_transit,
+                        actual_departure=g.W_out[0], speed_choice=speed_choice,
+                        throat_conflict_group=throat_group,
+                        priority=train_prio,
+                        speed_factor=w_sf, safety_factor=w_saf,
+                        schedule_cruise_mps=schedule_cruise)
+                    t_corridor_exit = l3_result.actual_arrival
+                    headway_delay = l3_result.headway_delay_sec
+                    throat_delay = l3_result.throat_delay_sec
 
             if headway_delay > 1e-6:
                 self._corridor_delays[g.train_id] = headway_delay
             if throat_delay > 1e-6:
                 self._throat_delays[g.train_id] = throat_delay
+
+            # Realized corridor transit (eval instrumentation: actual vs planned
+            # arrival, and whether the incident restriction applied)
+            if t_corridor_exit is not None:
+                self._l3_transit_events.append({
+                    "train_id": g.train_id, "corridor": corridor_key,
+                    "entry": throat_exit, "actual_arrival": t_corridor_exit,
+                    "planned_arrival": train_plan[nxt].arr,
+                    "arr_delay": t_corridor_exit - train_plan[nxt].arr,
+                    "headway_delay": headway_delay, "affected": affected,
+                })
 
             # L3 hard guard: hold for replan only when headway delay is excessive
             # (fixed threshold, independent of per-corridor timetable-derived headway)

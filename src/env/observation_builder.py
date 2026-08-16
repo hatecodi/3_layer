@@ -326,12 +326,15 @@ def build_l3_section_observation(
     next_platforms_free: int,
     next_platforms_total: int,
     throat_gap: float = 0.0,
+    speed_factor: float = 1.0,
 ) -> List[float]:
     """Build a 10-dim per-section observation for the sequential L3 Worker.
 
     Headway-centric: the worker sees the predicted headway wait at this section
     and the waits already accumulated, so it can condition its speed choice on
-    the moving-block interval to the front train.
+    the moving-block interval to the front train.  The last slot carries the
+    speed-restriction incident signal (0 = clear, >0 = restricted) so the worker
+    can react to it.
     """
     return [
         min(headway_gap_sec / 60.0, 1.0),                      # predicted wait at this section
@@ -343,5 +346,5 @@ def build_l3_section_observation(
         speed_ratio,                                           # cruise/max
         next_platforms_free / max(next_platforms_total, 1),
         min(throat_gap / 30.0, 1.0),                           # throat headway wait
-        0.0,                                                   # reserved
+        min(max(1.0 - speed_factor, 0.0), 1.0),                # incident severity (0=clear)
     ]

@@ -8,12 +8,12 @@ network:
   corridor_runtime_sec:
     A_to_B: 90
     B_to_A: 90
-    B_to_C: 180
-    C_to_B: 180
-    C_to_D: 90
-    D_to_C: 90
-    D_to_E: 90
-    E_to_D: 90
+    B_to_C: 90
+    C_to_B: 90
+    C_to_D: 180
+    D_to_C: 180
+    D_to_E: 180
+    E_to_D: 180
 
 stations:
   - id: A

@@ -34,6 +34,10 @@ def main():
     ap.add_argument("--l3", required=True)
     ap.add_argument("--seeds", type=int, default=800000)
     ap.add_argument("--n", type=int, default=15)
+    ap.add_argument("--incident", action="store_true",
+                    help="corridor speed-restriction incident as the ONLY disturbance "
+                         "(disables origin-bunching)")
+    ap.add_argument("--vt", action="store_true", help="enable visitor trains")
     args = ap.parse_args()
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -48,9 +52,10 @@ def main():
                       total_episodes=1, device=dev)
     l3c = torch.load(args.l3, map_location=dev, weights_only=False)
     la = CorridorActor(L3_OBS_DIM, hidden_dim=128); la.load_state_dict(l3c["l3_actor"]); la.eval()
-    lc = CorridorCritic(L3_OBS_DIM, hidden_dim=128); lc.load_state_dict(l3c["l3_critic"]); lc.eval()
-    for p in list(la.parameters()) + list(lc.parameters()): p.requires_grad = False
-    l3 = L3WorkerTrainer(la, lc, lr=1e-3, device=dev)
+    lc_local = CorridorCritic(L3_OBS_DIM, hidden_dim=128); lc_local.load_state_dict(l3c["l3_critic_local"]); lc_local.eval()
+    lc_global = CorridorCritic(L3_OBS_DIM, hidden_dim=128); lc_global.load_state_dict(l3c["l3_critic_global"]); lc_global.eval()
+    for p in list(la.parameters()) + list(lc_local.parameters()) + list(lc_global.parameters()): p.requires_grad = False
+    l3 = L3WorkerTrainer(la, lc_local, lc_global, lr=1e-3, device=dev)
 
     # Collect (obs, action) at each L3 decision by patching worker.select_action
     # inside _advance_trains (the env calls it per section).
@@ -74,7 +79,9 @@ def main():
 
     envmod.FiveStationEnv._advance_trains = patched
     for s in range(args.seeds, args.seeds + args.n):
-        env = FiveStationEnv(cfg=cfg, seed=s, enable_vt=False, enable_initial_delay=True, l3_worker=l3)
+        env = FiveStationEnv(cfg=cfg, seed=s, enable_vt=args.vt,
+                             enable_initial_delay=not args.incident,
+                             enable_corridor_incident=args.incident, l3_worker=l3)
         obs, info = env.reset()
         for _ in range(600):
             masks = info.get("action_masks", {})
@@ -127,6 +134,16 @@ def main():
     for k in ["hdw<0.2", "0.2-0.5", "hdw>0.5"]:
         if k in bins_h:
             print(f"  {k:>10}: {frac(bins_h[k])}")
+
+    # 4. action vs corridor speed-restriction signal (idx 9, 0 = clear, >0 = restricted)
+    bins_r = defaultdict(lambda: defaultdict(int))
+    for obs, act in collect:
+        key = "restricted" if obs[9] > 0 else "clear"
+        bins_r[key][act] += 1
+    print("== action vs incident restriction (obs[9]) ==")
+    for k in ["clear", "restricted"]:
+        if k in bins_r:
+            print(f"  {k:>11}: {frac(bins_r[k])}")
 
     print(f"total L3 decisions: {len(collect)}")
 

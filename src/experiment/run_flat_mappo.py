@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys, csv, json, argparse, math
 from pathlib import Path
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Dict, List, Optional
 
 import torch
@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 from torch.optim import Adam
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # src/experiment -> repo root
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.experiment.scenario_loader import load_scenario
@@ -184,9 +184,53 @@ HP = {
     'value_coef': 0.5, 'max_grad_norm': 1.0, 'rollout_steps': 512,
 }
 
-def train_flat_mappo(episodes=7000):
-    device = torch.device('cpu')
-    cfg = load_scenario(scenario_name='five_station')
+def eval_flat_heldout(actor, cfg, seeds, device, incident=True):
+    """Run held-out incident episodes with the current flat actor (no learning).
+    Returns {arr_ontime, dep_ontime, n_arr, succ, deadlock, trunc}."""
+    n_ontime_arr = 0; n_arr = 0; n_ontime_dep = 0; n_granted = 0
+    succ = 0; deadlock = 0; trunc = 0
+    for s in seeds:
+        env = FiveStationEnv(cfg, seed=s, batch_window_sec=120.0, enable_vt=False,
+                             enable_initial_delay=False,
+                             enable_corridor_incident=incident, l3_worker=None)
+        obs, info = env.reset()
+        done = False
+        speed_choices: Dict[str, int] = {}
+        while not done:
+            masks = info.get('action_masks', {})
+            action_dict = {}
+            for tid in info.get('pending', []):
+                m = masks.get(tid)
+                if not m or not any(m[0]) or not any(m[1]):
+                    continue
+                obs_t = torch.tensor(obs[tid], dtype=torch.float32, device=device).unsqueeze(0)
+                flat_mask = build_flat_mask(m[0], m[1]).to(device)
+                with torch.no_grad():
+                    a = actor.dist(obs_t, flat_mask.unsqueeze(0)).sample()
+                p, e, sp = unpack_flat_action(a.item())
+                action_dict[tid] = (p, e)
+                speed_choices[tid] = sp
+            env._flat_speed_choices = speed_choices
+            obs, _, term, trunc_, info = env.step(action_dict, lambda_team=0.3)
+            done = term or trunc_
+            mm = info.get('metrics', {})
+            n_granted += mm.get('n_granted', 0)
+            n_ontime_dep += mm.get('n_ontime_dep', 0)
+            n_ontime_arr += mm.get('n_ontime_arr', 0)
+            n_arr += mm.get('n_arrivals', 0)
+        status = info.get('episode_status', '?')
+        succ += status == 'success'; deadlock += status == 'deadlock'
+        trunc += status == 'truncated'
+    return {'arr_ontime': n_ontime_arr / max(n_arr, 1),
+            'dep_ontime': n_ontime_dep / max(n_granted, 1),
+            'n_arr': n_arr, 'succ': succ, 'deadlock': deadlock, 'trunc': trunc}
+
+
+def train_flat_mappo(episodes=7000, scenario="five_station_15t", incident=False,
+                     out_root="output", use_cpu=False,
+                     eval_every=0, eval_n=12, eval_seed_base=900000):
+    device = torch.device("cuda" if torch.cuda.is_available() and not use_cpu else "cpu")
+    cfg = load_scenario(scenario_name=scenario)
     obs_dim = get_obs_dim(cfg)
 
     actor = FlatJointActor(obs_dim=obs_dim, hidden_dim=HP['hidden_dim'])
@@ -197,7 +241,7 @@ def train_flat_mappo(episodes=7000):
         value_coef=HP['value_coef'], max_grad_norm=HP['max_grad_norm'], device=device)
 
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-    run_dir = PROJECT_ROOT / 'output' / 'flat_mappo' / run_id
+    run_dir = PROJECT_ROOT / out_root / 'flat_mappo' / run_id
     ckpt_dir = run_dir / 'checkpoints'
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -206,6 +250,11 @@ def train_flat_mappo(episodes=7000):
     best_reward = -float('inf')
     # Store speed choices per train (set during step, read in _advance_trains)
     speed_choices: Dict[str, int] = {}
+    # Rolling window of arrival ontime (realised L3 punctuality) for the
+    # episodes-to-converge comparison vs hierarchical (flat's departure ontime
+    # converges to ~88% but arrival stays ~40%, so arrival is the honest metric).
+    win_arr_ontime = deque(maxlen=50)
+    eval_rows = []   # held-out eval at checkpoints (eval_every > 0)
 
     for ep in range(episodes):
         # Entropy decay
@@ -213,13 +262,16 @@ def train_flat_mappo(episodes=7000):
         trainer.entropy_coef = HP['entropy_coef_start'] + (HP['entropy_coef_end'] - HP['entropy_coef_start']) * progress
 
         env = FiveStationEnv(cfg, seed=ep, batch_window_sec=120.0,
-                             enable_vt=True, enable_initial_delay=True,
+                             enable_vt=False,
+                             enable_initial_delay=not incident,
+                             enable_corridor_incident=incident,
                              l3_worker=None)
         obs, info = env.reset()
         done = False
 
         ep_reward = defaultdict(float)
         ep_granted = 0; ep_dep = 0.0; ep_ontime = 0
+        ep_ontime_arr = 0; ep_arrivals = 0   # realised (L3) arrival punctuality
 
         while not done:
             masks = info.get('action_masks', {})
@@ -268,6 +320,8 @@ def train_flat_mappo(episodes=7000):
             ep_granted += m.get('n_granted', 0)
             ep_dep += m.get('total_dep_delay', 0)
             ep_ontime += m.get('n_ontime_dep', 0)
+            ep_ontime_arr += m.get('n_ontime_arr', 0)
+            ep_arrivals += m.get('n_arrivals', 0)
 
             reward_breakdown = info.get('reward_breakdown', {})
             for i, tr in enumerate(step_transitions):
@@ -289,14 +343,29 @@ def train_flat_mappo(episodes=7000):
         mean_r = total_r / max(len(ep_reward), 1)
         mean_dep = ep_dep / max(ep_granted, 1)
         ontime = ep_ontime / max(ep_granted, 1)
+        arr_ontime = ep_ontime_arr / max(ep_arrivals, 1)
 
         episode_metrics.append({
             'episode': ep, 'mean_reward': mean_r, 'mean_dep_delay': mean_dep,
-            'ontime_rate': ontime, 'status': info.get('episode_status', '?'),
+            'ontime_rate': ontime, 'arr_ontime': arr_ontime,
+            'status': info.get('episode_status', '?'),
         })
+        win_arr_ontime.append(arr_ontime)
 
         if (ep+1) % max(1, episodes//20) == 0 or ep < 5:
-            print(f'  ep {ep:>5} | reward={mean_r:>7.2f} | dep_dly={mean_dep:>6.1f}s | ontime={ontime:.2f} | {info.get("episode_status","?")}')
+            print(f'  ep {ep:>5} | reward={mean_r:>7.2f} | dep_dly={mean_dep:>6.1f}s | dep_ontime={ontime:.2f} | '
+                  f'arr_ontime={sum(win_arr_ontime)/len(win_arr_ontime):.2f} | {info.get("episode_status","?")}')
+
+        # ---- held-out eval hook (fixed seeds, no learning) ----
+        if eval_every > 0 and (ep + 1) % eval_every == 0:
+            seeds = [eval_seed_base + i * 7919 for i in range(eval_n)]
+            ev = eval_flat_heldout(actor, cfg, seeds, device, incident=incident)
+            eval_rows.append({'episode': ep + 1, 'arr_ontime': round(ev['arr_ontime'], 4),
+                              'dep_ontime': round(ev['dep_ontime'], 4),
+                              'n_arr': ev['n_arr'], 'succ': ev['succ'],
+                              'deadlock': ev['deadlock'], 'trunc': ev['trunc']})
+            print(f'    [heldout @ ep {ep+1}] arr_ontime={ev["arr_ontime"]:.3f} '
+                  f'(succ {ev["succ"]}/{len(seeds)})')
 
         if mean_r > best_reward:
             best_reward = mean_r
@@ -314,6 +383,13 @@ def train_flat_mappo(episodes=7000):
         w = csv.DictWriter(f, fieldnames=episode_metrics[0].keys())
         w.writeheader(); w.writerows(episode_metrics)
 
+    if eval_rows:
+        ev_path = run_dir / 'eval_ontime.csv'
+        with open(ev_path, 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=list(eval_rows[0].keys()))
+            w.writeheader(); w.writerows(eval_rows)
+        print(f'held-out eval CSV: {ev_path}')
+
     last = episode_metrics[-300:]
     avg_dep = sum(e['mean_dep_delay'] for e in last) / len(last)
     print(f'\nFlat MAPPO complete: last300 dep={avg_dep:.1f}s')
@@ -322,8 +398,26 @@ def train_flat_mappo(episodes=7000):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--scenario', type=str, default='five_station_15t')
+    parser.add_argument('--incident', action='store_true',
+                        help='corridor speed-restriction incident as the training '
+                             'disturbance (disables origin-bunching)')
     parser.add_argument('--episodes', type=int, default=7000)
     parser.add_argument('--lr', type=float, default=HP['lr'])
+    parser.add_argument('--out-root', type=str, default='output',
+                        help="root dir under PROJECT_ROOT for this run, e.g. "
+                             "output/8_16/training (default 'output')")
+    parser.add_argument('--cpu', action='store_true',
+                        help='force CPU (default: auto CUDA)')
+    parser.add_argument('--eval-every', type=int, default=0,
+                        help='run a held-out incident eval every N training eps (0=off)')
+    parser.add_argument('--eval-n', type=int, default=12,
+                        help='number of held-out episodes per eval checkpoint')
+    parser.add_argument('--eval-seed-base', type=int, default=900000,
+                        help='base seed for the deterministic held-out eval set')
     args = parser.parse_args()
     HP['lr'] = args.lr
-    train_flat_mappo(episodes=args.episodes)
+    train_flat_mappo(episodes=args.episodes, scenario=args.scenario,
+                     incident=args.incident, out_root=args.out_root,
+                     use_cpu=args.cpu, eval_every=args.eval_every,
+                     eval_n=args.eval_n, eval_seed_base=args.eval_seed_base)

@@ -175,6 +175,7 @@ def assign_fallback(
     rebuild_fn: RebuildFn,
     calendar: ResourceCalendar,
     min_gap: float = 5.0,
+    swap_cost_sec: float = 0.0,
 ) -> Optional[WindowRequest]:
     """Assign the earliest feasible window on a different (or later) slot.
 
@@ -182,12 +183,20 @@ def assign_fallback(
     resource IDs for each candidate platform.  Falls back to a delayed
     slot on the original platform only after all alternatives are tried.
 
+    *swap_cost_sec* makes switching a train to a DIFFERENT platform non-free:
+    the cross-platform search starts at a real re-routing delay (throat
+    re-switch / platform-change setup).  This turns the resolver's rescue into
+    a priced action, so a policy that picks a colliding platform / shared-throat
+    group pays an actual departure delay (vs a free platform-swap at shift=0
+    which used to mask the mistake entirely).  Same-platform delays stay free
+    of the swap cost.
+
     Returns None if no bounded-feasible slot exists.
     """
     train_id = loser.train_id
     original_platform = loser.platform
 
-    def _first_feasible(platform: str) -> Optional[WindowRequest]:
+    def _first_feasible(platform: str, is_original: bool) -> Optional[WindowRequest]:
         """Iteratively rebuild until every resource window is free.
 
         A single shift can create a new conflict on a later resource window
@@ -195,7 +204,7 @@ def assign_fallback(
         train's window). Iterate a bounded number of times because each pass
         moves forward to the end of an existing booking.
         """
-        shift = 0.0
+        shift = 0.0 if is_original else swap_cost_sec
         for _ in range(20):
             req = rebuild_fn(train_id, platform, shift, loser)
             if req is None:
@@ -208,16 +217,16 @@ def assign_fallback(
             shift += extra
         return None
 
-    # 1) Try other platforms first.
+    # 1) Try other platforms first (cross-platform swap pays swap_cost_sec).
     for plat in candidate_platforms:
         if plat == original_platform:
             continue
-        shifted = _first_feasible(plat)
+        shifted = _first_feasible(plat, is_original=False)
         if shifted is not None:
             return shifted
 
-    # 2) Delay on the same platform
-    return _first_feasible(original_platform)
+    # 2) Delay on the same platform (no swap cost)
+    return _first_feasible(original_platform, is_original=True)
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +250,7 @@ def resolve_all(
     rebuild_fn: RebuildFn,
     min_gap: float = 5.0,
     parked_windows: Dict[str, Tuple[float, float]] | None = None,
+    swap_cost_sec: float = 0.0,
 ) -> List[GrantResult]:
     """Batch-resolve all requests.
 
@@ -281,13 +291,18 @@ def resolve_all(
         # First attempt: try other platforms. Second: delay on same platform.
         # If both fail, hold the train. This limits resolver to 2 attempts,
         # giving the policy room to learn while preventing cascading deadlocks.
+        # Fallback is also attempted when the conflicting window is a parked /
+        # visitor reservation ("PARKED"): otherwise an origin train whose first-
+        # choice platform is visitor-occupied is held even when a free platform
+        # exists, stranding it past its dep_max (origin bounds don't move).
         granted_fallback = False
         attempts = 0
         for cid in conflicts:
-            if cid in results and attempts < 2:
+            if (cid in results or cid == "PARKED") and attempts < 2:
                 plat_list = candidate_platforms.get(req.train_id, [req.platform])
                 fallback = assign_fallback(
-                    req, plat_list, rebuild_fn, calendar, min_gap)
+                    req, plat_list, rebuild_fn, calendar, min_gap,
+                    swap_cost_sec=swap_cost_sec)
                 if fallback is not None:
                     _grant(fallback, calendar, results,
                            winner=False, fallback_from=req.platform)

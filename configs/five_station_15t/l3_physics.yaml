@@ -47,7 +47,10 @@ l3_physics:
   corridor_headway_sec: 5.0
   replan_threshold_headway_mult: 4   # legacy — see replan_max_headway_delay_sec
   # L3 hard guard: hold/replan if headway delay exceeds this absolute threshold.
-  replan_max_headway_delay_sec: 120.0
+  # 250s: under the corridor-incident the moving-bottleneck headway delay is
+  # naturally large; 120s fired ~7 replans/episode (fast-behind-slow without
+  # overtaking), exploding return variance and destabilising training.
+  replan_max_headway_delay_sec: 250.0
 
   # Platform
   platform_min_gap_sec: 5.0

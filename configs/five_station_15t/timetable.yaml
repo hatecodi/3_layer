@@ -46,6 +46,23 @@ time_generation:
     - 60
     - 150
     p1_bias: 0.0
+  corridor_incident:
+    enabled: false                  # opt-in: pass enable_corridor_incident=True
+                                    # (or --incident) so existing baselines are unchanged
+    prob: 0.6
+    duration_range: [100, 200]
+    factor_range: [0.4, 0.6]            # 暴雨(120km/h=0.4x) ~ 180km/h: moderate but
+                                        # RECOVERABLE under the section-resolved incident
+                                        # (was [0.15,0.4] 大暴雨/暴雨 — under the continuous
+                                        # moving-block, slowing a whole transit for a brief
+                                        # overlap stacked an unbounded queue -> snowball)
+    safety_factor: 1.0                  # wet-rail braking — was 1.5 (ESTIMATED); relaxed to
+                                        # 1.0 so the widened headway doesn't turn the incident
+                                        # into a hard moving-block bottleneck (recoverable space)
+    min_trains: 2                       # incident window must overlap >= this many transits
+    max_added_delay_sec: 80             # calibration cap — lowered 200->80 to sit BELOW the
+                                        # replan trigger (replan_max_headway_delay_sec) so the
+                                        # incident never snowballs via the replan loop
 assumptions:
 - 'Time compression: real seconds / 25 = sim seconds. Base 15:00 = t=0.'
 - A:南昌西 B:鹰潭北 C:上饶 D:杭州东 E:南京南
@@ -334,14 +351,14 @@ trains:
     - E_p2
     - E_p3
     - E_p4
-- id: K834
+- id: G834
   direction: up
-  train_class: K
-  priority: 3
+  train_class: G
+  priority: 2
   pass_through: false
   route:
     origin_station: C
-    destination_station: C
+    destination_station: D
     corridor: C_D_up
   planned:
     A:
@@ -351,11 +368,11 @@ trains:
       arr: 0
       dep: 0
     C:
-      arr: 286
-      dep: 298
-    D:
       arr: 0
-      dep: 0
+      dep: 286
+    D:
+      arr: 530
+      dep: 578
     E:
       arr: 0
       dep: 0
@@ -370,12 +387,12 @@ trains:
       dwell_min: 0
     C:
       arr_min: 0
-      dep_max: 418
-      dwell_min: 12
+      dep_max: 346
+      dwell_min: 0
     D:
       arr_min: 0
-      dep_max: 120
-      dwell_min: 0
+      dep_max: 638
+      dwell_min: 48            # 换车头: must dwell 20 min (48 sim-s) at D
     E:
       arr_min: 0
       dep_max: 120
@@ -684,10 +701,10 @@ trains:
     - A_p2
     - A_p3
     - A_p4
-- id: K1185
+- id: G1185
   direction: down
-  train_class: K
-  priority: 3
+  train_class: G
+  priority: 2
   pass_through: false
   route:
     origin_station: B
