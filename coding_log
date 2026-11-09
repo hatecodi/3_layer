@@ -5115,3 +5115,69 @@ DDT medians: seed0 50s, seed1 86s, seed2 86s (heur 86s) -> DDT gain NOT robust
    consistently learned (69-94 policy-driven vs 16 heur), but the DDT speed-up is
    seed-dependent.
 Status: DONE — base is the retained main config, now with 3-seed validation.
+
+[2026-11-09 续21] L3 接入: 冻结 seed1 L2, Phase B 2k + SA-online 对比
+Plan: .claude/plans/plan_l3_integration_closure.md
+User decision: freeze seed1 L2; run Phase B to check L3 training stability; then
+  compare against SA WITHOUT global prediction (SA-online = partial-observation,
+  per-section greedy from current state; sa_online_profile docstring says it is the
+  apples-to-apples match for the 10-dim learned worker).
+Phase B launched (tracked):
+  task b4vv3ec20
+  log: output/11_09/l3_phaseB_closure_seed1L2_2k.log
+  out: output/11_09/training_closure_phaseB_seed1L2_2k/five_station_15t_hierarchical/20261109_193526/
+  cmd: --phases B --total-episodes 2000 --l2-ckpt seed1/final.pt --closure
+       --control-mode relevant --extern-alpha 0.10 --yield-cap --yield-tail-coef 0
+  early: arr_ontime 0.40-0.45 (untrained L3), l3_upd 2-3/ep, all success.
+Evaluation plan after training (180 eps, seeds 900000):
+  learned L3: --learned-only --relevant-l2 --yield-cap --closure (l2=seed1, l3=phaseB)
+  SA-online : --sa-online-only --relevant-l2 --yield-cap --closure (l2=seed1)
+  SA-nofc   : --sa-nofc-only --relevant-l2 --yield-cap --closure (l2=seed1)
+  full SA   : already output/11_09/eval_closure_l2_seed1_sa_180 (reference only)
+Status: PARTIAL — Phase B running.
+
+[2026-11-09 续22] Phase B(seed1 L2 冻结) 2k 完成: 训练稳定
+Save:
+  log: output/11_09/l3_phaseB_closure_seed1L2_2k.log
+  out: output/11_09/training_closure_phaseB_seed1L2_2k/five_station_15t_hierarchical/20261109_193526/
+  ckpt: checkpoints/{final,best}.pt
+Results:
+  arr_ontime 0.415 -> 0.739 (500-buckets 0.599 0.733 0.739 0.739; plateau after ~500-1000)
+  reward 7.23 -> 10.68; dep_dly 21.0 -> 15.1s; l3_upd ~2/episode
+  2000/2000 success, 0 deadlock; last500 vs prev500 stationary (Δ/σ <=0.09)
+  held-out (learned L3 end-to-end, relevant-filtered): 0.44 0.75 0.66 0.66 0.65 0.74 0.68 0.74 0.68 0.68
+=> L3 training is stable at 2k; no divergence. Now the question is SA-online comparison.
+Eval launched (180 eps, seeds 900000, same seed1 L2, --relevant-l2 --yield-cap --closure):
+  learned : output/11_09/eval_l3learned_seed1L2_180/ (task bvjders15)
+  SA-online: output/11_09/eval_saonline_seed1L2_180/ (task bepwj3l3u)
+  SA-nofc  : output/11_09/eval_sanofc_seed1L2_180/ (task bcth812pn)
+  full SA reference: output/11_09/eval_closure_l2_seed1_sa_180/ (existing)
+Status: PARTIAL — eval running.
+
+[2026-11-09 续23] L3 end-to-end 对比: learned vs SA-online(无全局预测)/SA-nofc/full SA
+Eval saves (all seed1 L2, 180 closure eps, seeds 900000):
+  learned : output/11_09/eval_l3learned_seed1L2_180/ (+ .log)
+  SA-online: output/11_09/eval_saonline_seed1L2_180/ (+ .log)
+  SA-nofc  : output/11_09/eval_sanofc_seed1L2_180/ (+ .log)
+  full SA  : output/11_09/eval_closure_l2_seed1_sa_180/ (existing)
+Overall:
+  learned   ontime 73.395%  mean 16.075s  p90 58.34  closure_ot 70
+  SA-online ontime 76.759%  mean 16.821s  p90 62.57  closure_ot 89
+  SA-nofc   ontime 77.130%  mean 16.202s  p90 58.60  closure_ot 74
+  full SA   ontime 77.068%  mean 16.284s  p90 59.78  closure_ot 95
+Paired learned - SA-online (n=180):
+  ontime -3.364pt [-4.165,-2.564]; mean -0.746s (better); tail10 -3.519s (better);
+  p90 -4.230s (better); max -4.903s (better); pw -0.218 n.s.
+Paired learned - SA-nofc:
+  ontime -3.735pt [-4.522,-2.948]; mean -0.127 n.s.; tail10 -0.795 n.s.;
+  p90 -0.263 n.s.; max -3.146s (better).
+Delay distribution (per_transit): no early running (0% < -15s). Learned has MORE
+  transits in the just-late band (late>15s 26.6% vs SA-online 23.2%) but fewer
+  severe tails (p90abs 58.7 vs 62.2). So it trades on-time for tail compression.
+Compute: learned ~11.75s vs SA ~48.5s (4.1x lower, E1 accounting).
+=> Removing SA's global prediction barely weakens SA (77.13% vs 77.07%), so the
+   fair baseline is still ~77% ontime. Learned L3 is 3.4-3.7pt behind on on-time but
+   better on tail/mean and 4.1x cheaper. If on-time is the KPI, next step is
+   SA-BC warm start (like L2) or an on-time-shaped L3 reward; tail-focused claims are
+   already supportable.
+Status: DONE for this comparison.
