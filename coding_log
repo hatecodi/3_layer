@@ -5483,3 +5483,11 @@ Status: DONE for 3-seed validation. Next: extend seeds1/2 to 6k to see whether t
    l3-reward-shaping branches exist on origin at 4d556bb.
 Next session: decide whether to commit/push l3-sa-bc; possibly 6k extension for
   L3 seeds1/2; or accept the MAPPO headway-propagation advantage and write up.
+
+[2026-11-09 收尾续] l3-sa-bc 已提交并推送
+Commit 3797bd2 "feat: L3 BC warm start, critic warmup + KL-to-BC PPO, propagation
+report" -> origin/l3-sa-bc. Includes env L3 BC recorder, L3WorkerTrainer warmup/KL,
+run_train_hierarchical new CLI, bc_pretrain_l3.py, make_propagation_report.py,
+plot_l3_mode_trajectories.py, plan_l3_sa_bc.md, tests, coding_log. Previous 收尾条目
+中的 "NOT pushed" 已失效。Local .claude/settings.local.json / scheduled_tasks.lock
+remain untracked by design.
