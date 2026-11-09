@@ -11,7 +11,7 @@ from src.marl.l3_worker import CorridorActor, CorridorCritic, L3WorkerTrainer, L
 from src.experiment.scenario_loader import load_scenario
 from src.control.resource_manager import build_conflict_graph
 
-HP = {"obs_dim": 29, "action_dim": 45, "k_local": 1, "hidden_dim": 128, "l3_hidden_dim": 64,
+HP = {"obs_dim": 29, "action_dim": 45, "k_local": 1, "hidden_dim": 128, "l3_hidden_dim": 128,
       "lr": 3e-4, "l3_lr": 1e-3, "gamma": 0.99, "gae_lambda": 0.95, "clip_ratio": 0.2,
       "ppo_epochs": 5, "minibatch_size": 256, "entropy_coef_start": 0.01,
       "entropy_coef_end": 0.005, "l3_entropy_coef": 0.01, "value_coef": 0.5,
@@ -25,24 +25,30 @@ cfg = load_scenario(scenario_name='five_station')
 obs_dim = get_obs_dim(cfg)
 device = torch.device('cpu')
 
+# Single checkpoint carries BOTH the L2 actor-critic and the L3 worker (2-critic
+# format) so the pair stays matched to one training run.
+CKPT = 'output/8_16/training/five_station_15t_hierarchical/20260816_140621/checkpoints/best.pt'
+ckpt = torch.load(CKPT, map_location='cpu', weights_only=False)
+
 # L2
-l2_ckpt = torch.load('output/five_station_hierarchical/20260714_185043/checkpoints/best.pt', map_location='cpu', weights_only=False)
 ac = Layer2ActorCritic(obs_dim=obs_dim, k_local=1, hidden_dim=128)
-ac.load_state_dict(l2_ckpt['ac_state']); ac.eval()
+ac.load_state_dict(ckpt['ac_state']); ac.eval()
 for p in ac.parameters(): p.requires_grad = False
 l2 = MAPPOTrainer(ac, lr=1e-3, gamma=0.99, gae_lambda=0.95, clip_ratio=0.2,
                   ppo_epochs=5, minibatch_size=256, entropy_coef=0.01,
                   value_coef=0.5, max_grad_norm=1.0, total_episodes=1, device=device)
 
 # L3
-l3_ckpt = torch.load('output/five_station_l3_only/20260714_202432/checkpoints/best.pt', map_location='cpu', weights_only=False)
-l3_actor = CorridorActor(obs_dim=L3_OBS_DIM, hidden_dim=64)
-l3_critic = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=64)
-l3_actor.load_state_dict(l3_ckpt['l3_actor']); l3_actor.eval()
-l3_critic.load_state_dict(l3_ckpt['l3_critic']); l3_critic.eval()
-for p in list(l3_actor.parameters()) + list(l3_critic.parameters()):
+l3_actor = CorridorActor(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
+l3_critic = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
+l3_critic_g = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
+l3_actor.load_state_dict(ckpt['l3_actor']); l3_actor.eval()
+l3_critic.load_state_dict(ckpt['l3_critic_local']); l3_critic.eval()
+l3_critic_g.load_state_dict(ckpt['l3_critic_global']); l3_critic_g.eval()
+for p in list(l3_actor.parameters()) + list(l3_critic.parameters()) \
+        + list(l3_critic_g.parameters()):
     p.requires_grad = False
-l3 = L3WorkerTrainer(l3_actor, l3_critic, lr=1e-3, gamma=0.99, gae_lambda=0.95,
+l3 = L3WorkerTrainer(l3_actor, l3_critic, l3_critic_g, lr=1e-3, gamma=0.99, gae_lambda=0.95,
                      clip_ratio=0.2, ppo_epochs=5, entropy_coef=0.01,
                      value_coef=0.5, max_grad_norm=1.0, device=device)
 

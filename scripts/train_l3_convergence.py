@@ -109,6 +109,7 @@ def main():
         torch.manual_seed(1000 + seed)
         l3 = L3WorkerTrainer(CorridorActor(L3_OBS_DIM, hidden_dim=128),
                              CorridorCritic(L3_OBS_DIM, hidden_dim=128),
+                             CorridorCritic(L3_OBS_DIM, hidden_dim=128),
                              lr=1e-3, gamma=0.99, gae_lambda=0.95, clip_ratio=0.2, ppo_epochs=5,
                              entropy_coef=args.entropy_start, value_coef=0.5, max_grad_norm=1.0,
                              device=dev)
@@ -192,7 +193,9 @@ def main():
         print(f"seed {seed}: plateau_ontime={plat_ont} plateau_mean_dep={plat_dep} "
               f"final_ontime={ont:.1f}% dep={dep:.1f}s", flush=True)
         tag = "_incident" if args.incident else ""
-        torch.save({"l3_actor": l3.actor.state_dict(), "l3_critic": l3.critic.state_dict()},
+        torch.save({"l3_actor": l3.actor.state_dict(),
+                    "l3_critic_local": l3.critic_local.state_dict(),
+                    "l3_critic_global": l3.critic_global.state_dict()},
                    f"output/l3v3_{args.scenario}{tag}_seed{seed}.pt")
 
     with open(args.out, "w", newline="") as f:

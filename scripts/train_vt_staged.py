@@ -336,8 +336,9 @@ def main():
 
     l3_actor = CorridorActor(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
     l3_critic = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
+    l3_critic_g = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
     l3_trainer = L3WorkerTrainer(
-        l3_actor, l3_critic, lr=HP["l3_lr"], gamma=HP["gamma"],
+        l3_actor, l3_critic, l3_critic_g, lr=HP["l3_lr"], gamma=HP["gamma"],
         gae_lambda=HP["gae_lambda"], clip_ratio=HP["clip_ratio"],
         ppo_epochs=HP["ppo_epochs"], entropy_coef=HP["l3_entropy_coef"],
         value_coef=HP["value_coef"], max_grad_norm=HP["max_grad_norm"], device=device)
@@ -349,7 +350,8 @@ def main():
     torch.save({
         "ac_state": ac.state_dict(),
         "l3_actor": l3_actor.state_dict(),
-        "l3_critic": l3_critic.state_dict(),
+        "l3_critic_local": l3_critic.state_dict(),
+        "l3_critic_global": l3_critic_g.state_dict(),
         "l2_metrics": l2_metrics, "l3_metrics": l3_metrics, "hp": HP,
     }, ckpt_dir / "final.pt")
 

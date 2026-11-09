@@ -2914,3 +2914,2204 @@ Files: docs/architecture_three_layer.md — NEW, 综合 L1→L2→L3 架构/动�
       安全性=掩码硬边界+NO_LEGAL→hold+moving-block车距(500m+3s)+站台min_gap(5s)+fallback重验; 奖励=L2局部(延误/准点/车距/咽喉)
       +团队, L3终端准点高斯+超线性尾部+早到惩罚+FAST代价0.30+优先级权重; Phase A(3000,L2+SA-L3,~11min)→Phase B(3000,L3双critic,~20min)。
       含扩展性/收敛/算力关键数字速查, 供论文直接引用。
+
+[2026-08-16]
+Task: conv_curves/conv_phaseB 按 SCI 出图要求重画(去过度平滑)
+Files: scripts/plot_conv_scalability.py — 曲线改用 per-episode 训练到站准点 + 滚动均值(100集)±滚动标准差带;
+       y 轴百分比; serif 字体/淡点网格/去 top+right 脊线/稀疏白边标记点; Phase A 阴影+分界保留;
+       conv_summary.csv 仍用 held-out 口径(数值不变, 曲线是 per-episode 趋势、表是严格阈值)。
+       flat25 噪声带如实跨过 50% 线(均值<50%), hier 均值~0.63-0.71。
+
+[2026-09-04]
+Task: 去除 P3 车(K834/K1185 → G 类 P2)+ 重跑 20/25/30t 迁移 eval
+Why: 扩展性 eval(15t ckpt 迁移)在 20/25/30t 上 learned 的 P3 ontime=0 —— 15t 训练没有 P3 车, 对 P3 影子分类外推失败,
+     拖累整体准点率并放大 delay 尾部分布。根因: 20/25/30t 由旧的带 K 车的 base 生成(K834/K1185 P3 及其影子),
+     而 five_station_15t 早已把这两辆规范成 G834/G1185(P2 G 类)。用户确认: 系统不再有 P3。
+Files: configs/{five_station, five_station_20t, five_station_25t, five_station_30t}/timetable.yaml
+      — 所有 P3(K 类)车: id K834→G834、K1185→G1185(含影子 K834_s5/K1185_s10/K834_s11/K834_s17),
+        train_class K→G, priority 3→2; 文件头 priority_map 把 K834/G1185 从 '3' 并入 '2'('3' 行删除)。
+        planned/bounds/时刻一律未动(布局不变); priority_map 仅 scenario_loader print 用, 无逻辑依赖。
+        校验: 4 文件 train 数 11/20/25/30 不变, 无 priority3/K834/K1185 残留, 无重复 id, load_scenario 全 OK。
+      对比定位: 速度按 priority 查表(get_speeds(prio), P3=K 速档); L2 obs one-hot train_class; 无运行时硬编码。
+eval 重跑(15t ckpt 迁移: phaseA/best.pt L2 + phaseB_v3/best.pt L3 双critic + flat_mappo/best.pt flat,
+      incident 3x60 seeds 900000, 6 模式, GPU):
+  新扩展性 ontime(10..30):
+    learned 77.4/71.4/65.3/66.8/66.1 | sa 79.7/73.0/66.6/68.8/67.0 | sa-online 78.0/71.4/66.0/68.2/66.1
+    sa-nofc 73.5/68.3/64.7/67.4/65.3 | cruise 53.7/44.2/41.3/38.9/34.7 | flat 48.3/42.9/38.0/38.2/36.5
+  关键: 去 P3 后 learned 高流量点回升 20t 64.0→65.3, 25t 62.2→66.8, 30t 62.0→66.1; 25t 仍略低于 sa-nofc(66.8 vs
+        67.4, ~0.6pp), 30t 反超(sa-nofc 65.3), 与 sa 差距收窄到 ~1pp 内。受影响腿(affected)均值 learned 仍最优:
+        20t 100 vs sa 117/sa-nofc 172, 25t 114 vs sa 115/sa-nofc 180, 30t 120 vs sa 125/sa-nofc 186 —— 即受影响腿
+        learned≈sa<<sa-nofc 的结论在 P3 修正后依旧成立。P3 移除对所有 mode 均有利但 learned 获益最大(外推失败消失)。
+产物位置(全部在 output/9_4/): scalability/{10t,15t,20t,25t,30t}/ per-metric CSV(ontime/delay/affected/tail/
+      episode/compute; 10t/15t config 未变故从 output/8_14/scalability 拷入, 20/25/30t 为重跑) + summary_ontime.csv。
+      重跑日志: scalability/{20t,25t,30t}.rerun.log。旧(P3 版)20/25/30t CSV 备份: output/scalability_preP3fix_backup_20260904/。
+注意: 25t hier/flat 收敛训练(output/8_16/training/...)是在带 P3 的 25t config 上训的; 若论文引用 25t 收敛数字,
+      需在修正 config 上重训(本次按用户决定未重训)。
+[2026-09-04] plot_conv_scalability.py 数据默认指向 output/9_4/scalability(scal_dir 默认改 9_4, legacy-scal-dir 改
+      None 可选兜底; transfer 曲线改为优先读 scal_dir)。重新出图(conv_summary.csv/conv_curves/conv_phaseB/
+      scalability_quality.png)已写入 output/9_4/scalability/, 收敛表与 8_16 原值一致(flat 15t 0.4532/25t 0.4123,
+      hier 15t 0.6732/25t 0.6116)。坑: flat_mappo 目录下混有 15t/25t 两个 run, latest_run 默认解析会把 flat 15t
+      误指到 25t 的 csv —— 出图必须显式 --flat-15t/--flat-25t/--hier-15t/--hier-25t。25t 收敛训练仍是 P3 config
+      训练的, 未重训(待定)。
+
+[2026-09-04] 30t 从头收敛重训(hier vs flat, 等预算 6000 集, 3 种子) —— 今日部分, seed1/2 留明日
+Files: src/experiment/run_flat_mappo.py(+--seed 默认42 + torch.manual_seed, 否则 flat 多种子不可控);
+      .claude/plans/plan_30t_retrain_multiseed.md
+协议: 修正后无 P3 的 configs/five_station_30t; incident; hier=PhaseA3000+B3000=6000, flat=6000;
+      eval-every 200, eval-n 12, eval-seed-base 900000; out-root output/9_4/training; 种子 {0,1,2}。
+今日完成(held-out arr_ontime @6000):
+  flat30t ×3 = 0.3615/0.3695/0.3354 → mean ~0.356 (dirs 20260904_220534/35/36)
+  hier30t seed0 = 0.6532 (dir 20260904_220529) —— ≈ flat 两倍, 符合 15/25t 分层领先结论
+  hier30t seed1/2 未跑完(用户决定今晚停, 明 9-05 重跑; 脚本无断点续训须 fresh)
+明日 TODO: 重跑 hier30t seed1/2 → 平均 3 种子 → plot_conv_scalability 加 30t from-scratch(显式传路径,
+      flat_mappo 混多 scale)并重出图 → 更新 conv_summary/summary_ontime → coding_log。见 HANDOFF.md。
+数据位置(全部在 output/9_4/training/): flat_mappo/20260904_{220534,220535,220536}/,
+      five_station_30t_hierarchical/20260904_{220529(done),220531,220533(未完成可删)}/,
+      日志 output/9_4/training/logs/{flat,hier}30t_seed{0,1,2}.log
+
+[2026-09-18]
+Task: clean 场景扩展性评估 10t→30t (6 modes) → output/clean/  ← 用户要求
+Files:
+  scripts/eval_protocol.py — 新增 report_clean(): 非 incident 臂补上优先级到站准点(P1/P2/P3)+
+    realized arrival delay 全分布+尾端 severe + E1 re-solve compute(字段与 report_incident 对齐, 去掉
+    affected/inc_eps)。main(): --no-delay 分支改走 report_clean; --out-dir 在该分支写 5 张表
+    (ontime[p1,p2,p3]/delay/tail/compute/episode)。其它分支(incident/origin-bunching)行为不变。
+  (原因: 原 clean 口径只有 ontime/delay/tail/episode 4 张、无优先级准点与算力指标, 无法与
+   output/9_4/scalability 的 incident 曲线同口径对比。)
+协议: 与 incident 扩展性完全同种子/同 ckpt —— 15t 免重训迁移 (L2 output/8_14/training/phaseA/best.pt,
+      L3 phaseB_v3/best.pt, flat flat_mappo/best.pt), --no-delay (关 origin bunching + 关 corridor incident
+      = 完全干净时刻表), --seeds 900000 --n 60 --blocks 3。
+结果 ontime% (10/15/20/25/30t):
+  learned   81.4 74.0 72.1 71.4 71.4 | sa        82.3 74.6 72.5 73.3 71.6
+  sa-online 82.2 74.7 72.1 73.4 71.6 | sa-nofc   82.3 74.9 72.4 73.4 71.6
+  cruise    62.6 48.7 45.2 41.5 36.4 | flat      52.3 44.6 40.0 40.3 38.5
+  关键: clean 下 learned 全程距 SA ≤2.2pp (且 30t 反超 cruise/flat 的差距拉大到 ~33pp vs 35pp);
+        flat 在 10-25t 仍 ≤ cruise, 30t 与 cruise 打平(~38 vs 36.4) —— 与 incident 结论一致。
+        无扰动时 learned 准点比 incident 高 4-7pp (30t 66.1→71.4)。
+  延迟(mean, 30t): learned 17.0 ≈ sa 17.8 << cruise 29.5; 尾端 sev_rate 全 mode 7.4-9.5%。
+  算力: learned 即时 ~16.6s(30t) vs SA 重排 ~40.1s = 2.4x 便宜(与 incident 同结论)。
+  安全性: 全部 180/180 succ, deadlock=0, trunc=0 (5 规模 × 6 mode)。
+数据位置(全部在 output/clean/):
+  {10t,15t,20t,25t,30t}/ per-metric CSV: ontime.csv(含 p1/p2/p3)、delay.csv、tail.csv、compute.csv、episode.csv
+  {10t,15t,20t,25t,30t}.log 原始 stdout (含 per-mode 明细)
+  summary_ontime.csv (scale × mode 准点矩阵, 与 9_4/scalability/summary_ontime.csv 同布局)
+  summary_{delay,tail,compute,episode}.csv (long 格式: mode,scale,<metrics>)
+注意/口径说明:
+  - clean 无限速窗口 → 不写 affected.csv (该子集恒空); p3 列按现有惯例记 0.0 (系统已无 P3 车, 分母 n/a)。
+  - 本 clean 臂与 output/8_14/clean/ (仅 15t, 旧口径 75.5%) 不同协议/ckpt vintage, 不要混用。
+[2026-09-18]
+Task: 新增 docs/environment_constraints.md — 环境约束清单(论文引用底稿)  ← 用户要求(开始写论文)
+Files:
+  docs/environment_constraints.md — NEW。按"以代码为准"逐条清点当前环境**实际生效**的约束:
+    §1 场景拓扑(A-E/站台 A,B,C,E=4 D=2/走廊里程/时间压缩25/步长10/单集1500)
+    §2 L1 时刻表包络(t_arr_min/t_dep_max/dwell_min + dep_max>=arr_min+dwell_min 校验 + 中间站动态
+       slack 扩张 60s) —— 全部走掩码, 不进奖励
+    §3 动作空间(平台4×档位6=10 logits; 档位 earliest/plan/+10/20/30/50)+ is_legal_action 掩码规则表
+       + p1 保留给通过车(D 例外) + NO_LEGAL→hold/replan
+    §4 站台/咽喉资源(conflict_group 互斥; min_gap=5s; 确定性排序键 (priority,-delay,train_id);
+       assign_fallback 经 RebuildFn 重验边界; 每台 20 次迭代/每请求 2 次尝试上限; 走廊不在资源集)
+    §5 L3 走廊物理(移动闭塞 500m+3s; 咽喉 6s; 走廊 headway 下限 5s; 末段 limit_mps=70;
+       CRUISE=时刻表速度/FAST=车类 max/SLOW=cruise÷1.2; calibrate 以 P2 为参考; incident 逐段解析;
+       **无越行=FIFO**)
+    §6 终止与守卫(success/deadlock 15 步/trunc 1500s; L3 硬守卫阈值 1000s 的"抑制"用意)
+    §7 维度实测(L2 obs 31 = self16+next5+res2+plat8; 训练 k_local=1 → 局部 critic 62 维; 全局 14;
+       L3 obs 10/动作 3)
+    §8 扰动(成束晚点 40s 窗口 U(60,120); visitor prob 0.5/2-3 slot; 限速 incident prob 0.6/
+       时长 U(100,200)/因子 U(0.15,0.4)/safety 1.5/max_added 200)
+    §9 软约束清单(换台代价、追踪/咽喉延误惩罚、FAST 能量、团队项、中间站到达偏差) —— 非掩码
+    §10 陈旧数字/死配置清单(74/444 维→31/62; 29 维→31; l3_sim 默认 15/120 被 YAML 覆盖为 5/1000;
+       MIN_CLEARANCE_SECONDS+platform_min_gap_sec 死代码; corridor.min_headway_sec=120 只打印不强制;
+       resolve_pair 生产未调用; env docstring "No delay injection" 与实际不符)
+    §11 论文可直接用的中文段落(硬/软约束划分 + 不确定性)
+  另记录: five_station_env.py:198 物理配置**硬编码** configs/five_station → 20/25/30t 目录下的
+       l3_physics.yaml 实际不被读取, 全规模共用一套走廊物理(论文需说明)。
+核对: 所有数字本次实测/读码确认, 非引用注释。论文用文档中 obs 维度用 31(非旧 skill 的 74)。
+Status: DONE
+[2026-09-18]
+Task: 论文第三、四章详细提纲 + 掩码活动统计汇总  ← 用户要求(开始写论文)
+Files:
+  docs/paper_outline_ch3_ch4.md — NEW。第三章(问题建模)+第四章(本文算法)详细提纲: 三级标题、每节要点、
+    公式清单、5 个算法框伪代码(可行域/滚动调度/走廊执行/重调度步/两阶段训练)、写作前置决议、陈旧数字表、数据依赖表。
+    叙事口径(用户指定): ① 不写"L2 协调价值为0" —— L2 定位为**滚动重调度决策层**;
+    ② 补写**重调度架构** —— 第三章 3.6(重调度问题刻画: 决策时域/动态包络/跨步承诺一致性) +
+       第四章 4.5(周期性滚动重解/动态包络扩张/冲突救援换台/hold→replan/L3硬守卫跨层触发/持久化日历);
+    ③ **第六章不做消融**(用户追加) —— 全章无组件消融, 故双critic/损失级融合/λ课程/掩码vs惩罚/L2 vs 启发式
+       一律降级为"设计选择 + CTDE 理论依据", 不作经验性优越性声明; 方法对比(SA/sa-online/sa-nofc/cruise/
+       flat MAPPO/启发式)保留(属基线对比非消融); 重调度证据改用**活动统计**(测量而非消融)。
+    另: 跨层反馈写为两类通道 —— 连续通道(L3真实到达回灌下一站) + 事件通道(L3硬守卫触发hold→L2重解,
+    常规工况为异常兜底); 并标注 L3 重规划阈值取大值是刻意抑制排队雪崩。
+  关键提醒写入提纲: `dep_max_slack_sec=60` 会吸收 incident 延误使重调度近似橡皮图章(见 coding_log 2026-08-13),
+    故"重调度真正生效"需 severity>1 把延误推过 slack; 移动闭塞外部性未内部化(plan_reward_externality.md 仍 draft),
+    不得在第四章声称已处理。
+掩码活动统计(run 完成, 全部 10 个配置: clean/incident × 10-30t, 6 modes, 3x60 seeds 900000):
+  代码: src/control/action_mask.py — is_legal_action 重构为 illegal_reason()(返回原因码)+薄包装(行为不变);
+        compute_joint_action_mask 加 reason_counter 诊断 sink。
+        src/env/five_station_env.py — _mask_stats 计数(decisions/candidates/masked_out/decisions_with_mask/
+        no_legal_action/postcheck_reject + 各 reason); info 暴露 "mask_stats"。
+        scripts/eval_protocol.py — 累加并写 mask.csv + 打印摘要。
+  结果(全 10 个配置一致): **postcheck_reject = 0**(掩码后冗余校验从未触发 → 掩码完整)、
+    **no_legal_action = 0**(可行集非空)、被掩动作 **100% 来自 dep_max**(arr_min/dwell_min/站台类全 0)。
+    decisions_with_mask 占比随规模下降: clean 4.05%→1.51%, incident 3.75%→1.41%(learned与cruise几乎相同
+    → 掩码触发是**结构性的**, 由时刻表+包络余量决定而非策略行为)。
+  数据位置: output/mask_stats/{clean,incident}/{10..30}t/mask.csv + 同名 log; 汇总 output/mask_stats/summary_mask.csv。
+  注: 掩码统计与 output/clean、output/9_4/scalability 是**独立 run**——本次发现 eval **非逐位可复现**
+    (torch 分类采样未固定种子 + CUDA), 同种子重跑准点率漂移 <0.5pp(learned 81.35→81.72 等)。原文件已还原未覆盖。
+Status: DONE(提纲); 待办: 掩码统计之外的"重调度活动统计"需把 hold/replan/换台计数写入 eval CSV
+[2026-09-18]
+Task: 重调度章节改为"完备性论证"(零实验) + 修正掩码统计的累加 bug
+Files:
+  docs/paper_outline_ch3_ch4.md —
+    4.5 改名"闭环重调度与安全兜底机制"; 新增 **4.5.7 回路完备性论证**(零实验, 本节核心):
+      (a) 四条不变量 I1 安全性/ I2 互斥性/ I3 进展性/ I4 有界性(逐条给代码依据);
+      (b) 状态→响应覆盖表(totality: 8 个可达状态各对应处理分支);
+      (c) 跨层闭合方式的设计选择: L3→L2 回路**以"挂起状态"闭合**, 非显式报文协议(诚实交代);
+      (d) 反事实推演(illustrative, 非实验)。
+    前置决议 #5 改为"闭环重调度与安全兜底(完备性机制), 用不变量+状态覆盖表论证, 不要求性能结果, 无需新增实验"。
+    数据依赖表: 删除"重调度活动统计""severity 扫描"两项(不再需要); 掩码统计标注为 **I1 的佐证而非证明**。
+    新增"第七章局限"一条: 跨层回路以状态闭合, 未实现显式 L3→L2 重调度请求协议。
+  理由(用户): 加重调度是为了**架构本身更完整**, 不是要性能结果 → 完备性是设计/规格属性, 不该靠实验证明。
+  依据(实测 15t): hold→replan=0、L3 硬守卫=0(阈值1000s刻意抑制)、换台救援≈11.5次/集(证明回路在运转);
+  结合掩码统计 no_legal_action=0/postcheck_reject=0 → 兜底分支已规格化但受评工况下从未被需要。
+  scripts/eval_protocol.py — **修 bug**: info["mask_stats"] 是**集内累计值**(env 仅在 reset 清零),
+    原实现每步累加 → 数字膨胀约 5.2 倍(10t decisions 31138→5940; 15t 47558→9180)。
+    改为"取最后一步的值"(替换而非累加)。0 值结论(postcheck_reject/no_legal_action)不受影响; 百分比受影响。
+掩码统计修正值(clean, learned, 180 集):
+  10t: decisions=5940 masked_out=540(0.5%) decisions_with_mask=180(3.0%)
+  15t: decisions=9180 masked_out=540(0.4%) decisions_with_mask=180(2.0%)
+  两者 masked_out 均恰为 540 = 180 集 × 3 动作, decisions_with_mask 恰为 180 = 1 次/集
+  → **每集恰有 1 个决策被掩码, 掩掉 3 个动作**(即该车 3 个候选站台的同 1 个进站档位越 dep_max),
+     且 10t/15t 完全相同 → 疑似由某辆 base 车的某站紧包络结构性决定(待定位 train_id/station)。
+  postcheck_reject=0、no_legal_action=0、binding 100% 来自 dep_max —— 结论与修前一致。
+  全部 10 个配置(clean/incident × 10..30t)正在用修正版重跑, 输出覆盖 output/mask_stats/。
+  认知地位: 掩码统计是 I1 的**佐证**, 不是证明(证明是构造性: 掩码→-inf logit); 它验证的是实现正确性, 非方法优劣。
+Status: DONE(提纲与修正); 重跑进行中
+[2026-09-18]
+Task: 新增 docs/paper_outline_ch5_ch6.md — 第五、六章提纲 + "全知 SA 规模性反转"独立小节 + 贡献清单更新
+Files:
+  docs/paper_outline_ch5_ch6.md — NEW。含:
+    第五章(场景与规模/对比方法表并明确 SA=oracle 逼近对象而非对手/指标/协议+复现性说明);
+    第六章骨架(**无消融**): 6.1 主结果 → 6.2 flat 坍塌 → 6.3 扩展性 → 6.4 收敛 → 6.5 算力 →
+      6.6 **执行层基线比较: 全知 SA 的规模性反转**(本次新增重点小节) → 6.7 安全性(掩码自洽+分层承载不同约束)
+      → 6.8 行为分析;
+    第 1.3 节贡献清单(6 条, 并显式列出"不写入贡献的部分");
+    待办表(误差棒 / 30t seed1-2 / 维度数字统一)。
+  6.6 小节要点(数据来自 output/clean 与 output/9_4/scalability, 同一 L2 仅切换 L3 → 差异归因执行层):
+    - 准点率 learned 一致略逊 0.3-2.3pp(坦承, 主考核指标);
+    - 平均延误 learned 在 clean 全规模更优(0.09-0.84s)、incident 大规模显著更优(20/25/30t: 3.30/2.66/3.40s);
+      incident 10t 为唯一例外(SA 优 +0.24s);
+    - **核心发现**: incident 下 learned-SA 平均延误差随规模单调演化 +0.24→-0.09→-3.30→-2.66→-3.40
+      ⇒ 全知 oracle 的优势随规模消失并反转;
+    - 尾部 clean 25/30t learned p90 更优(46.6 vs 50.2); 算力 learned 低 2.4x;
+    - 机理: 逐趟全知重解的信息时效性随规模恶化(重解被后续扰动推翻), 逐区间反应式即时调整 → 规模化更优。
+  贡献定位调整(用户提出): "比 SA 差 1-2pp / 平均延误更优 / 算力更短 / 扩展性强"**构成成果** ——
+    写成"质量-成本-规模三维权衡"; SA 是 oracle(逼近), cruise 与 flat MAPPO 才是竞争基线(领先 20-31pp / 24-30pp)。
+  注: 报"平均延误更优"**前提是补误差棒**(clean 20t 的 0.09s 与 incident 15t 的 -0.09s 落在噪声内;
+    ontime 重跑漂移 <0.5pp 已知, mean delay 漂移未知)。已列入待办 #1。
+Status: DONE
+[2026-09-18]
+Task: 掩码统计不采用(改用"零违反+构造性论证") + 定位掩码个案 + 发现 L2 决策归属问题
+决定(用户): **不采用掩码统计数据**, 第六章直接用"0 违规"带过。
+Files:
+  docs/paper_outline_ch5_ch6.md — 6.7 重写为"零违反 + 构造性保证(掩码⇒-inf logit, 可证明)"一段带过,
+    并加写作用注(不报告掩码触发频率; 理由: 不承载论点 + 其构成会引致离题质疑)。
+    待办加第 4 项(L2 决策归属未决); 文末新增"⚠️ 未决问题: L2 决策归属"一节。
+  docs/paper_outline_ch3_ch4.md — 数据依赖表: 掩码活动统计行改为"不采用"; 加警示:
+    该未决问题解决前 4.2 / 4.5.1 按现写法不成立。
+  已停掉后台掩码统计重跑(不再需要, 避免浪费算力)。
+定位结果(掩码个案):
+  掩码只由**单一结构个案**触发: **G1380 @ B 站, 进站档位 plan+50, 原因 dep_max**,
+  恰好 3 次/集(= 3 个候选站台 × 1 档位), 10t 与 30t **完全相同**(t_now=106.7 逐位一致, 确定性)。
+  数字: B 站 planned_dep=156; 动态包络 dep_max = arr_min+dwell+slack = 137.3+5+60 = 202.3;
+  plan+50 ⇒ 发车≈206 > 202.3 → 被掩。机理: 档位锚定**计划**发车, 包络上界锚定**实际到达**+停站+slack,
+  实际到达略晚于计划时最大档位越界。→ 掩码唯一反复作用是"剪掉最大档位"。
+新增发现(重要, 已两次独立核实):
+  **L2 策略只决定 8-14% 的站访, 86-92% 走启发式兜底**(15t: 13.7%/86.3%; 30t: 8.5%/91.5%)。
+  根因: `_build_requests`(five_station_env.py:356) 用 lookahead=batch_window_sec(120s) 排班,
+  但 `_action_masks`(:326,425,459) 用 lookahead=0 → 策略只对"已到站"列车采样;
+  collect_step 对 masks 中不存在的 agent 直接 continue(mappo.py:105-106), 故批量排班的走廊列车
+  在 _policy_action 中 action_dict.get(tid) is None → 走 heuristic_action。
+  来源: .claude/plans/batch_scheduling.md 当年只给 _build_requests 加 lookahead(为让解析器看到多车冲突),
+  **未同步改 _action_masks** → 该计划的预期目标"Policy learns coordination under resource scarcity"从未可能达成。
+  这解释了旧谜团: "learned L2 ≈ 启发式"/L2 无协调价值 = **因为多数决策本就是启发式**;
+  comparison_matrix.csv 里两者仅差 ~2s 亦与此一致。
+  两条路(未决): A 修(lookahead 对齐 + 重训, 改 ~3 行 + 15t A+B ≈30min, 但作废现有 L2 相关结果);
+  B 如实披露(改架构描述为"学习策略负责已到站列车 + 规则式前瞻预排班", 零成本)。
+  **写 Ch4 前必须选定**。已记入两份提纲文档。
+Status: DONE(文档已同步); 待用户决定 A/B
+[2026-09-18]
+Task: 小规模 L2 压力测试(learned L2 vs 启发式 L2, L3 固定用 learned) —— 结果: **无 L2 优势**
+Files:
+  scripts/l2_pressure_test.py — NEW。两臂配对同种子: learned L2(策略采样) vs 启发式 L2(env.step({})),
+    两臂**共用同一 learned L3 执行器** → 差异只归因 L2 决策层。难度分 = 启发式臂平均发车延误,
+    按三分位分档(Easy/Medium/Hard)分档报告; 输出逐种子 CSV; 附带统计策略决策占比。
+    新增 --vt(visitor 列车 = 站台稀缺压力, 才是 L2 站台选择的真实压力源) 与 --extra-train。
+  .claude/plans/plan_l2_pressure_test.md — NEW(plan)
+协议: 15t, held-out 种子 900000..900039(40 个), 两臂配对; 三种压力设置。
+结果(Δ = learned − 启发式; 负号=learned 更好):
+  设置                      Easy          Medium        Hard          ALL       难度范围    策略占比
+  (a) 仅成束晚点      +0.2s/-0.8pp  +0.2s/+0.4pp  +0.2s/-0.6pp  +0.2s/-0.3pp  5.0-15.8s  ~14%
+  (b) +VT             +0.5s/-2.2pp  +0.3s/-4.4pp  +0.5s/-1.1pp  +0.4s/-2.5pp  5.0-15.7s  14-22%
+  (c) +VT+extra       +0.2s/-0.2pp  +0.5s/-0.6pp  -0.2s/-0.4pp  +0.2s/-0.4pp  5.0-15.5s  15-19%
+  => 三种压力设置、三个难度档下 **learned L2 均无优势**, 全部差值在噪声内(±0.5s / ±2pp);
+     唯一略偏正的 Hard 档(c)也只有 -0.2s/-0.4pp。全部 episode status = success。
+结论: 当前架构上 **learned L2 ≈ 启发式 L2**(略偏劣), CLI 可及的压力旋钮无法改变。
+为什么不复现 6 月的结果(difficulty_tiers.json: Hard 382s→14.85s):
+  1) **难度范围已变窄**: 当前启发式残余发车延误仅 5-16s(6 月可达 100-700s)——
+     规则侧(batch 前瞻预排班 + 持久化日历 + 解析器回退)已大幅改进, 把扰动吸收掉;
+  2) 策略只决定 ~14-19% 的事件(见 L2 决策归属)。
+  3) 与 coding_log 2026-06-28 的根因结论一致(双线无越行→纯 FIFO→无重排序自由度)。
+产物: output/figures/l2_pressure_15t.csv, l2_pressure_15t_vt.csv, l2_pressure_15t_vt_extra.csv
+建议: **不要**把"learned L2 压力下更优"写进论文——本次自测数据与之相反, 审稿人可复现反驳。
+  可用作"规则固定、策略空间小"的定位佐证, 或写入局限(学习分量在 L2 无实测增益)。
+Status: DONE
+[2026-09-18]
+Task: 方案1 实测 —— L3→L2 连续通道(动态包络 vs 静态时刻表包络)活性
+方法: 无新代码(只读探针)。在每个 L2 决策点比较 env._get_effective_bounds() 与
+  cfg.trains[tid].bounds[st], 统计漂移频率/方向/幅度, 并做两个关键判定:
+  (i) 静态包络下是否无合法动作而动态包络下有(即漂移"救回"可行性);
+  (ii) 策略所选动作是否"静态非法、动态合法"(=漂移真正放宽了可行域并被用到)。
+结果(15t, 各 5 种子):
+  工况                决策点  漂移占比   平均dep_max位移   静态不可行→救回   动作需放宽
+  clean                255   75.7%      -26.6s              4 (1.6%)            0
+  incident sev1.0      255   70.6%      -42.3s              5 (2.0%)            0
+  incident sev2.5+extra 259  70.3%      -38.4s              6 (2.3%)            2 (0.8%)
+  incident sev2.5+vt   260   71.2%      -36.4s              8 (3.1%)            6 (2.3%)
+结论:
+  (1) **机制成立**: 70-76% 的决策点动态包络≠静态包络 → "L2 依据 L3 实际运行持续重算可行域"为真。
+  (2) **方向多为收紧**: 平均 dep_max 位移 -27~-42s(动态更严), 因中间站动态上界=实际到达+5+60,
+      而静态上界用更大 slack(生成时 --bounds-slack 120)。故 L3 反馈主要体现为"收紧"而非"放宽"。
+  (3) **真正放宽极少**: 所选动作"静态非法、动态合法"的占比 clean/sev1 = **0**,
+      sev2.5+extra 0.8%, sev2.5+vt 2.3% —— 且随压力**单调上升**(0→2→6)。
+因此写作口径:
+  - **可写**: "有效可行域由执行反馈驱动重算"(有实测支撑); 静态时刻表包络只是意图, 实际决策空间由
+    L3 实际运行结果界定 —— 这是一个正面的架构论点。
+  - **不可写**: "重调度显著改变决策/提升性能" —— 因为真正需要放宽的动作仅 0-2.3%。
+  - 若要放大该效应: 继续提高扰动强度(趋势单调), 属配置级实验。
+Status: DONE
+[2026-09-18]
+Task: 写作落点决定 —— 反馈拓扑放框架图, 伪代码只做就地展开; 文档同步
+决定(用户提问后确认):
+  **框架图 vs 伪代码的分工**: 伪代码擅长"过程", 图擅长"拓扑"。L3→L2 反馈回路本质是拓扑,
+  → 主载体为**框架图**; 伪代码侧**不新增第 6 个算法框**, 只做两处就地展开。
+Files:
+  docs/paper_outline_ch3_ch4.md —
+    Algorithm 1 (BuildFeasibleDomain) 展开: 显式写出 r(s,k)=max(arr_real,t_k,arr_plan)、
+      arr_min=r、dep_max=max(r+dwell+σ, dep_max_plan)、Δ=漂移量; 返回 {B, Δ, Plats}。
+    Algorithm 4 改名 **ReDispatchLoop**: 显式写"输入上一步 {arr_real}"(连续通道) →
+      算法1 → 算法2 → 解析器 → 事件通道(异常兜底) → 输出 arr_real 供下一步(闭环)。
+    3.2.4 新增 **框架图规格**(全文唯一框架图): 主链 L1→L2→解析器→L3 + 两条反馈箭头
+      (连续实线 / 事件虚线) + 标注实测"70-76% 决策点包络漂移, 需放宽 0-2.3%" +
+      **标注该通道为确定性/规则式**(避免被误认为学到的) + 事件通道标"常规不触发"。
+      并注明仓库当前**无**架构图(train_diagram.png 是运行图), 需新画(建议 matplotlib)。
+    3.6.3 加"核心论点(有实测支撑)": 有效可行域由 L3 执行结果界定 + 诚实边界(多为收紧,
+      真正放宽救回仅 0-2.3%, 随压力单调升) + 写作定位为"约束生成机制"而非性能杠杆。
+  docs/paper_outline_ch5_ch6.md —
+    新增 6.9 "L3→L2 执行反馈的实测"(四工况表 + 结论句 + 诚实边界);
+    "两条路"未决节替换为 **已定框架**(L2=站台选择+路权分配; 策略占比不随压力变化 13.7-14.2%;
+      git 考证非回归) + **L2 压力配对实验结果表**(三设置×三档, 全部噪声内, 不得写"压力下更优")
+      + **审稿人"为何 L2 用 RL"标准答法**(不主张 L2 增益 + 主动报告 + 正当性落在 L3)。
+Status: DONE; 待办: 画框架图(未开始)
+
+[2026-09-20]
+Task: 补齐 L3 1-critic→2-critic 迁移 (c3ff7ba 遗留) + 重跑 E1 决策延迟基准
+Files:
+  scripts/train_l3_convergence.py — ctor 补 critic_global; 存档键改 l3_critic_local/_global (原 l3.critic 属性已不存在)
+  scripts/bench_l3_latency.py     — ctor 补 critic_global; ckpt 键改 l3_critic_local/_global
+  src/experiment/run_train_l3_only.py — ctor 补 critic_global; 两处存档键改名; l3_hidden_dim 64→128
+  scripts/continue_with_vt.py     — ctor/载入/两处存档 + l3_trainer.critic 属性引用修正
+  scripts/train_vt_staged.py      — ctor 补 critic_global; 存档键改名
+  scripts/validate_l3_schedule.py — ctor/载入修正; l3_hidden_dim 64→128
+  scripts/robustness_test.py      — ctor/载入修正; 硬编码 7/14 旧 ckpt → 8_16 15t; hidden_dim 64→128
+  scripts/plot_train_diagram.py   — 同上 (硬编码 7/13 旧 ckpt → 8_16 15t)
+  scripts/profile_l3_speeds.py    — 同上
+  .claude/plans/plan_l3_trainer_2critic_migration.md
+Rationale: c3ff7ba 把 L3 单 critic 拆成 local+global（语义改动: 双 GAE, advantage=adv_l+adv_g）,
+  只迁移了 run_train_hierarchical/eval_protocol/analyze_l3_behavior/compare_sa_l3_behavior,
+  其余 9 个脚本仍是旧签名 → 全部 TypeError, 其中 train_l3_convergence.py(论文收敛图来源) 与
+  bench_l3_latency.py(E1) 在关键路径上。**不加兼容 shim**: 让 critic_global 可选会静默按
+  单 critic 语义跑, 正是要消除的版本混淆。
+Results (E1, bench_l3_latency.py, ckpt=8_16 15t/20260816_140621, C_to_D 4 sections):
+  SA (300-it 重解) 6.56 ms/走廊;  MAPPO 每 section 0.40 ms (actor-only 0.18);
+  MAPPO 全走廊 1.62 ms;  每次扰动重解加速比 16.2x (actor-only 36.9x)
+  两代 checkpoints 差异: 8_16 有 16 个 2-critic (l3_critic_local/_global), 其余 161 个是旧格式
+收敛 CSV 溯源核对 (output/figures/l3v3_conv*.csv):
+  schema = [seed,episode,l3_reward,entropy,policy_loss,value_loss,ontime_pct,mean_dep] +
+  20 行/seed + episode 125→2500 网格 —— 与 train_l3_convergence.py 的 fieldnames/默认参数完全一致,
+  => 这批 CSV 确由该脚本产出; 而该脚本自 c3ff7ba(8/16) 起就跑不起来, 故这批图**
+  全是 1-critic 时代产物** (8/8-8/14, 含 l3v3_convergence_paper.png 8/12)。
+  8_16 产物用的是 run_train_hierarchical 的 schema (phase/arr_ontime/l3_updates), 列名完全不同,
+  **从未产出过 l3v3_conv*.csv**。注意 ontime 量级接近(69-77% vs arr_ontime 71-74%), 肉眼不会发现,
+  但属两个算法版本。列名小心: plot_l3_conv_protocol.py:77 标注 mean_dep 实为 **到达** 延误。
+  => 收敛图不能与 8_16 ckpt 结果并列为同一实验; 需用修好的脚本重跑 (多 seed, 唯一真需重训处)。
+遗留问题 (未处理, 需判断):
+  (已结案, 见下) validate_l3_schedule.py 报的 THROAT BUSY 违规经核对为**假阳性**。
+
+[2026-09-20 续]
+Task: 核对 validate_l3_schedule.py 的 THROAT BUSY 违规是否为真违规
+Method: 直接给 L3ThroatState.record_exit 打桩 (唯一调用点是 five_station_env.py:1004),
+  记录真实的 throat 占用时刻, 按 (episode, throat_id) 分组算相邻间隔。
+Result: **0 违规, 每 (episode, throat_id) 最小间隔恰好 6.00s** —— resolver 的 throat
+  串行化是正确的, 论文"zero hard-constraint violations"主张成立, 系统无需修改。
+  之前看到的 10/14 处违规全部来自 audit 脚本自身的三处缺陷 (validate_l3_schedule.py:122-137):
+    1. 站名错位 100%: 读 env._journeys[...].current_station 是在 env.step **之后**,
+       拿到的是列车**离开后**所在站(目的站), 不是发车站。实测 147/147 事件
+       station != 平台前缀所指的站。
+    2. 忽略方向/conflict_group: resolver 的键是 f"{station}/{conflict_group}"
+       (five_station_env.py:993), 且 up/down 的 conflict_group 名完全不相交
+       (A_up_out_g1 vs A_dn_out_g1, 见 configs/*/railway_resources.yaml), 对向列车
+       永不共享 throat。audit 只按 station 分组, 把对向列车两两相比。
+    3. 时间戳用错: audit 用 g.W_out[0] (站台发车窗口), 而 throat 串行化发生在其后
+       (five_station_env.py:999-1004 用 _throats.earliest_exit 把实际时刻推后),
+       真实占用时刻 = W_out[0] + throat_out_sec + throat_delay。
+  方法学教训(我自己踩过): 核对 _last_exit 间隔时**不能把多个 episode 混在一起排序** ——
+  _l3_sim.reset() (l3_sim.py:458) 每集清空 _last_exit, 混合会造出跨集的 0.00s 假间隙。
+处置: audit 脚本未改 (超出本轮范围)。引用其违规计数前必须重写该检查。
+当日产物:
+  本次未做训练。冒烟测试遗留 output/l3v3_five_station_15t_seed0.pt 已删除;
+  临时 CSV = %TEMP%/smoke_conv.csv (可删)。
+Status: DONE; 待办: (1) 收敛图是否重跑   (2) 重写 validate_l3_schedule 的 throat 检查   (3) 其余脚本冒烟
+
+[2026-09-20 续2]
+Task: 重写 validate_l3_schedule.py 的两个资源检查 (station 错位 / 分组 / 时间戳 / 窗口字段)
+Files:
+  scripts/validate_l3_schedule.py —
+    新增 _station_of(platform) 从平台 ID 前缀取发车站 (替代 env._journeys[..].current_station);
+    新增 _throat_id(cfg,tid,station,platform) 复刻 five_station_env.py:988-993 的
+      f"{station}/{conflict_group}" 键; run_validation_episode 记录
+      plat=(W_plat[0],W_plat[1]) 与 t_throat=info["l3_transit_events"][tid]["entry"] (已提交的
+      throat_exit, 非预串行化的 W_out[0]); check_overlaps 平台检查改用 W_plat + 复用 resolver 的
+      _overlap 谓词, throat 检查按 throat_id 分组比相邻已提交时刻; 阈值从 env 读
+      (_persistent_cal._min_gap / _l3_sim.p.throat_headway_sec) 而非硬编码。
+Rationale: 原检查有四处取错量, 结论完全不可用:
+  (1) station 读的是 env.step **之后**的 current_station = 目的站 (实测 147/147 全错);
+  (2) throat 只按 station 分组, 忽略 conflict_group 且 up/down 组名不相交 → 对向车两两比;
+  (3) throat 用 W_out[0] (站台发车窗口) 而串行化在其后 (five_station_env.py:999-1004);
+  (4) "PLATFORM OVERLAP" 用 W_in/W_out —— 那是**咽喉**窗口 (WindowRequest 有 W_in/W_plat/W_out
+      三个字段; 站台资源是 f"{station}/{platform}" -> W_plat, 见 action_mask.py:328-331),
+      所以平台检查从来没测过站台。
+Results (ckpt=8_16 15t/20260816_140621, 3 集, 修正后):
+  flags none      : ALL CLEAN (0)
+  flags --delay   : ALL CLEAN (0)
+  flags --vt      : 2 处 PLATFORM OVERLAP
+  flags --vt --delay: 3 处 PLATFORM OVERLAP
+  THROAT BUSY: **0 处, 全部配置** —— 与打桩实测的"最小间隔恰好 6.00s"一致。
+验证 (非空转 + 负对照):
+  events=146, 带 throat_id=146, 带 t_throat=108 (= 打桩实测的 record_exit 调用数, 交叉吻合);
+  station==平台前缀 on 146/146 (修复生效); 有 >=2 条记录的 throat_id 16 个;
+  负对照: 人为把某 throat 间隔压到 5.0s → 被捕获 (检查非空转)。
+  注意: 负对照必须**按集**做 —— 我第一版把 3 集事件混池, 又造出跨集 0.00s 假间隙 (同前次教训)。
+遗留问题 (新暴露, 未处理):
+  --vt 下的 PLATFORM OVERLAP 是**跨步**的: EP2 中 G1380 在 STEP4 得 D/D_p1 [492.0,497.0],
+  G1616 在 STEP5 得 D/D_p1 [492.0,502.0] —— 同一站台、同一起始时刻, 但前车预约在后车决议时
+  已不在日历里。可疑机制: five_station_env.py:894-898 只要某车拿到**任意**新 grant, 就删除该车
+  **所有**旧预约 (不分资源), 于是它在别站的 occupancy 也被抹掉; 叠加 :863-868 的 parked 是
+  **每资源仅存一个窗口**的 dict (多窗口互相覆盖) → 仍有效的站台占用对下一次 resolve 不可见。
+  未定性: 是否构成真实双占用 (grant 可能随后被 hard-guard 撤销), 以及 --vt 是否属论文报告配置。
+Status: 检查已修正并验证; 遗留: --vt 站台重叠的根因定性 (可能是 resolver 真 bug)
+
+[2026-09-20 续3]
+Task: 审计脚本补 --incident / --scenario, 在**论文真实工况**下验证零资源违规
+Files:
+  scripts/validate_l3_schedule.py — 新增 --incident (enable_corridor_incident) 与
+    --scenario (原来硬编码 load_scenario("five_station"), 而论文用 five_station_15t/25t —
+    即之前的审计连场景都对不上)。
+Rationale: 用户澄清论文扰动是**暴雨限速**(corridor incident), 不是 VT 也不是 initial delay;
+  而 configs/five_station_15t/timetable.yaml:50 里 corridor_incident 是 enabled: false (opt-in),
+  脚本又没有 --incident 开关 → 此前所有 "ALL CLEAN" 都跑在无扰动配置上, 不构成论文证据。
+Results (5 集/组, 修正后的检查):
+  five_station_15t / 20260816_140621 : incident 开 CLEAN, 关 CLEAN
+  five_station_15t / 20260816_154928 : incident 开 CLEAN, 关 CLEAN
+  five_station_25t / 20260816_140832 : incident 开 CLEAN, 关 CLEAN
+  five_station_25t / 20260816_154929 : incident 开 CLEAN, 关 CLEAN
+  → 8 组 40 集全部零 THROAT BUSY / 零 PLATFORM OVERLAP。
+Incident 有效性核验 (非空转): 15t 5 集中 affected_by_incident = 0,2,0,2,7 → 事故确实触发并
+  作用于走廊区段; 未受影响的集是 min_trains=2 门限下未与列车相交 (正常随机性)。
+备注: VT 站台重叠按用户决定**搁置** (VT 非论文配置), 记为已知限制。
+Status: DONE; 待办: 收敛图是否用修好的脚本重跑 (唯一需训练开销项)
+
+[2026-09-20 续4]
+Task: 新增 rule-based FCFS 基线 (替代 cruise 的角色, cruise 代码保留)
+Files:
+  scripts/eval_protocol.py — run_episode 增 elif mode=="fcfs": ad={}; 新增 --fcfs-only;
+    默认 mode 集 = [learned, sa, sa-online, sa-nofc, fcfs, cruise] (+flat); docstring 补模式说明
+  .claude/plans/plan_fcfs_baseline.md
+Rationale: Implementation Specification v4.md:491 的基线 (1) 就是 rule-based FCFS, 但仓库里
+  从未实现 —— 现有 "cruise" 模式其实是 **学习式 L2 + 规则 CRUISE L3**, 并不是非学习基线。
+  关键发现: env 已内置 FCFS 回退, **零 env 改动**即可实现 ——
+  five_station_env.py:837-841: action_dict 里没有某车时自动走 heuristic_action
+  (action_mask.py:395 按计划时刻取第一个合法平台/入场档; heuristic_planner.schedule_station:80-81
+  按 t_dep_plan 排序)。故 fcfs = 传空 action_dict + l3_worker=None(规则 CRUISE)。
+  == mode 语义 ==
+    cruise(现有) = 学习 L2 + 规则 CRUISE L3   → 只隔离 L3
+    fcfs(新增)   = 规则 L2(heuristic_action, FCFS) + 规则 CRUISE L3 → 唯一真正非学习基线
+  两者 L3 相同 → 差异干净归因于 L2 是否学习。
+验证 (非空转, 打桩计数 _policy_action 的 action_dict 命中):
+  fcfs  : heuristic-fallback=153  policy-action=  0   ← 分支生效, 全部走规则
+  cruise: heuristic-fallback=131  policy-action= 22   ← 学习策略只提供 22/153 = **14.4%**
+  → 这**独立复现了提纲里"策略占比不随压力变化 13.7-14.2%"**, 也解释了为何两模式结果接近。
+结果 (15t / 20260816_140621 / --incident / n=12, P1 到站准点):
+  fcfs    : all=35.2% (190/540)  affected=0.0% (0/49)
+  cruise  : all=35.2% (190/540)  affected=0.0% (0/48)
+  learned : all=31.9% (172/540)  affected=23.1% (12/52)
+  → learned 牺牲 P1 总准点换取事故受影响车的大幅恢复; 与"正当性落在 L3"一致。
+诚实边界: resolver 仲裁仍是 priority→delay→train_id (所有模式共用), 所以 fcfs 是
+  "FCFS 动作规则 + 共享 priority 仲裁器", 非教科书纯 FCFS —— 论文须主动说明。
+同日另有一处未完成: src/control/joint_sa.py + scripts/bench_joint_sa_scaling.py
+  (联合 SA 的 time-to-target 规模图) 已落盘但**未验证** —— 探针发现原 target 定义失效
+  (30t 时"独立最优解"联合评估后比 all-CRUISE 还差, target 落在起点之下), 已改为
+  time-to-ρ-of-best-known (ρ=0.9), 尚未重跑确认曲线形状。
+Status: FCFS DONE; 待办: (1) 联合 SA 探针重跑   (2) 收敛图重跑
+
+[2026-09-20 续5]
+Task: 联合 SA 规模图定论 + 逐规模 L3 决策代价实测
+Files:
+  scripts/bench_joint_sa_scaling.py, src/control/joint_sa.py (前次已建, 本次跑完)
+  scripts/bench_l3_decision_cost.py (新增)
+  output/figures/joint_sa_scaling.csv, output/figures/l3_decision_cost_scaling.csv
+
+== A. 联合 SA "时间指数增长"图: 做不出来 (三个独立实例设计确认) ==
+  all-transits (默认): iters-to-target = 5528/7604/5051/5991/6202 (10→30t) —— 平
+  单走廊 (最大耦合)  : iters = 8376/46/65/708/204 —— 平/降
+  真 incident (修正后) : iters = 5451/1019/5051/6058/4337 —— 平
+  墙钟增长完全来自"每次评估重放全部 transit"(O(N)) × 平迭代数 → 线性, 非指数。
+  搜索空间确实指数爆炸 (3^40 → 3^104), 但时间不跟随 —— 该问题联合景观对局部搜索良性。
+  备注: --incident 原为**空操作**( _corridor_incidents 在 reset() 才生成, builder 未调 reset),
+        已在一次性诊断里修正; bench_joint_sa_scaling.py 若要用 incident 需同样修。
+  备注: 相对目标在小 gain 时产生伪影 (单走廊 10t gain=2.2 → ρ=0.9 目标只剩细缝 → 8376 次
+        并非"更难"), 用此指标出图必须说明。
+
+== B. 逐规模 L3 决策代价实测 (15t ckpt 按 §6.3 迁移口径用于全规模, 5 集/规模) ==
+  ms/section : learned 0.452/0.458/0.451/0.455/0.444  ← **尺度不变** (O(1) 得证)
+               sa      1.704/1.821/1.870/1.909/1.959  ← 微升 +15%
+               sa-online 0.025→0.030
+  ms/transit : learned 1.808/1.831/1.804/1.821/1.775  ← 平
+               sa      6.816/7.283/7.481/7.634/7.837
+  ms/episode : learned 41.6/65.9/81.2/98.3/113.6
+               sa      156.8/262.2/336.7/412.3/501.5
+  **比值 sa/learned = 3.77/3.98/4.15/4.19/4.42** (10→30t)
+  → 每集两者都 ~O(N), 比值为**常数倍且轻微走宽** (3.8→4.4×); 走宽来自 SA 单趟成本微升
+    (同走廊车变多 → 占用链变长), 幅度小, 不应作为主论点。
+
+== C. 重要: §6.5 现有 2.4× 是**估算**不是实测, 且低估了优势 ==
+  eval_protocol.py:249-251/337-339 用硬编码常数估算: sa = n_transits×3.48ms,
+  learned = n_sections×0.36ms → 30t 得 (64×3.48)/(256×0.36) = 223/92 = **2.42×** —— 正是 §6.5 的 2.4×。
+  但实测 SA 单趟是 **7.8 ms**(不是 3.48), learned 每区间 **0.444 ms**(不是 0.36)
+  → 实测比值 **4.4×**, 比论文现在写的**更好**。
+  建议: §6.5 换成实测 CSV 口径, 并注明估算常数的来源已过时。
+Status: 两件事均已定论; 待办: (1) 出双面板图 (2) §6.5 数字换成实测 (3) 收敛图重跑
+
+[2026-09-20 续6]
+Task: 今日 CSV 归档到 output/9.20 + 出双面板图
+Files:
+  output/9.20/joint_sa_scaling.csv           (从 output/figures/ 移入)
+  output/9.20/l3_decision_cost_scaling.csv   (同上)
+  output/9.20/fig_l3_cost_scaling.png        (新出)
+  scripts/plot_l3_cost_scaling.py            (新增, CSV-first: 只读 CSV 不重算)
+  scripts/bench_joint_sa_scaling.py / bench_l3_decision_cost.py — 默认 --out 改指 output/9.20/
+Rationale: 用户要求今日产出的 CSV 统一放 output/9.20; 并按 CSV-first 惯例从 CSV 出图。
+图设计 (双面板):
+  (a) 联合解空间 |Ω|=3^(4N) vs N, log 纵轴 —— **理论曲线**, 标注 exponents 40/60/72/88/104,
+      标题注明 "(theory, not runtime)" 以免被读成实测时间;
+  (b) 实测每决策单位代价 (ms/section, 同单位可比) —— learned 0.44-0.46 全平, SA 1.70→1.96 微升,
+      sa-online 0.025→0.030; 标题内嵌 per-episode SA/learned 比值 3.77→4.42×。
+  刻意**不画**指数时间曲线 (三个实例设计已证该问题不存在)。图注须写明: 解空间指数是问题结构,
+  实测时间为线性/常数 —— 学习式的理由落在"免重解", 不是"搜索不可解"。
+Status: DONE; 待办: (1) §6.5 数字换成实测(4.4×) (2) §6.5/§6.6 口径一致性 (3) 收敛图重跑
+
+[2026-09-20 续7]
+Task: eval_protocol 算力口径换成实测 + 三方法决策代价 CSV/出图
+Files:
+  scripts/eval_protocol.py — 新增 MS_PER_SECTION_LEARNED=0.4533 / MS_PER_TRANSIT_SA=7.4820 /
+    MS_PER_TRANSIT_FLAT=0.0539 (实测, 来源 output/9.20/l3_decision_cost_scaling.csv) +
+    _decision_ms() 共用助手; report_clean / report_incident 两处硬编码估算块替换之;
+    sa-online 的算力**不报告**(mode 返回 None, 打印 "not reported")。
+  scripts/bench_l3_decision_cost.py — 重写为三方法「完整决策层」口径:
+    hier = MAPPOTrainer.collect_step + l3_worker.select_action(每区间)
+    sa   = collect_step + sa_optimize_profile(每趟)
+    flat = FlatJointActor.dist (单次 72 动作, **取代** L2+L3)
+    只计 L3 会把 flat 记成 0 (它没有独立 L3), 故统一为 L2+L3/集。
+  scripts/plot_l3_cost_scaling.py — 重写为三线对比图 (蓝 HMAPPO / 黄 SA / 绿 FlatMAPPO)
+  output/9.20/l3_decision_cost_scaling.csv, output/9.20/fig_l3_cost_compare.png
+Rationale: 用户要求换成实测口径并出三色对比折线图; sa-online 算力省略。
+结果 (5 集/规模, L2+L3 每集 ms):
+  HMAPPO  48.38 / 71.71 / 89.19 / 106.65 / 121.85
+  SA     168.01 / 271.90 / 354.39 / 429.77 / 516.25
+  Flat     1.75 / 1.98 / 2.07 / 2.71 / 2.69
+  SA/HMAPPO 比值 3.47× → 4.24×; eval_protocol 打印的 15t 比值 4.1×。
+  → 旧估算口径的 2.4× 已退役 (SA 常数 3.48 偏低, 实测 7.48)。
+⚠️ 重要负面发现 (必须随图一起报告, 否则误导):
+  **FlatMAPPO 是三者中最便宜的** (1.75-2.69 ms/集, 比 HMAPPO 低 20-45 倍)。
+  原因: flat 每集只 ~7-9 次前向 (每个 pending 车一步一次), 而 HMAPPO 的 L3 是 92-256 次
+  (每区间一次)。且实测 flat 的速度选择**只有 21.2% 到达走廊层** (99 次授予仅 21 次命中当步
+  dict, 其余回落 CRUISE) —— 已核对 run_flat_mappo.py:213/315 训练时用**同一套**逻辑,
+  故非 train/eval 不一致, 而是该方法本就只控制部分车。
+  => 注：该图单独看会让基线显得更优; 必须与质量指标同引 (flat 准点率远差, §6.3)。
+     不要在论文里写"我们的算力优于基线" —— 对 flat 不成立, 只对 SA 成立 (3.5-4.2×)。
+Status: DONE; 待办: (1) flat 算力劣势如何呈现 (2) §6.5/§6.6 口径一致性 (3) 收敛图重跑
+
+[2026-09-20 续8]
+Task: 核查"SA 与 HMAPPO 完全平行"是否为 bug → 否, 已量化并改进图
+Files:
+  scripts/plot_l3_cost_scaling.py — 改双面板: (a) 三色总代价 + log-log 斜率注释;
+    (b) SA/HMAPPO 比值 vs N 显式画出 (+22%), 附"不要声称快速走宽"的诚实警示框
+  output/9.20/fig_l3_cost_compare.png
+核查结论: **平行是真实数据, 非绘图缺陷**。log-log 斜率 HMAPPO=0.841, SA=1.022 —— 两者都 ~O(N),
+  优势是常数倍, 故在对数轴上必然近似平行。视觉上更"平行"还因为 FlatMAPPO 把纵轴拉了 2.5 个数量级
+  (1.75→516ms), 把 SA-vs-HMAPPO 的 22% 差异压扁了。
+  SA/HMAPPO 比值: 3.47/3.79/3.97/4.03/4.24 (10→30t) —— 缓慢走宽, 不是快速。
+    各口径比值一致: 总代价 3.47→4.24; 仅 L3 3.77→4.40。
+  **唯一斜率符号相反的真实分叉 (按每决策单位)**:
+    HMAPPO ms/section  0.4564 → 0.4473, 斜率 **−0.02** (平/微降)
+    SA     ms/transit  6.88   → 7.87,   斜率 **+0.12** (上升)
+    → 即"HMAPPO 单价与规模无关, SA 单价随规模上升"。若要画真正的分叉, 用这个口径。
+  注意 ms_per_section 列含 L2 (脚本按 (l2+l3)/sections 算), 而 L2 是每步非每区间, 属单位混用;
+    讲"每决策单位"时应**只用 L3** (l3_ms_total), 别用 CSV 的 ms_per_section 列。
+Status: DONE; 待办: (1) 是否改用"每决策单位"口径出图 (2) flat 劣势如何呈现 (3) 收敛图重跑
+
+[2026-09-20 续9]
+Task: 改用"每决策单位"口径 + 产出规模-计算时间 CSV
+Files:
+  scripts/plot_l3_cost_scaling.py — 口径改为 l3_ms_total/sections (每走廊区间, **仅 L3**,
+    排除 L2 因它是每步非每区间); (a) 每单位代价 + 斜率注释, (b) SA/HMAPPO 比值
+  scripts/make_compute_scaling_csv.py — 新增, 从长表派生宽表 (CSV-first, 不手写)
+  output/9.20/compute_time_scaling.csv, output/9.20/fig_l3_cost_compare.png
+结果: **每决策单位 (ms/section, L3) —— 这是唯一真分叉的口径**
+  规模   HMAPPO    SA     FlatMAPPO   SA/HMAPPO
+   10t   0.4565  1.7195   0.0190      3.77
+   15t   0.4495  1.8161   0.0137      4.04
+   20t   0.4550  1.9106   0.0115      4.20
+   25t   0.4584  1.9382   0.0126      4.23
+   30t   0.4473  1.9680   0.0105      4.40
+  log-log 斜率: HMAPPO **−0.02**(平/微降) vs SA **+0.12**(上升) —— 斜率符号相反 = 真分叉。
+  与总代价口径对照: 那个口径下斜率 0.841 vs 1.022 (近似平行, 常数倍), 故**不要用总代价讲分叉**。
+  (a) 图形状: SA 上扬 / HMAPPO 平 / flat 下沉, 三者扇形分开 —— 视觉上明显, 且完全诚实。
+注意: 宽表同时给出 ms_per_episode (总代价口径) 与 ms_per_section (每单位口径), 两者结论不同,
+  论文引用时必须说明用的是哪一个。
+Status: DONE; 待办: (1) flat 劣势如何呈现 (2) §6.5 换用本 CSV 口径 (3) 收敛图重跑
+
+[2026-09-20 续10]
+Task: 出图口径改回 ms_per_episode, 并消除"指标两处各算一遍"
+Files:
+  scripts/plot_l3_cost_scaling.py — 数据源从长表改为**宽表** compute_time_scaling.csv,
+    只读 4 列: n_trains / HMAPPO_ms_per_episode / SA_ms_per_episode / FlatMAPPO_ms_per_episode
+    (panel b 的比值由这两条序列现场相除)。指标现在只在 make_compute_scaling_csv.py 算一次。
+  产物: output/9.20/fig_l3_cost_compare.png
+理由: 用户认为 ms_per_episode 更直观。
+注意 (图注须写):
+  - 该口径下三条线近似平行 (log-log 斜率 HMAPPO 0.84 / SA 1.02) —— 常数倍优势,
+    比值 3.47→4.24 (+22%)。**不要声称随规模快速走宽**。
+  - 若需要视觉上扇形分开, 同一宽表里有 *_ms_per_section 三列可用 (HMAPPO 平 / SA 上升)。
+  - flat 最便宜 (~25-45x) 且其速度决策只有 21% 到达走廊层 —— 必须与质量指标同引。
+管线: bench_l3_decision_cost.py(长表) -> make_compute_scaling_csv.py(宽表) -> plot。
+  重跑基准后需重跑中间那步, 否则图读的是旧宽表。
+
+[2026-09-20 续11]
+Task: 两种口径各出一图 (加 --basis 开关)
+Files:
+  scripts/plot_l3_cost_scaling.py — 新增 --basis {episode|section}:
+    episode -> <METHOD>_ms_per_episode (L2+L3), 输出 fig_l3_cost_compare.png (默认)
+    section -> <METHOD>_ms_per_section (仅 L3),  输出 fig_l3_cost_per_section.png
+    Y 标签/标题随口径自适应; --out 可覆盖。
+产物: output/9.20/fig_l3_cost_compare.png + fig_l3_cost_per_section.png
+两图对照 (引用时务必分清):
+  episode 口径: 三线近似平行 (log-log 斜率 0.84 / 1.02), 比值 3.47→4.24 (+22%) —— 直观但无扇形。
+  section 口径: **扇形分开** —— HMAPPO 平 (−0.02) / SA 上升 (+0.12) / flat 下沉, 比值 3.77→4.40 (+17%)。
+    代价: 单位(每走廊区间)需解释, 且 **L2 被排除**(L2 是每步非每区间), 而 episode 口径含 L2 ——
+    两图分母与是否含 L2 都不同, 不可混引数值。
+
+[2026-09-20 续12]
+Task: 重测(加重复) + 查清 9_4 版 compute 的统计方式 + 按 9_4 方法用新常数重算
+Files:
+  scripts/bench_l3_decision_cost.py — 新增 --repeats (默认1); 输出 ms_per_episode_std
+  scripts/make_compute_csv_94_method.py — 新增, 按 9_4 方法(计数×单位代价)用**实测每尺度单位代价**重算
+  output/9.20/l3_decision_cost_scaling.csv (重测), compute_time_scaling.csv, compute_by_scale.csv
+  output/9.20/fig_l3_cost_per_section.png, fig_l3_cost_compare.png
+关键发现: **9_4 版 compute.csv 不是测出来的, 是算出来的**。旧代码 method_ms = n_transits×3.48,
+  learned_ms = n_sections×0.36 —— 与 9_4 数值逐位吻合 (30t: 46080×0.36=16588.8; 11520×3.48=40089.6;
+  40089.6/16588.8=2.417→"2.4")。又因 n_sections/n_transits ≡ 4.00 (每走廊 4 区间), 该比值被
+  **恒定钉死在 2.417**, 不含任何规模信息。§6.5 的 "16.6s vs 40.1s / 2.4×" 全部源自此估算。
+重测 (3 repeats × 5 episodes = 15 集/规模/方法; 单趟 5 集时 20t 的 hier 曾出现 +30% 异常值):
+  每区间 L3 ms: HMAPPO 0.4576/0.4509/0.4550/0.4508/0.4524 (斜率 -0.01, 平)
+                SA     1.6521/1.7855/1.8666/1.9220/1.9344 (斜率 +0.14, 上升)
+  每趟   L3 ms: HMAPPO 1.831/1.804/1.820/1.803/1.810   SA 6.608/7.142/7.466/7.688/7.738
+  单位时间: L2 collect_step 0.763→0.844 ms/次; L3 select_action 0.45 ms 平; SA 一次重解 6.61→7.74 ms
+  重复间 std (ms/ep): <1% 相对均值, 可信。
+  每趟 = 每区间 × 4 (常数) → 两种口径图形状与比值完全相同, 仅纵轴×4。
+新表 output/9.20/compute_by_scale.csv (9_4 格式, 实测每尺度单位代价):
+  N    HMAPPO_ms   SA_ms    Flat_ms   SA/HMAPPO   (旧 9_4: 2.4 恒定)
+  10t    7578.6   27358.1    361.7      3.61
+  15t   11687.6   46279.4    389.6      3.96
+  20t   14743.4   60477.2    397.1      4.10
+  25t   17526.4   74726.3    444.0      4.26
+  30t   20847.7   89137.6    547.8      4.28
+  注意: 若用"单一均值常数"(严格照 9_4 做法)则比值仍恒为 ~4.04; 只有用**每尺度实测单位代价**
+  才出现 3.61→4.28 的趋势 —— 因为 SA 单价真的随规模升而 HMAPPO 平。绝对值也普遍大于旧表
+  (SA +90%), 因实测常数高于旧的硬编码值。
+Status: DONE; 待办: (1) §6.5 等 3 处"实测 2.4×"改口径 (2) flat 劣势如何呈现 (3) 收敛图重跑
+Status: DONE; 待办: (1) flat 劣势如何呈现 (2) §6.5 换用本 CSV 口径 (3) 收敛图重跑
+
+[2026-09-20 续13]
+Task: 核实 §3.6.3 包络漂移数字 + 奖励函数与代码对齐 + 车类数修正 + 3.6/4.5 拆分
+Files:
+  scripts/measure_envelope_drift.py (新增) -> output/9.20/envelope_drift.csv
+  src/env/reward.py — 三处 vestigial 加"dead param, 提交前删"注释(见下)
+  docs/ch3_problem_formulation_paper.md, docs/paper_outline_ch3_ch4.md,
+  docs/ch4_algorithm_design_paper.md, docs/problem_formulation.md,
+  docs/architecture_three_layer.md, docs/environment_constraints.md, docs/notation.md
+  .claude/plans/plan_verify_envelope_drift.md
+
+== A. §3.6.3 包络漂移数字核实 (旧提纲声称"实测"但仓库无产出脚本, 不可复现) ==
+  实测 (15t, 80 集/档, 每档约 630 决策点, 容差 1s; 动态 vs 静态包络逐决策点比):
+    工况      变化率   放宽率  救回率   平均Δ
+    无扰动    86.6%    0.0%   0.00%   -50.5s
+    sev 1.0   87.8%    1.4%   0.00%   -48.6s   <- 论文工况
+    sev 1.5   88.2%    4.8%   0.64%   -45.9s
+    sev 2.0   86.4%    8.2%   1.58%   -42.1s
+    sev 3.0   88.6%    8.3%   6.35%   -37.5s
+  旧数字判定: "70-76%" **偏低约 12pp** -> 作废; "平均 -27~-42s" 实测 -50~-37s;
+    "救回 <=2.3%" 上界 **不成立** (sev3.0 达 6.35%) -> 已删该上界。
+  结构恒等: 救回率 == "静态包络下可行集为空" 的比例(逐档完全相等)
+    => 救回率可等价读作 **静态包络的失效频率**。
+  ★ 阶梯的论证落点 = **归因边界**: sev 1.0 下放宽仅 1.4%、救回 0%
+    => 扰动由执行层吸收, **未为调度层创造新的决策机会** => 解释本文为何不主张 L2 增益。
+    门槛可检验: 需 sev >= ~1.5 救回率才脱离 0。
+  口径修正: 数据依赖表原写"severity>1 ❌ 不纳入" -> 改为"**仅用于约束结构敏感性,
+    不用于性能结果**"; 且阶梯 sev>1 各档由 sev1.0 训练的同一策略跑出(分布外), 读作
+    "同一策略下的结构敏感性"。零训练(纯前向仿真)。
+
+== B. 3.6 / 4.5 去重: 完备性要求移入第三章 ==
+  原 3.6 与 4.5 三处重复(滚动节拍/动态包络/持久日历)。拆法:
+    I1-I4 + 状态覆盖(作为**要求**) -> 第三章 §3.6.5(新增, 问题规格)
+    要求->机制映射 / 冲突救援 / 跨层触发 / 状态覆盖的响应实现 / 跨层闭合设计选择 -> 第四章 §4.5
+  第四章 §4.5 由 7 小节缩到 5 个。
+
+== C. 奖励函数与代码对齐 (audit 出 3 处 vestigial, 全为零调用/零生效) ==
+  1. compute_l3_reward (reward.py:271) — **v2 遗留, 全仓库零调用**; 含 -0.02*headway_delay
+     与 -0.02*throat_delay, 与"车距是硬边界非奖励项"的 v3 不变量**矛盾**。已加显著 DEPRECATED
+     段头注释。
+  2. compute_l3_terminal_reward 的 platform_free — 函数体内**未使用**(0 次);
+     早到惩罚自 2026-08-14 起与站台状态无关。已加注释。
+  3. compute_l3_terminal_reward 的 global_delay_sec/global_coef — env **从不传入**
+     (grep 计数 0) => `- global_coef*global_delay_sec` 项**恒为 0**。已加注释。
+     L3 真正的团队项是 compute_l3_team_reward(滑动窗口) x l3_team_lambda。
+  论文口径决定(用户): 这三项**都不写进论文奖励函数**; 代码留注释, **提交代码前再删**。
+  已同步: ch4 §4.4.1 公式删 rho 项; notation.md 删 rho 行并注明死参数;
+  problem_formulation.md §8.2 删 rho; architecture §7.2 标注死参数;
+  environment_constraints.md 该行划线标注非有效项。
+  奖励结构复核(与代码一致): L2 局部 = -0.02*|dep_dev|*w*dep_mult + 2.0*exp(-dev/60)*w
+    + (dev<=15 ? 2.0*w) + 中间站 -0.01*|arr_dev|*w + 有车距时 -0.02*hw*w + 有咽喉时 -0.02*thr*w;
+    hold=-3.0; L2 团队 = -0.02*mean_dep -20*deadlock +2.0*ontime_rate;
+    **L2 用 |dep_dev|(早晚同罚)** — ch3 已改。权重 L2={2.0,1.0,0.5} / L3={1.4,1.0,0.6}。
+
+== D. 车类数修正: 3 类 -> 2 类 ==
+  实测 configs: 15t 有 5xP1 + 10xP2; 30t 有 12xP1 + 18xP2; **无 priority 3**(P3 已删)。
+  l3_physics.yaml 仍保留 "3" 的速度条目(33.33/33.33), 但无列车使用 => 遗留配置, 可删。
+  已改: ch3 §3.1.2 三行表->两行(P1 复兴号/P2 和谐号, 均**有**恢复裕量); 删"P3 无恢复裕量"
+  整段; ch4 §4.3.2 删 P3 句。**注意**: 原 ch3 §9 曾有"P3 无恢复裕量"作为诚实边界, 现已不适用。
+  src/env/five_station_env.py:983 有 "P1/P3" 过期注释(非活代码路径)。
+
+== E. Ch4 §4.1 包络公式修正(真错, 且与第三章矛盾) ==
+  原 Algorithm 1 与正文把**始发站**规则 `dep_max = max(ref+dwell+slack, dep_max_stat)`
+  用在了**所有站**。代码实际: 中途站 `dep_max = ref + dwell + slack`(**丢弃**静态下界),
+  仅始发站保留静态下界(且仅在实际延误时平移)。已改三分支 + 补"始发/中途不对称"说明。
+  该错误继承自提纲的 Algorithm 1。另修 Ch3 内部记号($a^{stat}/b^{stat}$ -> 统一为
+  $t^{arr,min}/t^{dep,max}$ + dyn 上标)。
+
+== F. architecture_three_layer.md §2.1 两值陈旧 ==
+  safety_factor 文档写 1.5 -> 实际 **1.0**; max_added_delay_sec 写 200 -> 实际 **80**。
+  (配置注释记录了下调理由: 避免湿轨加大车距把限速变硬瓶颈 / 落在重规划阈值下防雪崩)
+  **尚未修**(本轮未做)。
+
+当日产物: output/9.20/envelope_drift.csv, scripts/measure_envelope_drift.py
+Status: DONE; 待办: (1) architecture §2.1 两值 (2) reward.py 三处 vestigial 提交前删
+  (3) 收敛图重跑 (4) flat 劣势如何呈现
+
+[2026-09-21 续1] 新增评价指标: 延误消散时间 DDT (恢复性/时间维度)
+Task: 落地"扰动后连续 K 个到达事件延误回到阈值内即视为恢复"的恢复时间指标
+Files:
+  src/experiment/recovery_metrics.py — **新增**。预登记格 theta=30 sim-s / K=3;
+    三条不可反的设计约定写进模块 docstring:
+    (1) 判据用 |arr_delay| **绝对值** —— 带符号阈值会被"整体跑早"伪造成零
+        (仓库已有前例: l3_sim.py:580 修过早到掩盖 L3 恢复价值的 bug);
+    (2) 锚点 t_rec_start = 扰动**结束**时刻, 不是起始 —— 否则指标里混进扰动时长本身;
+    (3) 时间型量重尾+右删失 => 只报 median/IQR/删失率, **不报均值**。
+    另含 recovery_grid()(theta in {15,30,45} x K in {2,3,5}) 与
+    floor_index()/with_floor()(按 (seed,train_id,corridor) 配对到 CRUISE 基线)。
+  scripts/eval_protocol.py — run_episode 增 seed + t_rec_start
+    (incident 臂=限速窗口 end; bunching 臂=最后一批扣车的实际放行时刻; clean 臂=None);
+    新增 report_recovery(); main 增 DDT 段 + 预登记格排序 + recovery.csv/recovery_grid.csv。
+  docs/notation.md — 新增 §10 评价指标(eval-only): 符号 theta_DDT/K_DDT/t_rec_0/
+    D(消散时间)/D^(0)(配对口径)/R_cens, 并注明与 l3_sim 的 recovery_margin_sec 不是一回事。
+  docs/paper_outline_ch5_ch6.md — §5.3 补 DDT 定义口径(含 incident 臂必须用配对超额的理由);
+    新增 §6.10 结果小节(主张=网格内排序稳定, 含三条诚实边界)。
+Rationale: 现有指标集缺**时间维度**: 尾部严重度答"多惨"、均值/准点率答"平均多好",
+  没有量答"多快回来"。DDT 是韧性主张真正依赖的那一项, 且 L3 的机理正是在后续趟次里
+  把一列车队重新散开, 所以该指标衡量 L3 协调价值比均值更对口。
+  两个口径保持分离: bunching 臂(绝对, 恢复到准点真的可达) vs incident 臂(配对超额,
+  因为 max_added_delay_sec=80 封顶 + L3 追不回全部 => 绝对口径**结构性删失**, 报不出协调价值)。
+  实现上**未改 src/env/**: 锚点可由 eval 侧已读的 env._corridor_incidents / env._journeys 推出,
+  训练路径零风险。
+顺带修 1 个**既有 bug(阻断默认模式全跑)**: eval_protocol.py report_clean/report_incident 的
+  "method_ms": round(method_ms, 1) —— _decision_ms 对 sa-online 返回 None(2026-09-20 起
+  刻意不上报算力), round(None) 直接 TypeError。改为 None 安全。与本次改动无关, 但默认模式集
+  含 sa-online => 任何不带 --*-only 的 eval 都会崩, 故一并修。
+验证(15t, final.pt 20260814_194055, n 小样本仅验通路):
+  incident 臂 paired=100.0%, 6 模式均出数; bunching 臂排序
+  sa(348) < sa-online(348) < sa-nofc(348) < fcfs(348) < learned(541) < cruise(597);
+  --no-delay 臂正确跳过(无扰动即无锚点, 不写 recovery.csv, 不崩)。
+Status: DONE; 待办: (1) 用 n=60x3blocks 的正式口径复测(小样本数字无统计意义)
+  (2) 未修: --out-csv 路径**既有崩溃**(report_* 返回键多于 out_csv 的 fieldnames =>
+  csv.DictWriter extrasaction 默认 raise); 本轮未动, 待用户定夺
+  (3) 若 DDT 进正文, 需在 Ch6.10 填真数并核对"排序稳定"是否成立
+
+[2026-09-21 续2] 训练期"受影响车辆延误"逐集埋点 + 15t 单种子 6000 集重跑(进行中)
+Task: 用户要"受影响车辆延误随 episode 的变化率 + reward 变化率"; 先查已有数据, 结论=只有 reward 可用
+Files:
+  src/experiment/run_train_hierarchical.py — 逐集累加受影响 transit 的 arr_delay(读
+    info["l3_transit_events"] 的 affected 标记), ep_summary 新增 4 列:
+    has_incident / n_aff_transits / aff_arr_delay_mean / aff_arr_delay_max。
+  src/experiment/run_flat_mappo.py — 同一 hook 与口径(同一批 4 列), 使 hier vs flat 可比。
+  scripts/analyze_train_affected.py — **新增**。把逐集序列转成变化率: 按 has_incident 分层
+    + 滚动均值(窗口 100) + 收敛尾段最小二乘斜率; reward 同口径。对**无新列的老 run 也能跑**
+    (只出 reward 半边并显式提示 affected 列缺失)。产物 <run>.affected_curve.csv + summary.csv。
+  .claude/plans/plan_train_affected_delay_logging.md — 本轮计划。
+Rationale:
+  1) 已有 8.14-8.16 的 training_metrics.csv **取不到受影响车延误**: schema 只有全车聚合
+     (mean_dep_delay 是**发车**侧, ontime_rate/arr_ontime 是准点率), 无 affected/unaffected
+     拆分, 无逐车记录。reward 侧现成可用(逐集 total_reward/mean_reward)。
+  2) 8.14 那 4 个 15t run 的**启动参数无任何记录**(run 目录只存 ckpt+csv, 无 args) =>
+     即使补埋点也无法回填; 8.16 两个确认 --incident(coding_log:3352)。
+  3) 必须**按 has_incident 分层**记录: incident 只 ~6/10 触发, 混在一起会让逐集曲线
+     看起来像坏传感器; 无受影响 transit 的回合写 nan 而**不是 0**(0 会把下游均值拖向 0)。
+  4) 不在训练里算斜率: 每回合受影响 transit 仅几条 => 逐集差分是噪声。记原始序列, 斜率
+     在 analyze_train_affected.py 里对**收敛尾段**算。
+验证(冒烟, 均通过):
+  hier --phases A 3000 集: incident 1868/3000=62.3%(与 prob=0.6 符), 受影响 transit 8095,
+    affected 均值 32.7s / 最大 230.3s; 一致性检查全 0 违例(无"无扰动却有受影响"、
+    无"受影响=0 但均值=0.0")。
+  ⚠ 发现: incident=1 但**受影响 transit = 0** 的回合有 196/1868 = 10.5% —— 限速窗口是按
+    **计划** transit 窗口锚定的, 策略把实际进出时刻挪开后可能整窗落空。不是 bug, 但
+    n_aff_transits=0 的解释必须区分"没发生扰动"与"扰动发生了但没打到实际车流"。
+  flat --episodes 200: 4 列正常; 受影响延误均值 83.7s vs hier(SA-L3) 35.1s —— 与既有
+    incident 臂 SA 优于 CRUISE 的结论一致。
+  analyze 脚本对新老 run 均可跑(老 run 输出 "MISSING (predates ...)")。
+正式 run (单种子 seed0, --incident, 与 8_16/9_4 协议对齐):
+  python -u -m src.experiment.run_train_hierarchical --env five_station_15t --incident \
+      --phases A,B --seed 0 --out-root output/9_21/training \
+      --eval-every 200 --eval-n 12 --eval-seed-base 900000
+  python -u -m src.experiment.run_flat_mappo --scenario five_station_15t --incident \
+      --episodes 6000 --seed 0 --out-root output/9_21/training \
+      --eval-every 200 --eval-n 12 --eval-seed-base 900000
+  日志: output/9_21_hier_15t_s0.log / output/9_21_flat_15t_s0.log
+  产物(将): output/9_21/training/five_station_15t_hierarchical/<ts>/{training_metrics.csv,eval_ontime.csv,checkpoints/}
+            output/9_21/training/flat_mappo/<ts>/{同上}
+  ※ 第一版用重定向导致 stdout 全缓冲、长时间零可见性, 已 kill 并用 python -u 重启
+    (遗留空 run 目录 20260921_145304 已删)。hier 实测 ~150 集/min, 单 run ~40min。
+Status: PARTIAL — 埋点+冒烟 DONE; 两个 6000 集 run 在跑, 完成后需补: (1) 跑
+  analyze_train_affected.py --out-dir output/9.21 出曲线/斜率 (2) 把斜率与保存路径填回本 log
+
+[2026-09-21 续3] 6000 集重跑结果 + 关键的"有符号延误"陷阱
+Task: 读 续2 两个 run 的结果, 并与 held-out 收敛点对照
+结果(50-truncated 全部基于 seed0 单种子; 终态 500 集窗口):
+  hier 20260921_145635 (A,B 6000集): aff_arr_delay_mean 首200=35.3s → 尾500=**81.0s**
+    其中均值为**负**的回合 0/272; mean_dep_delay=17.0s; arr_ontime=0.650
+  flat 20260921_153554 (6000集):     aff_arr_delay_mean 首200=83.7s → 尾500=**12.9s**
+    其中均值为**负**的回合 **82/272**(最小 -173.9s); mean_dep_delay=5.2s; arr_ontime=0.376
+  ★ 训练日志看似"flat 反超 hier 6 倍", 但这是 **有符号均值的假象**: flat 大量走 FAST =>
+    受影响车被限速后仍**早到**, 正负相消把均值压成小数字, 而它的准点率(0.376)明显更差。
+  验证(纯 eval, 用两个 final.pt 跑 held-out incident n=20):
+    affected 均值: hier 87.3s vs flat 92.8s (基本打平); 全车到站准点 hier 54.0/77.4%
+    vs flat 37.7/46.7% (hier 明显更好); 两者 affected 准点都是 **0/24**。
+  => 结论: 训练尾段的 81 vs 12.9 **不成立**, 是有符号口径造成的反转。
+  **教训(与 DDT 同一条)**: `aff_arr_delay_mean` 是有符号的 => 会被早到抵消。
+  已修代码(未重跑, 待用户定): 见 续4 的 tail/abs 口径; 训练埋点若要修需再跑 100min。
+Files: 无代码改动(仅读数据); 分析用 scripts/analyze_train_affected.py
+Status: DONE(结论已定: 不可据有符号均值下结论)
+
+[2026-09-21 续4] 尾部延误柱状图(规模×方法) 管道: 先出 CSV, 再画图
+Task: 用户要"随规模扩展、各算法尾部延误的柱状图, 带误差棒"
+Files:
+  scripts/eval_protocol.py — (a) `_block_stats` 加 tail10/tail10abs/p90/max/aff_tail10/aff_max;
+    (b) **新增 per_episode.csv**(逐回合, iid 单位); (c) **新增 per_transit.csv**(逐 transit 原始
+    arr_delay + affected + affected_plan) —— 池化尾部在重采样下必须能重算, 逐回合汇总做不到。
+    旧列/旧 CSV schema 未动(消费者按 header 建 fieldnames)。
+  src/env/five_station_env.py — transit 事件加 `affected_plan`(按**计划**时刻表判定, 策略无关),
+    与现有 `affected`(按**实际轨迹**, sf_k!=1.0, :1062)并列记。只加 key, 不动物理/奖励/掩码。
+  scripts/collect_tail_eval.py — 新。按 (scale, run) 跑 eval_protocol 并保留
+    per_episode/per_transit; learned 16 ckpt + flat 13 run + 每规模 1 次 checkpoint-无关基线
+    (learned/flat 行丢弃)。flat 的 run→scale 归属是从 8_16 训练日志反查的(run 目录无元信息)。
+  scripts/aggregate_tail_by_scale.py — 新。**第 1 步**: 原始行 → 长表 CSV
+    output/9.21/tail_by_scale.csv(scale,mode,subset,stat,value,ci_lo,ci_hi,cross_run_std,n_ep,n_runs);
+    subset ∈ {all, affected, affected_plan}, stat ∈ {tail10,tail10abs,p90,p95,max,mean};
+    CI = **回合级 bootstrap**(重采样回合→重新池化→重算同一统计量, 1000 次, 2.5/97.5)。
+  scripts/plot_tail_by_scale.py — 新。**第 2 步**: 只读 CSV、不算任何统计量(**用户指出的 CSV 先行**;
+    原版把计算和画图混在一个脚本里, 已拆开)。柱=value, 棒=ci_lo/ci_hi, 基座小字=n_runs。
+Rationale / 关键设计裁决:
+  1. **"最差 10%"必须按池化分布理解**, 不是"每回合各取尾部再平均"。实测(15t 冒烟): 逐回合版
+     learned 122.6 vs cruise 125.3(几乎无区分); 池化版 p90 learned 58.3 vs cruise 89.8, 30t
+     80.4 vs 141.7 —— 机理: 每回合仅 36 transit, 最差 4 条**必然含被限速钉死的 258s 的几条**
+     (物理不可恢复, 与策略无关), 逐回合版因此把所有方法压成同一根柱。
+  2. **误差棒 = 回合 bootstrap**, 不是 block std(df=2), 也不是跨 run std(仅 learned/flat 有,
+     且 30t hier 只有 1 个 run)。跨 run std 作为**并列信息**报(cross_run_std), 不当棒用。
+  3. **口径可切换**: `--stat {tail10,p90,...}` + `--subset {all,affected,affected_plan}`。
+     因为现有聚合数据(9_4/scalability/*/delay.csv)显示 p90 区分度强于 tail10 均值
+     (tail10 被极端不可恢复段拖高), 两种柱都要能出, 让用户看图裁决。
+  4. `--expect-episodes/--strict` 护栏: 冒烟残留(6 集)与正式(180 集)混进同一池会静默污染,
+     聚合时必须显式剔除并报出。
+验证: p90 口径**精确复现**仓库现有聚合值(sa 58.856 vs 既有 58.856; sa-online 62.219 vs 62.219)
+  => per_transit 管道与既有 eval 口径一致。
+Run(进行中): python -u scripts/collect_tail_eval.py --scales 10 15 20 25 30
+  日志 output/9_21_tail_eval.log; 逐 (scale,run) 行落盘 output/9.21/tail_rows/<N>t/<run>/
+Scale: 37 次 eval(每次 180 集) + 5 次 6-mode 基线 ≈ 2.5–3h。
+Status: PARTIAL — 管道 DONE + 已冒烟验证; 全量 sweep 在跑。完成后需: (1)
+  `aggregate_tail_by_scale.py --expect-episodes 180 --strict` 重出正式 CSV
+  (2) 出 tail10/p90 两版图 (3) 把 CSV/PNG 路径与结论写回本 log
+
+[2026-09-21 续5] 尾部延误柱状图 sweep 完成 + 正式 CSV/图 出台
+Task: 5 规模 × 7 方法 的尾部延误(带 95% CI)收尾
+产物(全部在 output/9.21/):
+  tail_rows/<N>t/<run>/{per_episode,per_transit}.csv  — 34 个 eval 的逐回合/逐transit 原始行
+  tail_by_scale.csv                                   — **正式分析产物**(630 行长表)
+  fig_tail_by_scale_p90_all.png / _tail10_all.png
+  fig_tail_by_scale_p90_affected.png / _affected_plan.png
+  日志 output/9_21_tail_eval.log(34 ok, 0 failed)
+命令: python scripts/collect_tail_eval.py --scales 10 15 20 25 30
+      python scripts/aggregate_tail_by_scale.py --expect-episodes 180 --strict
+      python scripts/plot_tail_by_scale.py --stat p90 --subset all
+主要结论(p90 / 全车 transit, sim-s):
+  mode        10t          15t          20t          25t          30t
+  learned   89.1±4.6     84.2±3.3    120.4±6.4     92.8±10.7    117.3±23.9  (n_runs 4/4/5/2/**1**)
+  flat      95.3         89.8        122.5        122.5        139.0       (2/3/2/3/3)
+  sa        51.6         58.9         94.3         80.4        121.3
+  sa-online 59.7         62.2        101.0         83.5        119.3
+  sa-nofc    88.5         80.1        121.3        121.3        133.1
+  fcfs      99.4         89.8        122.5        122.5        139.0
+  cruise   100.8         89.8        132.9        122.5        141.7
+  => learned 与 no-coordination floor 的差随规模扩大: 10t 差 11.7 → 30t 差 24.4;
+     flat 在每个规模都劣于 learned; SA(oracle) 小规模领先、30t 被 learned 反超(与 6.6 的
+     "SA 规模性反转"一致)。
+  tail10(最差10%均值)方向一致但区分度被压缩(10t learned 136.1 vs cruise 141.8;
+  30t 188.0 vs 207.6) —— 因为它把最极端的不可恢复段一起平均进来。
+  affected 子集 p90 信号更强但噪声大: 30t learned 243.9±58.5 vs cruise 315.3±35.5;
+  但 25t learned 326.3±25.0 **劣于** cruise 286.9±33.8, 15t 基本打平 —— 规模不稳定。
+口径对照: affected(实际轨迹) 与 affected_plan(计划口径) 结果**几乎相同**
+  (15t learned 139.4 vs 142.5; n_ep 351 vs 352)。=> 新增的策略无关标记在当前数据上不改变
+  结论, 但它把"子集随策略变"这个隐患显式化了; 保留两列。
+必须写在图注里的三条限制:
+  1) **30t hier 只有 1 个 run**(9_4 计划 3 种子只完成 1), 该柱无跨-run 支撑; 25t hier 只有 2 个。
+  2) **learned 各规模的 ckpt 来自不同训练战役/配置年代**: 15t/20t 是 8.13–8.14, 25t 是 8.16
+     (coding_log: 25t 那两条是在 **P3 尚存的 config** 上训的), 30t 是 9_4。基线(sa/cruise/fcfs)
+     则在**当前 working-tree config** 上重算, 可比; 但 learned 的跨规模趋势与"战役差异"混淆 ——
+     20t 120.4 → 25t 92.8 的非单调很可能源于此, 不可当作真实的规模效应解读。
+  3) affected 子集的 per-mode n_ep 只有 88(基线)/351(learned, 4 run 合并), 因为限速需同时命中
+     实际车流: 0.6(prob) × ~0.82(未落空) ≈ 0.49 => 约 49% 回合有受影响 transit。
+Status: DONE; 待办: (1) 若要主张 learned 的规模趋势, 需在**同一 config 年代**统一重训 10–30t
+  (2) 25t/30t 补种子以给 learned 跨-run 棒 (3) 训练埋点的有符号 aff_arr_delay_mean 未修
+
+[2026-09-21 续6] 查清"10t 尾部延误反而高于 15t" = 扰动稀释效应(非调度变差)
+Task: 用户质疑 10t p90 (87.9) > 15t p90 (80.1), 为什么车少反而更差
+证据(基线臂, 与 ckpt 无关, 5 规则方法合并; 全部来自 per_transit.csv):
+  scale      每回合总transit  每回合受影响 受影响%  受影响mean/p50  未受影响p90  全车p90
+   10t            23.0          1.77       7.7%    64.7 / 58.0      60.9       87.9
+   15t            36.0          2.21       6.1%    65.4 / 58.0      68.8       80.1
+   20t            45.0          1.98       4.4%   151.5 /137.5      94.3      121.3
+   25t            54.0          1.83       3.4%   156.0 /142.8      80.4      120.6
+   30t            64.0          1.91       3.0%   162.1 /142.8      89.9      122.5
+结论: 两个效应叠加, **都不是调度质量**:
+  (1) **限速的绝对损失与车队规模无关**: 受影响条数恒 ~1.8–2.2/回合, 受影响车自身延误在
+      10t/15t 几乎相同(mean 64.7 vs 65.4; **p50 都是 58.0**)。车队越大 -> 同样绝对损失被
+      越多正常车稀释 -> 受影响占比 7.7% -> 3.0%。
+  (2) **10t 的未受影响车其实更好**(p90 60.9 vs 68.8, 车少拥堵少), 但这让异常车在分布上更
+      突出: 10t 有 43.6% 的受影响车落在未受影响 p90 之上, 15t 只有 37.4% => 池化 90 分位
+      在 10t 更易落进受影响质量 => 87.9。
+  => "全车 p90 随规模上升"**含稀释污染**, 不得读作"规模越大越难调度"。
+  => 20t 的跳变另有原因: 受影响量级本身翻倍(64.7->151.5), 是 **config 代际差异**
+     (20/25/30t timetable 由 generate_scaled_timetable 用更紧参数生成)。
+改动:
+  scripts/aggregate_tail_by_scale.py — SUBSETS 增 "unaffected"(稀释无关的干净视图), CSV 由
+    630 -> 840 行(5 scale x 7 mode x **4** subset x 6 stat)。仅此一个文件; plot 侧同步 choices。
+  产物: output/9.21/tail_by_scale.csv(重出);
+    fig_tail_by_scale_p90_unaffected.png / _tail10_unaffected.png
+干净的规模视图(p90/unaffected): learned 64.4→72.4→95.9→80.4→**78.5**;
+  cruise 77.1→78.7→121.0→86.7→**122.5**; flat 66.0→72.7→94.3→80.4→**122.5**。
+  learned 相对 cruise 的差 10t 12.7 -> 30t **44**(远强于全车口径), 且 flat 在 30t 掉到 cruise 同一水平。
+⚠ 技术 caveat: unaffected 表里 sa/sa-online/sa-nofc 在 10t/15t 的 CI 半宽 = 0.0, 是**结(ties)
+  造成的 percentile-bootstrap 退化**(大量 transit 落在完全相同的延误值上, 分位点重采样不变),
+  不是精度无限。强结数据上用分位数 bootstrap 须注明。
+Status: DONE
+
+[2026-09-21 续7] 尾部延误表 + 误差棒论文表述 成文
+Task: 用户要"均值+95%CI 的表"和"误差棒在论文里怎么写"
+Files:
+  scripts/tail_table_md.py — 新。从 tail_by_scale.csv 生成 Markdown 表(value [95% CI]),
+    **表与图同源、不得手抄**。注意 caption 用 "value [95% CI]" 而非 "mean" —— p90 不是均值。
+  docs/tail_delay_and_error_bars.md — 新。论文口径文档, 含:
+    §1 指标定义(池化最差十分位均值 T + p90, 为何**必须池化**: 逐回合版必然含被限速钉死的几条,
+       实测 15t 逐回合版 learned 122.6 vs cruise 125.3 几乎无区分);
+       subset 四口径(all/unaffected/affected/affected_plan)及各自用途;
+       + tail10abs 的存在理由(flat 有符号尾部优于分层但准点 37.6% vs 65.0%)
+    §2 **误差棒 = 回合级百分位 bootstrap(B=1000, α=0.05)**: 有放回抽 E=180 回合 ->
+       **重新池化** -> 重算同一统计量 -> 取 2.5/97.5 百分位; 为何单位是回合(同回合内 transit
+       共享同一次扰动, 按 transit 重采样 = 伪重复, 低估区间); **不是均值±SD**(分位数类统计量
+       抽样分布偏斜, 对称区间无定义); 为何不用 block std(df=2)/跨run std(30t 只有 1 run)。
+    §3 论文表述: 中文(方法章 §5.3) + English(Methods) + 图注模板, 三段可直接粘贴。
+    §4 五条限制(30t n_runs=1 / learned 跨规模混淆 config 代际 / 扰动稀释 / ties 导致的
+       bootstrap 退化(规则方法部分格子 [58.9,58.9], **不是精度无限**) / 评估随机采样)。
+    §5 复现命令; 附 4 张数值表(p90/unaffected 主表, p90/all, tail10/all, p90/affected)。
+关键数值(主表 p90/unaffected, cell=value [95% CI]):
+  learned  64.4[60.3,67.1] 72.4[69.8,76.0] 95.9[91.4,103.6] 80.4[59.8,80.4]  78.5[59.8,121.7]
+  cruise   77.1[70.5,80.3] 78.7[73.1,88.7] 121.0[94.3,125.4] 86.7[80.4,122.5] 122.5[80.4,141.7]
+  => learned-vs-cruise 差 10t 12.7 -> 30t 44.0; flat 30t 122.5 与 cruise 持平(=坍塌)
+口径确认: 用户原写 96% 为笔误, 确认用 **95%**(现有 alpha=0.05)。
+Status: DONE
+
+[2026-10-27]
+Task: Produce caption-free main figure for 15t zero-shot scale transfer
+Files:
+  scripts/plot_transfer_scalability.py — reproducibly extracts the learned/flat
+    transfer rows from the held-out summary and renders the main figure.
+  output/9_4/scalability/transfer_15t_zero_shot_ontime.csv — self-describing
+    five-scale transfer data extract (15t source policy, no target fine-tuning,
+    180 held-out episodes per scale).
+  output/9_4/scalability/fig_transfer_15t_zero_shot.png — caption-free
+    hierarchical-vs-flat zero-shot transfer plot.
+Rationale: Separates the fixed 15t-policy transfer evidence from the unrelated
+  25t from-scratch convergence trace.  The source 15t domain is marked in the
+  figure, while all protocol metadata remain in the CSV for later paper edits.
+Verification: Script executed successfully; CSV values match summary_ontime.csv
+  (hierarchical 77.4/71.4/65.3/66.8/66.1%, flat 48.3/42.9/38.0/38.2/36.5%);
+  Python compilation and rendered-image visual QA passed.
+Status: DONE
+
+[2026-10-29 16:15]
+Task: 15t hierarchical MAPPO 7000-episode convergence run + smoothed trajectory plot
+Files:
+  src/experiment/run_train_hierarchical.py — added --total-episodes N: rescales
+    selected phases proportionally to PHASES defaults (7000 -> A=3500, B=3500);
+    deep-copies phase dicts so the global PHASES is not mutated. Default unchanged.
+  scripts/plot_hier_training_curve.py — new. Reads training_metrics.csv (+ sibling
+    eval_ontime.csv), writes training_curve_smoothed.csv (100-ep rolling mean/std
+    for 5 metrics), conv_check.csv (phase-wise means + last500/1000 vs previous
+    stats; "stationary" = |Δmean| <= 0.5 σ_last), and a 4-panel smoothed figure.
+Protocol: five_station_15t, --incident (speed restriction prob 0.6), seed 0,
+  --phases A,B --total-episodes 7000 --eval-every 200 --eval-n 12
+  --eval-seed-base 900000 --out-root output/10_29/training.
+Results (run outputs below):
+  - 7000/7000 episodes status=success; no deadlock/truncation.
+  - Phase A (L2 + SA-L3) eval arr_ontime ~0.63-0.70; Phase B starts at 0.433
+    (untrained L3 replaces SA), recovers by ep ~4500, reaches plateau.
+  - Held-out eval last 10 checkpoints (ep 5200-7000): mean 0.705 ± 0.011
+    (last 2500 flat 0.69-0.72).
+  - Last 1000 eps: mean dep delay 13.56 s (Δ=-0.14 vs prior 1000, 0.06σ);
+    mean reward +1.87 (Δ=+0.26, 0.17σ); arr_ontime 0.717 (Δ=+0.007, 0.11σ);
+    all five metrics satisfy the stationarity criterion -> CONVERGED.
+Save locations (today's run):
+  output/10_29/training/five_station_15t_hierarchical/20261029_131152/
+    training_metrics.csv, eval_ontime.csv, checkpoints/final.pt, best.pt,
+    training_curve_smoothed.csv, conv_check.csv, fig_hier_training_curve.png
+  output/10_29/hier_15t_7000ep.log (training stdout)
+  Log written to coding_log per CLAUDE.md.
+Status: DONE
+
+[2026-11-06]
+Task: 可配置 SA 迭代预算（本地实验用弱化基线；论文数字仍用默认 300）
+Files:
+  src/env/five_station_env.py — FiveStationEnv 新增 l3_sa_iters=300，SA 分支
+    profile_fn(..., n_iter=self._l3_sa_iters)；sa_online_profile 接受并忽略该参数。
+  scripts/eval_protocol.py — run_episode 新增 sa_iters=300；新增 CLI --sa-iters。
+  scripts/collect_tail_eval.py — 新增 --sa-iters 并转发给 eval_protocol。
+Default unchanged (300) for all other call sites / training Phase A.
+Smoke check (15t, same 6 seeds 910000.., no incident):
+  sa-iters=300: ontime 66.4%, arr_mean 39.2s, p90 150.6
+  sa-iters=30 : ontime 66.2%, arr_mean 45.7s, p90 159.9
+  => lower budget does weaken SA (larger mean/tail delay); ontime is insensitive.
+  No CSV artifacts written (stdout-only smoke run).
+Status: DONE
+
+[2026-11-06 续] 车站越行(越行/待避) + L2 学习让行 + 外部性定价
+Branch: overtaking-yield (from l3-dev). Plan: .claude/plans/plan_overtaking_yield.md
+Scope: five_station_15t only. No timetable edits.
+
+Files:
+  src/experiment/scenario_loader.py — TrainTimetable.pass_stations; route_stations
+    (corridor-graph derived), pass_stations_for (zero planned dwell + dwell_min 0 +
+    mixed through_allowed station), is_station_pass, apply_pass_platform_policy
+    (pass trains -> through platforms; stop trains -> non-through when both exist).
+    Populated in load_scenario.
+  src/control/action_mask.py — per-station is_station_pass in derive_schedule /
+    illegal_reason (through branch + through-platform restriction).
+  src/control/dispatch_bounds.py — pass_flag is now per-station.
+  src/env/five_station_env.py — replaced the hardcoded P1 stripping / 'D' exemption
+    with the config-driven policy; _build_extra_train uses it too. L3 front-occupant
+    attribution (`front_train_id`), `_leader_externality` ledger, overtake/yield
+    detection (`_capture_pre_grant`, `_detect_resequencing`), deterministic
+    (W_out, priority, id) execution sort, transit events enriched with priority/
+    front_train/dep_station/arr_station/is_pass_dep, metrics/info counters.
+  src/control/l3_sim.py — L3CorridorState.front_train_id + L3Simulator wrapper.
+  src/env/reward.py — L2_PRIORITY_WEIGHT {1:2,2:1,3:0.5}, EXTERN_ALPHA=0.15
+    (empirically calibrated; see below), EXTERN_CAP_PER_STEP=20, RewardBreakdown.
+    externality, compute_layered_rewards(externality_charges=...), Metrics fields
+    pw_dep_delay/pw_arr_delay/overtake_count/yield_count/pass_overtake_count/
+    priority_overtake_count/deliberate_yield_count.
+  src/env/observation_builder.py — ACTOR_SELF_DIM 16->19; 3 higher-priority-follower
+    features (has_higher_prio_follower, prio_gap, follower_arrival_gap); per-station
+    pass bit. obs_dim 31->34.
+  src/marl/actor_critic.py — DEFAULT_OBS_DIM 34. HP obs_dim comments updated.
+  configs/five_station_15t/railway_resources.yaml — A/B/C/E: only P1 through_allowed;
+    D keeps both (capacity fallback). This is the activation gate.
+  scripts/eval_protocol.py — run_episode accumulates overtakes/yields/deliberate/
+    priority/pass counters; per-episode/per-transit CSV columns; new overtake.csv;
+    pw_arr_delay; report_* prints re-sequencing counts; checkpoint obs-dim guard.
+  tests/test_overtaking.py — NEW (7 tests): pass detection, platform roles, pass
+    schedule, forced-yield re-sequencing at A, externality charge math, front-train
+    attribution, obs dim + clean-episode safety.
+
+Key empirical findings (important for the paper):
+  1) Realized L3 headway destroys the planned pass-at-station overlaps. Example
+     G1380_s1/G238 @B planned arr 151/155 (overlap on paper), but realized arrivals
+     are 183/224 because the A→B moving block already delayed both; G1380_s1 departs
+     188 before G238 arrives. Structural pass-at-station therefore rarely triggers
+     in the base timetable; it needs a learned/forced dweller yield to persist.
+  2) The learnable re-sequencing case is at origins with priority inversion.
+     G5038 (P2, dep A 77) vs G1616_s3 (P1, dep A 95): forcing G5038 plan+20 at A
+     improves system return (seed 2: -202 -> -168), mean arrival delay 50 -> 43,
+     and creates 3 overtakes. Forced +50 over-delays and hurts.
+  3) Externality alpha calibration (G5038@A, seed 2, own-agent return):
+     alpha 0.05: -6.3 -> -13.1 (yield privately bad)
+     alpha 0.15: -13.4 -> -13.1 (break-even; system return improves)
+     alpha 0.20: -17.0 -> -13.1 (yield privately good)
+     => default 0.15. This is the smallest value making the yielder's own return
+     non-decreasing; sweep {0.05,0.10,0.15,0.20} after retraining.
+  4) Pass-at-station semantics/masking work (G230@C, G238@B/C, G1487@B are pass;
+     G1185 placeholders are not; pass trains forced to P1). No safety violations.
+
+Verification:
+  python -m pytest tests -q => 52 passed (45 pre-existing + 7 new).
+  FCFS eval smoke (output/11_06/overtake_smoke{,2}): postcheck_reject=0,
+    no_legal_action=0; overtake.csv/per_episode.csv fields populated.
+  validate_l3_schedule.py --scenario five_station_15t --n-episodes 2 => ALL CLEAN.
+  Random obs-34 L2 checkpoint used for eval smoke:
+    output/11_06/random_l2_obs34.pt (throwaway; not a trained policy).
+
+Checkpoint impact: all L2/flat checkpoints with obs_dim 31 are incompatible
+  (obs 31->34). Retrain L2 (Phase A: L2 + SA-L3) before any learned eval. L3
+  checkpoints (10-dim obs) remain loadable; the reward change is L2-only.
+
+Status: PARTIAL — physics + mask + obs + reward + metrics + tests DONE. Pending:
+  (1) retrain L2 (Phase A smoke 2k ep then paper-scale), (2) learned eval vs FCFS/
+  CRUISE/SA with overtake/yield/pw-delay, (3) alpha sweep, (4) docs/architecture
+  update for the per-station pass + station passing-loop assumption.
+
+[2026-11-06 续2] 2k Phase A L2 smoke + CRITICAL finding: policy controls only ~14% of grants
+Training run (save locations):
+  output/11_06/l2_smoke_2k.log
+  output/11_06/training/five_station_15t_hierarchical/20261106_171902/
+    training_metrics.csv, eval_ontime.csv, checkpoints/final.pt
+  Command: run_train_hierarchical --env five_station_15t --phases A --total-episodes 2000
+           --incident --seed 0 --eval-every 200 --eval-n 6 --eval-seed-base 900000
+Results:
+  - dep_ontime 0.66 -> 0.80; dep_delay 19.2 -> 13.6s; held-out arr_ontime oscillates
+    0.66-0.72 (last 300 ep ~0.73), final eval 0.662; 2000/2000 success, 0 deadlock.
+  - Learned eval (new L2 + SA-L3), 2x20 incident episodes:
+      sa     : affected mean 35.1 p90 145.1; P1 ontime 66.3%; overtakes=1 yields=0
+      cruise : affected mean 93.2 p90 197.7; P1 ontime 41.7%; overtakes=5 yields=1
+      fcfs   : affected mean 93.0; P1 ontime 41.8%; overtakes=1 yields=0
+    => SA-L3 effect dominates; L2 did NOT learn deliberate yields (0 in 40 eps).
+  Eval artifacts: output/11_06/eval_l2smoke_{sa,cruise,fcfs}/ + .log;
+    random obs-34 L2 used for earlier smoke: output/11_06/random_l2_obs34.pt.
+
+CRITICAL FINDING (root cause of "learned L2 ~= heuristic", pre-existing):
+  The policy action set is `info["action_masks"] = _action_masks(_pending_trains())`
+  with lookahead=0 (arrived trains only), while `_build_requests` batch-schedules
+  `_pending_trains(lookahead=batch_window_sec=120)` and falls back to
+  `heuristic_action` for any train missing from the action dict.
+  Instrumented grant count (15t, incident episode): 7/51 grants policy-controlled
+  (~14%), 44/51 heuristic-scheduled. Origin decisions are ALL heuristic: at t=0 the
+  lookahead schedules every origin train (planned dep 31-95s) before any is "pending".
+  Consequence: the strongest yield case (G5038@A, plan+20) is not reachable by the
+  learned policy; only ~14% of decisions are learned at all. This likely explains
+  the paper's null "learned ~= heuristic" results and is separate from L3.
+  Diagnostics: all decisions with a higher-priority follower (21/10 seeds) were
+  G230@B/C; only 1 chose a delayed entry (plan+30). A-decisions controlled by the
+  policy were only late down trains (G1347/G1185), never the origin up batch.
+
+Next decision (pending user): expand policy control to the batch window
+  (action_masks/active_train_ids + training/eval transition loops) or reduce
+  lookahead so arrived trains are policy-scheduled. Both change L2 training
+  semantics and require retraining. Do NOT tune EXTERN_ALPHA before this is fixed:
+  the yielder's decision is currently made by the heuristic, not the policy.
+Status: PARTIAL — smoke done; architecture fix required before more training.
+
+[2026-11-06 续3] Batch-window policy control fixed; 2k v2 retrain + clean L2 baseline
+Files:
+  src/env/five_station_env.py — reset/step policy action set = _pending_trains(
+    lookahead=batch_window_sec): action_masks, active_train_ids, new
+    policy_train_ids, active_l2; rewards/metrics active set = policy_ids_step and
+    station_map = all policy stations (granted or held); removed unused
+    grant_station. `pending` remains the arrived-only set for time advance/deadlock.
+  scripts/eval_protocol.py — flat loop uses active_train_ids; new `--heur-sa-only`
+    mode (heuristic L2 + SA L3) for a clean L2 comparison vs `--sa-only`; heur-sa
+    counted as SA compute.
+  src/experiment/run_flat_mappo.py — action loop uses active_train_ids.
+  tests/test_overtaking.py — new guard: action_masks == batch-window pending set;
+    G5038 present at reset; active_train_ids == policy_train_ids.
+Verification: policy-controlled grant ratio 14% -> 100% (51/51 single episode);
+  held=0, no_legal=0; pytest 53 passed.
+
+Training v2 (save locations):
+  output/11_06/l2_smoke_2k_v2.log
+  output/11_06/training_v2/five_station_15t_hierarchical/20261106_173843/
+    training_metrics.csv, eval_ontime.csv, checkpoints/final.pt
+Results: dep_ontime 0.48 -> 0.74, dep_delay 30.0 -> 17.2s (last 300);
+  held-out arr_ontime oscillates 0.53-0.74, final 0.630. 2000/2000 success.
+  Note: v2 dep punctuality is WORSE than v1 (0.74/17.2 vs 0.80/13.6) despite
+  controlling all decisions; 2k is under-trained and/or EXTERN_ALPHA=0.15
+  over-delays. Machine may have slept during the run (CPU ~11 min / 4h wall).
+
+Re-sequencing diagnostics (v2 checkpoint, 10 incident eps):
+  G5038@A entry choices: earliest 4, plan 5, plan+10 1 (effective yield weak).
+  Delayed entries with a higher-priority follower: 15; overtakes 15, yields 3,
+  deliberate_yields 0 in this diagnostic.
+Held-out eval (2x20 incident episodes; output/11_06/eval_v2_*.log + dirs):
+  mode          affected mean/p90   P1 ontime  P2 ontime  overtakes/yields/delib/prio-ot/pass-ot
+  sa (learned)  40.9 / 145.1        66.7%      73.9%      71 / 14 / 1 / 33 / 10
+  heur-sa       34.9 / 145.1        66.3%      79.0%       1 /  0 / 0 /  0 /  0
+  cruise (lear) 97.0 / 201.3        41.7%      40.7%      60 / 14 / 2 / 32 / 5
+  fcfs          93.0 / 197.7        41.8%      46.8%       1 /  0 / 0 /  0 /  0
+  => The control fix works: learned L2 now re-sequences (priority overtakes 33
+  vs heuristic 0), but at 2k it is slightly WORSE than heuristic L2 under the
+  same SA-L3 (affected 40.9 vs 34.9; P2 73.9 vs 79.0). No net benefit yet.
+  v1 learned-SAL3 (only 14% control) was 35.1/66.3/78.8 = effectively heuristic.
+
+Next decision (pending user): (a) 7k Phase A at alpha=0.15 (scale up), (b) 2k
+alpha sweep (0.05/0.10) to check over-delay, (c) explicit effective-yield bonus
+(shaping), or (d) stop and report the mechanics/negative result. Do NOT claim
+learned-L2 coordination value from the 2k v2 numbers.
+Status: PARTIAL — control fixed + retrained; performance not yet better.
+
+[2026-11-06 续4] Reward trend = PLATEAU; learned policy is below heuristic
+Analysis artifacts:
+  output/11_06/training_v2/reward_trend_2k.png (mean_reward + ontime curves)
+  Script reads training_metrics.csv.
+Quantitative trend (2000 eps):
+  mean_reward: first100 -1.025 -> last100 7.867; first500 1.903 -> last500 8.004
+    (std 2.037); slope last500 = -0.00045/ep, slope all = +0.00401/ep.
+  ontime_rate: 0.341 -> 0.740; last500 0.740 +/- 0.060; slope last500 ~0.
+  arr_ontime: 0.499 -> 0.714; last500 0.718 +/- 0.069; slope last500 ~0.
+  => reward rose until ~1500 ep then PLATEAUED. More episodes at this config are
+  unlikely to fix the level; it is an optimization/reward-design issue.
+
+Clean diagnostic (5 incident episodes, v2 final policy vs empty-action heuristic;
+same seeds 900000-900004, sums):
+  learned: total reward 146.5, local 139.4, global 23.6, externality charged
+           410.6, overtakes 16, yields 2
+  heur   : total reward 459.1, local 430.1, global 96.9, externality 330.8,
+           overtakes 0, yields 0
+  => The PPO policy converged to a SUBOPTIMAL local optimum: it is far below the
+  heuristic on its own training reward. The control expansion made the learning
+  problem much harder (~15 decisions/step instead of ~1); 2k PPO did not recover
+  the heuristic baseline. This is not a reward-scaling artifact: heuristic reward
+  is computed under the identical externality reward.
+  Confirmed eval numbers (2x20): learned-sa affected 40.9 / P2 73.9% vs
+  heur-sa 34.9 / 79.0%; learned wins only on re-sequencing count (priority-ot 33
+  vs 0), not punctuality.
+
+Possible fixes to discuss: (A) curriculum that ramps policy control from
+heuristic (0%) to 100% — preserve the baseline while the policy learns;
+(B) behavior-cloning warm start from heuristic actions, then PPO; (C) relevance
+gating — policy acts only on coordination-relevant trains (higher-priority
+follower / pass opportunity), heuristic otherwise; (D) PPO hyperparameter/scale
+changes (less promising given plateau); (E) reward redesign (effective-yield
+bonus / lower alpha).
+Status: PARTIAL — plateau diagnosed; next method pending.
+
+[2026-11-06 续5] Curriculum control ramp (user chose A)
+Files:
+  src/experiment/run_train_hierarchical.py — new policy_control_prob(ep,total,
+    p_start=0.1, ramp_frac=0.6): linear 0.1 -> 1.0 over the first 60% of an
+    L2-training phase, then 1.0. In the episode loop, with probability 1-p the
+    sampled action is dropped before env.step, so the env falls back to
+    heuristic_action for that train; dropped agents get no transition (the
+    policy did not act). Non-L2 phases use p=1.0. CLI: --policy-ramp-start,
+    --policy-ramp-frac. Episode log now prints p_ctrl.
+    train_hierarchical(..., policy_ramp_start=0.1, policy_ramp_frac=0.6).
+  tests/test_overtaking.py — policy_control_prob unit test (0 -> 0.1,
+    0.6*T -> 1.0, clamped, T=0 -> 1.0).
+Verification: pytest 54 passed. 20-ep smoke:
+  output/11_06/curriculum_smoke.log + output/11_06/curriculum_smoke/...
+  p_ctrl 0.10/0.17/0.25/0.33/0.40 at ep 0-4; no errors. As p rose from 0.1 to
+  0.4 the untrained policy's dep_ontime fell 0.78 -> 0.67, confirming that the
+  policy (not the heuristic) is now doing those decisions and needs training.
+
+v3 run in progress:
+  output/11_06/l2_smoke_2k_v3.log
+  output/11_06/training_v3/five_station_15t_hierarchical/<timestamp>/
+  Command: --phases A --total-episodes 2000 --incident --seed 0
+           --policy-ramp-start 0.1 --policy-ramp-frac 0.6
+Status: PARTIAL — v3 training running; compare reward/ontime and learned-vs-
+  heuristic at full control when done.
+
+[2026-11-06 续6] Curriculum v3 result: policy takes over and degrades; p=1 near-flat
+Training run save locations:
+  output/11_06/l2_smoke_2k_v3.log
+  output/11_06/training_v3/five_station_15t_hierarchical/20261106_221410/
+    training_metrics.csv, eval_ontime.csv, checkpoints/final.pt
+Results as p ramps 0.10 -> 1.00 (first 60% of 2k):
+  ep0-100    : reward 6.76, dep_delay 17.08, dep_ontime 0.712, arr_ontime 0.692
+  ep1100-1200: reward 5.44, dep_delay 23.67, dep_ontime 0.640, arr_ontime 0.646
+  ep1900-2000: reward 5.92, dep_delay 23.08, dep_ontime 0.673, arr_ontime 0.658
+  p=1 window (ep1200-2000) slopes: reward +0.00161/ep, dep_ontime +0.00005/ep,
+  dep_delay -0.00351/ep.  Slow upward drift but far below the heuristic-like
+  p~0.1 level; last500 reward 5.98 +/- 2.66.
+Held-out eval (2x20, v3 final):
+  learned-sa: affected 40.0 / p90 145.1; P1 64.3%, P2 66.4%;
+              overtakes 157, yields 38, deliberate 8, priority-ot 75, pass-ot 19
+  heur-sa   : affected 34.9 / p90 145.1; P1 66.3%, P2 79.0%; re-sequencing 1/0/0/0/0
+  => Curriculum does NOT solve it: the policy becomes very active (75 priority
+  overtakes) but punctuality is worse, especially P2 (-12.6pt). More p=1 training
+  alone looks unpromising (near-flat); full-control PPO is not competitive with
+  the heuristic at 2k.
+
+Next method (pending user): (A) relevance gating — policy only on decisions with
+a higher-priority follower / pass opportunity, heuristic otherwise; (B) alpha=0
+ablation to isolate reward-induced over-yielding; (C) behavior-cloning warm start
+from heuristic; (D) fix platform to heuristic and learn entry timing only.
+Status: PARTIAL — v3 done; full control not competitive.
+
+[2026-11-06 续7] Relevance gating implemented (user chose A); v4 running
+Files:
+  src/env/five_station_env.py — `_control_relevant_ids(ids, detail)`: relevant
+    iff (a) is_station_pass(train, current station) — pass opportunity, or
+    (b) another pending train at same station/direction has higher priority
+    (smaller number) and later arrival (potential yield case).  Exposed as
+    info["control_relevant_ids"] at reset and every step (next-action set).
+  src/experiment/run_train_hierarchical.py — `--control-mode {full,ramp,relevant}`
+    (default full).  relevant: filter sampled actions to
+    info["control_relevant_ids"]; dropped agents use heuristic_action and get
+    no transition.  Episode log prints ctrl=<mode> p=<...>.
+  scripts/eval_protocol.py — `--relevant-l2` filters learned-L2 actions to the
+    same relevant set (evaluation must match training).
+  tests/test_overtaking.py — test_control_relevant_ids: G230/G238/G5038 (P2
+    ahead of P1) relevant at A; G1380 (P1) not.  pytest 55 passed.
+Smoke: output/11_06/relevant_smoke.log (20 ep).  ep0 (untrained policy on
+  relevant decisions) dep_ontime 0.59, recovering to ~0.69 by ep20; the
+  heuristic handles the remaining routine decisions.  No errors.
+v4 run in progress:
+  output/11_06/l2_relevant_2k.log
+  output/11_06/training_v4/five_station_15t_hierarchical/<timestamp>/
+  Command: --phases A --total-episodes 2000 --incident --seed 0
+           --control-mode relevant
+Status: PARTIAL — v4 running; check whether targeted yields beat heur-sa.
+
+[2026-11-06 续8] Relevance-gated v4: P1 improves, P2/tail worsens (paired 180 eps)
+Training save locations:
+  output/11_06/l2_relevant_2k.log
+  output/11_06/training_v4/five_station_15t_hierarchical/20261106_223537/
+    training_metrics.csv, eval_ontime.csv, checkpoints/final.pt
+Training curve (2k, relevant control):
+  ep0 reward 5.20 / dep_dly 32.2 / dep_ontime 0.59
+  ep699 7.58 / 20.2 / 0.70; ep1499 8.90 / 16.8 / 0.72;
+  ep1999 8.69 / 17.0 / 0.73.  Held-out arr_ontime in training eval 0.49-0.61
+  (low; eval seed 900000 set has different incident draws).
+Evaluation (large, 3 blocks x 60 = 180 episodes, incident; --relevant-l2 for
+learned; output/11_06/eval_v4_sa_180/ and eval_v4_heur_sa_180/):
+  metric                    learned-sa        heur-sa (same SA-L3)
+  affected mean/p90         31.2 / 98.1       30.1 / 90.2
+  P1 ontime                 74.4% (2008/2700) 66.4% (1792/2700)
+  P2 ontime                 73.6% (2781/3780) 78.0% (2948/3780)
+  overall ontime            73.9%             73.2%
+  tail severe >60s          10.5% mean 122.6   8.9% mean 123.4
+  re-sequencing             466 ot / 236 y /  8 ot / 0 y / 0 delib /
+                            101 delib / 251 prio / 122 pass
+Paired per-episode (same seeds, n=180; learned - heur):
+  ontime +0.756pt, 95%CI [-0.187,+1.700]  (not significant; 101W/30L/49T)
+  mean arr delay +1.50s [0.81,2.19] (worse)
+  tail10 +5.88s [3.24,8.53]; p90 +6.18s [2.38,9.98]; max +9.99s [7.37,12.61]
+  pw_arr_delay +0.558 [0.040,1.077] (worse)
+Per-priority (per_transit):
+  learned P1 ontime 74.4%, mean 7.9, p90 21.0, tail10 30.5
+  heur    P1 ontime 66.4%, mean 9.6, p90 26.6, tail10 31.2
+  learned P2 ontime 73.6%, mean 26.1, p90 131.4, tail10 153.9
+  heur    P2 ontime 78.0%, mean 22.3, p90 80.9,  tail10 147.1
+=> Relevance gating works mechanically (deliberate yields 0 -> 101; priority
+overtakes 0 -> 251) and improves P1 punctuality (+8pt), but shifts delay to P2
+and significantly worsens the tail (p90 +6s, max +10s). Overall ontime +0.76pt
+is not significant; the priority-weighted mean delay is worse. This is a
+priority-vs-tail TRADE-OFF, not a win. Likely the externality alpha=0.15 is too
+strong (P2 leaders over-yield / P2 queue grows).
+Next options: (A) 2k relevance at alpha=0.05/0.10 to reduce P2 tail; (B) 7k
+relevance at alpha=0.15 (scale); (C) accept priority-aware trade-off and report
+it; (D) stop.
+Status: PARTIAL — targeted yield learning works, but net metric is a trade-off.
+
+[2026-11-06 续9] Externality alpha CLI + v5 (relevant, alpha=0.10) running
+Files:
+  src/experiment/run_train_hierarchical.py — new `--extern-alpha` (default 0.15);
+    sets src.env.reward.EXTERN_ALPHA at runtime, stores HP["extern_alpha"] in
+    saved checkpoints, prints the value.  Smoke confirmed the override applies.
+Smoke: output/11_06/alpha_smoke.log (20 ep, relevant, alpha=0.10).
+v5 run in progress:
+  output/11_06/l2_relevant_a010_2k.log
+  output/11_06/training_v5/five_station_15t_hierarchical/<timestamp>/
+  Command: --phases A --total-episodes 2000 --incident --seed 0
+           --control-mode relevant --extern-alpha 0.10
+Goal: test whether the v4 P2/tail cost (alpha=0.15) shrinks while the P1 gain
+and deliberate yields survive.  Compare paired 180-episode eval vs
+eval_v4_heur_sa_180 (same seeds) when done.
+Status: PARTIAL — v5 running.
+
+[2026-11-07] v5 (relevant, alpha=0.10): FIRST significant positive L2 result
+Training save locations:
+  output/11_06/l2_relevant_a010_2k.log
+  output/11_06/training_v5/five_station_15t_hierarchical/20261106_225809/
+    training_metrics.csv, eval_ontime.csv, checkpoints/final.pt (hp.extern_alpha=0.10)
+Training curve: reward 5.2 -> 10.76; dep_delay 32 -> 15.0s; dep_ontime 0.59 ->
+  0.76 (ep1999); last 300 dep_delay 15.5s.  Held-out arr_ontime 0.54-0.67.
+Evaluation (3 blocks x 60 = 180 incident episodes, --relevant-l2, SA-L3):
+  save: output/11_06/eval_v5_sa_180/ (+ .log); baseline saved earlier in
+        output/11_06/eval_v4_heur_sa_180/ (identical seeds)
+  metric              v5 learned   heur-sa
+  affected mean/p90   30.5 / 90.1  30.1 / 90.2
+  P1 ontime           72.9%        66.4%
+  P2 ontime           76.4%        78.0%
+  overall ontime      74.9%        73.2%
+  tail severe >60s    9.4%         8.9%
+  re-sequencing       312 ot / 140 y / 64 delib / 142 prio / 108 pass
+                      (heur: 8 ot / 0 / 0 / 0 / 0)
+Paired per-episode (n=180; v5 learned - heur):
+  ontime        +1.790pt  [ +1.180, +2.401]  SIGNIFICANT (99W/18L/63T)
+  mean delay    -0.036s   [-0.387, +0.315]  flat
+  tail10        -0.621s   [-2.263,+1.021]   flat/slightly better
+  p90           -0.476s   [-2.615,+1.664]   flat
+  max           +2.877s   [+1.098,+4.655]   WORSE (max-tail caveat)
+  pw_arr_delay  -0.408s   [-0.692,-0.124]   SIGNIFICANT better
+Per-priority: P1 ontime 72.9% vs 66.4% (+6.5pt), mean 8.3 vs 9.6, p90 21.4 vs
+  26.6; P2 ontime 76.4% vs 78.0% (-1.6pt), mean 23.1 vs 22.3, p90 116.0 vs
+  80.9 (P2 tail still worse).
+v5 vs v4 (alpha 0.10 vs 0.15): ontime +1.03pt, mean -1.54s, tail10 -6.50s,
+  p90 -6.66s, max -7.11s, pw -0.97s -> lower alpha removes most of the P2/tail
+  cost while keeping priority re-sequencing (deliberate yields 64 vs 101).
+=> α=0.10 relevance-gated L2 is a net positive: significant overall ontime
+(+1.8pt) and priority-weighted delay improvement vs heuristic L2 under the same
+SA-L3; mean/tail10/p90 flat. Caveats: max-tail +2.9s worse, P2 p90 worse,
+single training seed, 2k episodes.
+Next (pending user): 3 training seeds at 2k for error bars; scale to 7k; alpha
+fine sweep around 0.10; or Phase B learned L3 + eval.
+Status: PARTIAL — positive 2k single-seed signal; robustness/scale pending.
+
+[2026-11-07 续] 3-seed validation launched (v5 config: relevant, alpha=0.10)
+Seed 0 is the existing v5 run (20261106_225809).  Seeds 1/2 launched in parallel:
+  output/11_06/l2_relevant_a010_2k_seed1.log
+  output/11_06/training_v5_seed1/five_station_15t_hierarchical/<timestamp>/
+  output/11_06/l2_relevant_a010_2k_seed2.log
+  output/11_06/training_v5_seed2/five_station_15t_hierarchical/<timestamp>/
+Command: --phases A --total-episodes 2000 --incident --control-mode relevant
+         --extern-alpha 0.10 --eval-every 200 --eval-n 6 --eval-seed-base 900000
+Plan: after both finish, evaluate each with --relevant-l2 on the SAME 180-episode
+seed set (3 blocks x 60) and report per-seed paired ontime deltas vs
+eval_v4_heur_sa_180 plus mean/std across the 3 training seeds.
+Status: PARTIAL — seeds 1/2 running.
+
+[2026-11-07 续2] 3-seed validation: P1 gain robust, P2/tail cost offsets it
+Training save locations (all 2k, relevant, alpha=0.10, incident):
+  seed0: output/11_06/training_v5/five_station_15t_hierarchical/20261106_225809/
+  seed1: output/11_06/training_v5_seed1/five_station_15t_hierarchical/20261107_141708/
+  seed2: output/11_06/training_v5_seed2/five_station_15t_hierarchical/20261107_141710/
+  logs: l2_relevant_a010_2k.log / _seed1.log / _seed2.log
+Evaluation save locations (3x60=180 incident episodes each, --relevant-l2):
+  output/11_06/eval_v5_sa_180/ (seed0)
+  output/11_06/eval_v5_seed1_sa_180/ (seed1)
+  output/11_06/eval_v5_seed2_sa_180/ (seed2)
+  baseline: output/11_06/eval_v4_heur_sa_180/ (same seeds, heuristic L2 + SA-L3)
+Paired per-episode deltas (learned - heur), per training seed:
+  seed   ontime      mean    tail10       p90       max   pw_arr_delay
+   0    +1.790    -0.036    -0.621    -0.476    +2.877    -0.408
+   1    +0.540    +1.216    +4.916    +5.448    +7.602    +0.524
+   2    +0.139    +1.119    +3.146    +4.957    +5.262    +0.442
+  mean +0.823    +0.766    +2.480    +3.310    +5.247    +0.186
+  std   0.703     0.569     2.309     2.684     1.929     0.421
+  t-CI (df=2) for ontime: 0.82 +/- 1.75 -> includes 0.  NOT a robust net win.
+Per-priority (per_transit, 3 seeds):
+  P1 ontime: 72.9 / 71.6 / 72.0 % vs heur 66.4 %  -> +5.2..+6.5pt ROBUST
+     P1 mean 8.3-8.5 vs 9.6; p90 21-25 vs 26.6 -> better
+  P2 ontime: 76.4 / 75.2 / 74.2 % vs heur 78.0 %  -> -1.6..-3.8pt ROBUST
+     P2 mean 23.1-25.2 vs 22.3; p90 116-131 vs 80.9 -> much worse tail
+Re-sequencing is consistently learned across seeds:
+  overtakes 312/352/362; deliberate yields 64/60/72; priority overtakes
+  142/191/171 (heur: 8/0/0).
+=> Conclusion: the relevance-gated L2 consistently learns P1-favoring
+re-sequencing and improves P1 punctuality, but pays for it with P2 delay/tail;
+the all-train ontime gain is +0.82pt mean and not significant, and
+mean/tail/p90/max/pw-delay are slightly worse. This is a priority-vs-tail
+trade-off, not a robust overall win.
+Next options: (A) reward redesign to penalize all-train tail (force balance);
+(B) cap yield duration (mask late entry offsets in relevant decisions) to stop
+P2 tail blow-up; (C) accept and report the priority-aware trade-off; (D) more
+seeds/scale.
+Status: PARTIAL — 3-seed validation done; net effect not robust.
+
+[2026-11-07 续3] Soft yield-tail penalty (user chose soft over hard cap); v6 running
+Clarification: the earlier `--yield-cap` is NOT global — it only masks +30/+50
+for trains that (a) opt in via yield_entry_cap and (b) are ahead of a
+higher-priority, later-arriving same-direction train at the current station.
+Default is False, so v5 was unaffected.  Kept as an optional ablation.
+Soft approach (main):
+  src/env/reward.py — YIELD_TAIL_THRESHOLD=20s, YIELD_TAIL_COEF (default 0.15);
+    RewardBreakdown.yield_tail; compute_layered_rewards(yield_tail_charges=...)
+    subtracts coef * avoidable_excess_seconds.
+  src/env/five_station_env.py — _compute_yield_tail_charges(grants, pre):
+    only yield-relevant trains (pre-grant higher-priority follower at same
+    station/direction); avoidable excess = max(0, W_out - max(planned_dep,
+    arrival)); charge only the part beyond 20s.  Reset/info plumbing.
+  src/experiment/run_train_hierarchical.py — `--yield-tail-coef` (default 0.15),
+    sets reward.YIELD_TAIL_COEF + HP["yield_tail_coef"], prints it.
+  tests/test_overtaking.py — yield-tail charge math + yield-entry-cap test.
+Verification: pytest 57 passed.  20-ep smoke with `--yield-tail-coef 0.15`
+  (relevance, alpha=0.10) completed; no errors.
+v6 run in progress (single seed first):
+  output/11_06/l2_relevant_a010_tail015_2k.log
+  output/11_06/training_v6/five_station_15t_hierarchical/<timestamp>/
+  Command: --phases A --total-episodes 2000 --incident --seed 0
+           --control-mode relevant --extern-alpha 0.10 --yield-tail-coef 0.15
+Goal: keep the P1 gain, shrink the P2 tail.  If positive, validate 3 seeds then
+compare paired 180-episode eval vs eval_v4_heur_sa_180.
+Status: PARTIAL — v6 running.
+
+[2026-11-07 续4] v6 soft yield-tail penalty: does NOT fix P2 tail
+Training save locations:
+  output/11_06/l2_relevant_a010_tail015_2k.log
+  output/11_06/training_v6/five_station_15t_hierarchical/20261107_144641/
+    training_metrics.csv, eval_ontime.csv, checkpoints/final.pt
+  hp: extern_alpha=0.10, yield_tail_coef=0.15.
+Training: dep_delay 18.1s, dep_ontime 0.71, reward 9.76 (worse than v5's
+  15.0/0.76/10.76).  Held-out arr_ontime 0.51-0.62.
+Evaluation save: output/11_06/eval_v6_sa_180/ (3x60=180 incident eps,
+  --relevant-l2); baseline eval_v4_heur_sa_180.
+Results: P1 ontime 75.5% vs heur 66.4% (+9.1pt); P2 ontime 71.4% vs 78.0%
+  (-6.6pt); P2 p90 137.3 vs 80.9.
+Paired (v6 - heur): ontime -0.062 [-1.125,+1.002] (no gain); mean +2.59s;
+  tail10 +10.43s; p90 +11.91s; max +13.91s; pw_arr_delay +1.23s — all worse.
+  Deliberate yields 143 (more than v5 64), priority overtakes 345.
+=> The soft penalty on the yielder's OWN departure delay does not shrink the
+P2 tail.  Likely reason: the P2 tail is DOWNSTREAM propagation (P2 delayed
+behind the newly-prioritised P1 train / queueing), not the initial yield delay.
+Charging only the avoidable initial yield seconds misses it.  The P1-vs-P2
+trade-off appears structural under this reward/topology, not a tuning issue.
+Next options: (A) accept/frame the priority-aware trade-off; (B) add a GLOBAL
+realized-tail reward (all trains, from L3 transit events) as a final attempt;
+(C) stronger tail coefficient; (D) stop/consolidate.
+Status: PARTIAL — v6 negative; trade-off likely structural.
+
+[2026-11-07 续5] User asked to try the PREVIOUS scheme once more -> hard yield cap (v7)
+Interpretation: "之前的方案" = the hard entry cap (plan/+10/+20) implemented
+before the soft-tail experiment but never trained.  To isolate the cap, the soft
+tail penalty is disabled with --yield-tail-coef 0.0.
+v7 run in progress:
+  output/11_06/l2_relevant_cap_2k.log
+  output/11_06/training_v7/five_station_15t_hierarchical/<timestamp>/
+  Command: --phases A --total-episodes 2000 --incident --seed 0
+           --control-mode relevant --extern-alpha 0.10
+           --yield-cap --yield-tail-coef 0.0
+Cap semantics: only for trains ahead of a higher-priority, later-arriving
+same-direction train at the current station; entry mask keeps
+earliest/plan/+10/+20 and removes +30/+50 (if a cheaper entry is legal).
+Next: evaluate with --relevant-l2 --yield-cap on the same 180-episode seeds and
+compare to eval_v4_heur_sa_180.  If the user actually meant the global
+realized-tail reward, switch to that instead.
+Status: PARTIAL — v7 running.
+
+[2026-11-07 续6] v7 seed0 POSITIVE; seed1/2 actually launched (correction)
+v7 seed0 (hard cap, alpha=0.10, tail coef=0) training:
+  output/11_06/l2_relevant_cap_2k.log
+  output/11_06/training_v7/five_station_15t_hierarchical/20261107_150917/
+  dep_delay 14.1s, dep_ontime 0.77, reward 10.83 (best so far).
+v7 seed0 eval (180 eps, --relevant-l2 --yield-cap):
+  output/11_06/eval_v7_sa_180/
+  paired vs eval_v4_heur_sa_180:
+    ontime +1.590pt [+1.217,+1.963] SIGNIFICANT
+    mean -0.333s [-0.484,-0.181] better
+    tail10 -2.693s, p90 -3.363s (both better); max -0.573s (flat)
+    pw_arr_delay -0.475s [-0.620,-0.329] better
+  P1 ontime 70.9% vs 66.4%; P2 77.5% vs 78.0% (restored);
+  P2 p90 91.3 vs 80.9 (still worse but far better than v5's 116-131).
+  deliberate yields 8, priority overtakes 60, pass overtakes 56.
+  => Hard cap resolves the trade-off at seed 0: overall ontime/mean/tail/p90/
+  pw-delay all improve; P2 ontime essentially matches; only P2 p90 remains
+  worse.
+CORRECTION: the previous message claimed seed1/2 were launched, but no process
+or log existed (my error).  Relaunched now with `python -u` (unbuffered):
+  output/11_06/l2_relevant_cap_2k_seed1.log -> training_v7_seed1/
+  output/11_06/l2_relevant_cap_2k_seed2.log -> training_v7_seed2/
+  Command: --seed 1/2 --control-mode relevant --extern-alpha 0.10 --yield-cap
+           --yield-tail-coef 0.0 --total-episodes 2000 --incident
+  Verified running (two python processes, logs show the header).
+Next: 180-ep paired eval per seed with --relevant-l2 --yield-cap; report 3-seed
+  mean/std.  If all positive, this is the go-forward L2 result.
+Status: PARTIAL — seed1/2 running.
+
+[2026-11-07 续7] v7 3-seed validation: ROBUST POSITIVE (hard yield cap)
+Training save locations (2k, relevant, alpha=0.10, yield-cap, tail_coef=0):
+  seed0: output/11_06/training_v7/five_station_15t_hierarchical/20261107_150917/
+  seed1: output/11_06/training_v7_seed1/five_station_15t_hierarchical/20261107_153310/
+  seed2: output/11_06/training_v7_seed2/five_station_15t_hierarchical/20261107_153310/
+  logs: l2_relevant_cap_2k.log / _seed1.log / _seed2.log
+Training metrics: dep_delay 14.1 / 14.2 / 14.4s; dep_ontime 0.77 / 0.78 / 0.76.
+Evaluation save locations (3x60=180 incident eps each; --relevant-l2 --yield-cap):
+  output/11_06/eval_v7_sa_180/ (seed0)
+  output/11_06/eval_v7_seed1_sa_180/
+  output/11_06/eval_v7_seed2_sa_180/
+  baseline: output/11_06/eval_v4_heur_sa_180/ (same seeds, heuristic L2 + SA-L3)
+Paired per-episode deltas (learned - heur), per training seed:
+  seed   ontime      mean    tail10       p90       max   pw_arr_delay
+   0    +1.590    -0.333    -2.693    -3.363    -0.573    -0.475
+   1    +1.729    -0.301    -1.606    -1.282    +0.468    -0.491
+   2    +2.269    -0.249    -1.794    -2.470    +1.323    -0.515
+  mean +1.862    -0.294    -2.031    -2.372    +0.406    -0.494
+  std   0.293     0.034     0.474     0.853     0.775     0.016
+  95% t-CI (df=2):
+    ontime  +1.862 +/- 0.728  -> [+1.135, +2.590]  SIGNIFICANT
+    mean    -0.294 +/- 0.085  -> [-0.379, -0.209]  SIGNIFICANT
+    tail10  -2.031 +/- 1.178  -> [-3.209, -0.853]  SIGNIFICANT
+    p90     -2.372 +/- 2.118  -> [-4.490, -0.254]  SIGNIFICANT
+    max     +0.406 +/- 1.926  -> [-1.520, +2.332]  flat
+    pw-delay -0.494 +/- 0.041 -> [-0.534, -0.453] SIGNIFICANT
+Pooled overall ontime: 74.74 / 74.88 / 75.42 % vs heur 73.15 %.
+Per-priority:
+  P1 ontime 70.9 / 71.3 / 72.7 % vs heur 66.4 % (+4.5..+6.3pt);
+     P1 mean 8.5-8.8 vs 9.6; p90 ~26 vs 26.6
+  P2 ontime 77.5 / 77.5 / 77.4 % vs heur 78.0 % (essentially equal);
+     P2 mean 22.3-22.6 vs 22.3 (equal); P2 tail10 ~146 vs 147 (equal);
+     P2 p90 91.3 / 93.9 / 106.1 vs heur 80.9 -> the only remaining cost
+Re-sequencing: deliberate yields 8 / 11 / 30; priority overtakes 60 / 79 / 97;
+  pass overtakes 56 / 57 / 72 (heur: all 0).
+=> CONCLUSION: capping yield amplitude at +20 (hard mask for yield-relevant
+decisions) resolves the P1-vs-P2 trade-off.  Across 3 training seeds and 180
+paired incident episodes each, learned relevance-gated L2 beats heuristic L2
+under identical SA-L3 on overall ontime (+1.86pt), mean delay (-0.29s), tail10
+(-2.03s), p90 (-2.37s), and priority-weighted delay (-0.49s); max tail is flat.
+The only residual cost is P2 p90 (+10..+25s), while P2 ontime/mean/tail10 match.
+This is the go-forward L2 result.  Caveats: 2k episodes, SA-L3 (not learned L3),
+P2 p90 still worse.
+Next: Phase B (freeze v7 L2, train learned L3, end-to-end eval), scale to 7k,
+more eval seeds, or document/commit.
+Status: DONE for L2 experiment — robust positive; Phase B pending.
+
+[2026-11-07 续8] Phase B (learned L3 with frozen v7 L2) launched
+Important fix before Phase B: relevance gating now applies whenever
+control_mode=="relevant", including when L2 is FROZEN (Phase B).  Previously
+the filter was gated on phase_cfg["train_l2"], so a frozen v7 L2 would have
+acted on ALL decisions (outside its training distribution).  Yield cap is
+env-level and already applies via --yield-cap.
+Phase B smoke (20 ep): output/11_06/phaseB_smoke.log — frozen v7 L2 loads,
+  relevance + cap active, L3 updates 2-3/episode, no errors; arr_ontime starts
+  at 0.32 (untrained L3).
+Phase B 2k run in progress:
+  output/11_06/l3_phaseB_2k.log
+  output/11_06/training_v7_phaseB/five_station_15t_hierarchical/<timestamp>/
+  Command: --phases B --total-episodes 2000 --incident --seed 0
+           --l2-ckpt output/11_06/training_v7/.../20261107_150917/checkpoints/final.pt
+           --control-mode relevant --yield-cap --yield-tail-coef 0.0
+           --eval-every 200 --eval-n 6 --eval-seed-base 900000
+Next after training: end-to-end eval `--learned-only --relevant-l2 --yield-cap`
+  with l2=l3=<phaseB final.pt>, 180 episodes, paired vs heur-sa / evaluated
+  against the v7 L2+SA-L3 result.
+Status: PARTIAL — Phase B running.
+
+[2026-11-07 续9] Phase B 2k actually FINISHED (post-interrupt audit) + L3 resume support
+Audit of the interrupted session: Phase B 2000-ep training had completed at
+16:09 (before the outage), and two 180-ep end-to-end evals had already run:
+  output/11_06/eval_phaseB_learned_180/   (v7 L2 final + phaseB 2k final L3)
+  output/11_06/eval_v7L2_10_29L3_180/     (v7 L2 final + 10_29 old L3)
+Paired vs output/11_06/eval_v4_heur_sa_180 (180 incident eps):
+  v7 L2 + SA-L3      : ontime +1.59pt, mean -0.33s, tail10 -2.69s, p90 -3.36s
+  v7 L2 + phaseB 2k  : ontime -9.94pt, mean -3.12s, tail10 -5.48s, p90 +2.51s
+  v7 L2 + 10_29 L3   : ontime -1.50pt, mean +0.68s, tail10 -0.52s, p90 -1.16s
+=> 2k learned L3 is undertrained (P1 ontime 51.7% vs 70.9% for SA-L3); training
+held-out arr_ontime peaked at ep1800 (0.496) then fell to 0.455 at ep2000.
+Code change:
+  src/experiment/run_train_hierarchical.py — new --l3-ckpt PATH (resume L3
+  actor + local/global critics from a Phase B checkpoint); threaded through
+  train_hierarchical(l3_ckpt=...). Smoke 20 ep verified load + relevance/cap.
+Continuation launched (user chose extend Phase B to 4-6k instead of restart):
+  output/11_06/l3_phaseB_resume_4k.log
+  output/11_06/training_v7_phaseB_resume/five_station_15t_hierarchical/<ts>/
+  Command: --phases B --total-episodes 4000 --incident --seed 0
+           --l2-ckpt output/11_06/training_v7/.../20261107_150917/checkpoints/final.pt
+           --l3-ckpt output/11_06/training_v7_phaseB/.../20261107_155454/checkpoints/final.pt
+           --control-mode relevant --yield-cap --yield-tail-coef 0.0
+           --eval-every 500 --eval-n 6 --eval-seed-base 900000
+Plan: .claude/plans/plan_phaseB_resume.md
+Next: after 4k resume -> 180-ep learned eval (final and best), paired vs
+  eval_v4_heur_sa_180 and eval_v7_sa_180; record save paths here.
+Status: PARTIAL — 4k resume running.
+
+[2026-11-07 续10] Phase B resumed 2k->6k: partial recovery, still below SA-L3
+Training (v7 L2 frozen, L3 resumed from 2k, +4000 ep, incident/relevant/yield-cap):
+  log: output/11_06/l3_phaseB_resume_4k.log
+  ckpt/metrics: output/11_06/training_v7_phaseB_resume/five_station_15t_hierarchical/20261107_170344/
+    checkpoints/final.pt (17:32), checkpoints/best.pt (17:27), training_metrics.csv, eval_ontime.csv
+  Held-out arr_ontime (ep 500..4000): .461 .445 .439 .522 .415 .455 .491 .429
+  => PLATEAU at ~0.43-0.52 across the whole continuation; extra episodes alone
+     do not converge the L3 worker toward SA quality.
+End-to-end 180-ep incident evals (paired vs eval_v4_heur_sa_180):
+  final: output/11_06/eval_phaseB_resume_final_180/ (+ .log)
+    ontime 69.24% (P1 60.3 / P2 75.7), mean 17.30s, p50 0.0, p90 68.75, max 199.1
+    paired: ontime -3.90pt, mean +0.29s, tail10 -0.45s (n.s.), p90 +3.58s,
+            max +2.50s, pw_arr_delay +1.53s
+  best : output/11_06/eval_phaseB_resume_best_180/ (+ .log)
+    ontime 64.46% (P1 53.5 / P2 72.3), mean 12.44s, p90 68.75, max 197.3
+    paired: ontime -8.69pt, mean -4.57s, tail10 -5.62s, p90 +5.17s, max -8.33s,
+            pw_arr_delay -0.36s
+Reference (same 180 eps):
+  v7 L2 + SA-L3 : ontime 74.74%, mean 16.67s, p90 58.86, max 174.1 (+1.59pt vs heur)
+  v7 L2 + L3 2k : ontime 63.21%, mean 13.88s, p90 66.97, max 175.2
+=> 2k->6k learned L3 recovers ontime +6.0pt and P1 +8.6pt, but remains -3.9pt
+   below heuristic L2 (and -5.5pt below v7+SA-L3), with worse p90 and priority-
+   weighted delay. Best-by-reward checkpoint is worse than final for punctuality.
+   Conclusion: the learned L3 under this protocol is NOT competitive with SA-L3;
+   the next step must change the L3 training setup (more updates per episode /
+   different reward or initialization e.g. BC from SA), not just add episodes.
+L2 was frozen throughout (verified): PHASES["B"]["train_l2"]=False, PPO update
+gated at run_train_hierarchical.py:383, actions sampled under no_grad.
+Status: DONE for the 4-6k extension; decision needed on L3 training fix.
+
+[2026-11-07 续11] v7 L2 (Phase A) convergence check — 3 seeds plotted
+Ran scripts/plot_hier_training_curve.py on the three v7 L2 runs (2000 ep each,
+window=100) and built a 3-seed overlay:
+  output/11_06/conv_v7_seed{0,1,2}/
+    training_curve_smoothed.csv, conv_check.csv, fig_hier_training_curve.png
+  output/11_06/conv_v7_3seed/
+    fig_l2_conv_3seed.png, last_excerpt.csv
+Results (last-500 vs previous-500, stationary if |Δmean|<=0.5σ):
+  all 3 seeds stationary on mean_reward, ontime_rate, mean_dep_delay
+    (Δ/σ = 0.11..0.37; reward last-500 10.88..10.94)
+  last-1000 comparison: reward still drifts ~0.49..0.52σ (seeds 0/2 borderline)
+  departure ontime rate ~0.75 -> 0.76-0.78 over the run (flat from ep ~250)
+  mean dep delay ~15s -> 14.1-14.4s
+  held-out arr_ontime (red dots) 0.47..0.61, slow upward trend, flat after ~1000
+=> L2 is effectively converged by ~1500 ep; the pipeline bottleneck is L3, not L2.
+Status: DONE.
+
+[2026-11-07 续12] CORRECTION — 2k L2 is NOT converged; 7k continuation launched
+User correctly rejected the "converged" call: departure on-time rate is a flat
+line (~0.75-0.78) and reward rises 10.0->11.0 then oscillates, not a plateau.
+Stationarity of the last 500 eps is not evidence of reaching the policy's best.
+Control-coverage audit (v7 checkpoint, 2 incident eps, batch window=120s):
+  control_mode=full     : 102/102 decisions policy-acted (100%) — the batch-window
+                          fix from 续3 is intact.
+  control_mode=relevant : 27/102 (26.5%) policy-acted; the rest fall back to
+                          heuristic_action in five_station_env._retry_action.
+So v7's flat overall on-time is partly by construction (75% heuristic), but the
+2k training budget is also too short: the old 10_29 7k run's Phase A rose
+0.706 -> 0.803 over ep 0-3500 (different reward version).
+User decision: continue with --control-mode relevant (keep v7 settings).
+7k continuation launched (resume from v7 2k final, Phase A only, SA-L3):
+  log: output/11_06/l2_v7_7k.log
+  out: output/11_06/training_v7_l2_7k/five_station_15t_hierarchical/<ts>/
+  Command: --phases A --total-episodes 7000 --incident --seed 0
+           --l2-ckpt output/11_06/training_v7/.../20261107_150917/checkpoints/final.pt
+           --control-mode relevant --extern-alpha 0.10 --yield-cap --yield-tail-coef 0.0
+           --eval-every 200 --eval-n 6 --eval-seed-base 900000
+Code (cosmetic): run_train_hierarchical.py — L2-load message now says
+  "resuming L2 training" in Phase A vs "frozen for L3 training" in Phase B.
+Plan: .claude/plans/plan_l2_7k_continue.md
+Next: re-plot with plot_hier_training_curve.py, conv_check, and 180-ep paired
+  eval (2k vs 7k) after the run completes.
+Status: PARTIAL — 7k L2 running (~50 min).
+
+[2026-11-07 续13] v7 L2 7k (relevant): reward converges, on-time flat, eval not better than 2k
+Training save locations:
+  output/11_06/l2_v7_7k.log
+  output/11_06/training_v7_l2_7k/five_station_15t_hierarchical/20261107_175100/
+    training_metrics.csv, eval_ontime.csv, checkpoints/{final.pt,best.pt}
+  plots: output/11_06/conv_v7_7k/ (fig_hier_training_curve.png,
+         training_curve_smoothed.csv, conv_check.csv)
+500-ep buckets (ep 0..7000, continued from v7 2k final):
+  ontime   .7726 .7748 .7684 .7713 .7703 .7741 .7753 .7763 .7796 .7840
+           .7825 .7845 .7861 .7815
+  dep_dly  14.06 13.91 14.21 14.02 14.16 13.92 13.98 13.88 13.73 13.60
+           13.75 13.63 13.47 13.62
+  reward   10.21 10.21 10.09 10.28 10.23 10.47 10.62 10.71 10.88 10.95
+           10.89 10.94 10.97 10.85
+conv_check: last500 vs prev500 stationary (Δ/σ 0.07..0.13); last1000 vs
+  prev1000 also stationary (Δ/σ <= 0.07) — reward plateaued ~ep 5500-6000 at
+  10.95-10.97, ontime still ~0.78 (only +0.8pt over 7000 eps).
+End-to-end eval (180 incident eps, same seeds, --sa-only --relevant-l2 --yield-cap):
+  save: output/11_06/eval_v7_7k_sa_180/ (+ .log)
+  7k L2+SA: ontime 73.97% (P1 68.9 / P2 77.6), mean 16.93s, p90 58.86, max 199.1
+    vs heur-sa : ontime +0.82pt [+0.42,+1.21], mean -0.08s, tail10 -1.25s,
+                 p90 -0.41s (n.s.), max -0.08s, pw -0.17s (CI touches 0)
+    vs v7 2k   : ontime -0.77pt [-1.33,-0.21], mean +0.25s, p90 +2.95s WORSE,
+                 pw +0.30s WORSE
+IMPORTANT confound: resume resets the MAPPOTrainer episode counter, so
+  curriculum_lambda (mappo.py:25) ramps lam_team 0.05->0.30 over 30-60% of the
+  NEW total (ep 2100-4200). The reward rise 10.2->10.9 happens exactly in that
+  window => the reward curve reflects a reward-COMPOSITION change, not policy
+  improvement. Behaviour metrics (ontime/delay) are flat across the same window.
+=> 7k vs 2k training reward is higher (10.85 vs ~10.8 at ep 2000 continuity) but
+   held-out eval is slightly WORSE: extra 5k episodes improve the training-seed
+   reward without improving (even slightly hurting) generalization. Under
+   relevance gating the on-time metric is 75% heuristic-driven and saturates
+   early. L2 has NOT converged to a better policy by 7k; it plateaus.
+Plan: .claude/plans/plan_l2_7k_continue.md -> done.
+Recommendation: keep v7 2k L2 as the reported checkpoint (best eval), or switch
+  to control_mode full for a genuine 100%-policy convergence test.
+Status: DONE.
+
+[2026-11-09] 越行(越行/待避)机制有效性复核 — 用户要求先检查是否有效
+Scope: read-only verification; no source changes.
+1) Unit mechanics: pytest tests/test_overtaking.py => 12 passed (pass detection,
+   platform roles, externality charge, front attribution, obs dim, relevance gating,
+   yield cap).
+2) Live mechanics (current code, v7 seed0 L2 + SA-L3, relevant+cap, 10 incident
+   seeds 910000-910009; script output/11_09/diag_overtake.py):
+   learned : 14 overtakes (8 pass-flagged, 7 priority) / 4 yields / 0 deliberate
+   heuristic:  7 overtakes (6 pass, 5 priority) / 3 yields
+   Overtake stations: A->B 5 (origin priority re-sequencing), C->D 7 (pass train
+   G230 held at C ~110s then overtaken), B->C 2. 12/14 learned overtakes have
+   resolver_changed=True on the overtaken grant. True "pass a dwelling train at
+   an intermediate station" (G1380/G238 overlap) remains rare; gain is mostly
+   priority-aware re-sequencing at origins + the C->D bottleneck.
+3) Performance (recomputed from saved per_episode.csv, 3 training seeds x 180
+   paired incident eps vs eval_v4_heur_sa_180):
+   ontime +1.86pt [+1.14,+2.59] (sig); mean -0.29s; tail10 -2.03s; p90 -2.37s;
+   pw_arr_delay -0.49s; max flat.  Overtakes learned 175/181/236 vs heur 8.
+   Matches 续7 numbers; files unchanged since 11-07 (mtimes verified).
+Conclusion: mechanics valid and eval robustly positive, but the gain is NOT
+primarily station passing-loop overtaking; it is priority-aware re-sequencing
+(75% of decisions are still heuristic under relevance gating; deliberate
+station yields are only 8-30 per 180 eps).  Any "overtaking improves punctuality"
+claim needs an ablation (through_allowed on/off or alpha=0) to separate the
+station-pass component.
+Status: DONE (verification only).
+
+[2026-11-09] 区间中断(闭锁)扰动 + 观测空间 34->37 实现(DONE for implementation)
+Task: 新增 corridor closure 扰动；closure 期间禁止新列车进入区间，把低优先级前车扣到下
+重开时刻、高优先级后车不受影响，形成"追及+让行"可学习场景。先回答用户：观测空间必须变，
+因为 clamp 后所有动作仍合法，mask 无法表达 t1；策略需要看到"下一区间封闭到何时/相对计划
+晚多少"。
+Files:
+  src/env/disturbance.py — inject_corridor_closure：搜索"待避对"(低优先级前车 d_L、
+    高优先级后车 d_F>d_L)，只在 leader 计划发车前 5s 开始、持续 10-30s，t1 在 follower
+    plan entry (d_F-dwell) 之前；短窗口隔离该会车，避免长窗口把多车扣到同一 t1 让优先级
+    tie-break 自动重排(那样学不到让行)。
+  src/env/five_station_env.py — ctor enable_corridor_closure；reset 生成
+    _corridor_closures；_closure_hold_until + _get_effective_bounds 把 arr_min 抬到
+    t1-dwell、dep_max 扩到 t1+dwell+slack(mask 硬约束)；_obs_context closure_until；
+    step 记录 closure_held；_detect_resequencing 事件加 closure_related；info 加
+    corridor_closures/closure_held/closure_count。
+  src/env/observation_builder.py — ACTOR_SELF_DIM 19->22: closed, remaining/300,
+    (t1-planned_dep)/120。
+  src/marl/actor_critic.py — DEFAULT_OBS_DIM 37。run_train*.py HP obs_dim 37。
+  src/experiment/run_train_hierarchical.py — --closure；env_factory/heldout eval 透传；
+    closure 时关闭 origin-bunching。
+  scripts/eval_protocol.py — --closure；run_episode closure_on；closure_overtakes/
+    closure_hold_sec 进入 per_episode 与 overtake.csv；report 打印。
+  configs/five_station_15t/timetable.yaml — corridor_closure block (disabled by default;
+    prob .6, duration [10,30], min_gap 15, follower_margin 5)。
+  tests/test_closure.py — NEW 4 tests: generator meets a designed pair; effective bounds
+    hold leader not follower; obs dim 37 + closure features; episode safe (success,
+    no postcheck_reject/hard_guard).
+Verification:
+  python -m pytest tests -q => 61 passed.
+  Targeted yield (A_to_B closure [0,43], G230 P2 dep31 vs G1380 P1 dep53):
+    no yield -> no overtake; G230 plan+20 -> closure_related overtake G230 passed by
+    G1380 (W_out 63 vs 53). Proves the closure + learned yield mechanism.
+  20-episode heuristic run (seeds 960000-960019, closure only, CRUISE):
+    10/20 episodes had a closure; closure_hold=246s; closure_overtakes=0
+    (expected: heuristic never yields; short window isolates the meet);
+    success 20/20, deadlock 0, postcheck_reject 0, hard_guard 0.
+  Full eval smoke with --closure (random obs-37 L2):
+    output/11_09/closure_smoke_heur_sa/ (heur L2 + SA L3, 5 eps;
+      closure_hold=204.8s, closure_overtakes=5 under long-window version; see log)
+    output/11_09/closure_smoke_learned/ (random L2 + SA L3, 3 eps; 0 deadlock)
+  Training smoke (5 eps, --phases A --closure):
+    output/11_09/closure_train_smoke/five_station_15t_hierarchical/20261109_120137/
+      training_metrics.csv, checkpoints/final.pt
+  random obs-37 checkpoint used for eval smoke: output/11_09/random_l2_obs37.pt
+Checkpoint impact: obs 34->37 invalidates v7 and all prior L2 checkpoints; retrain.
+Status: DONE implementation+smoke. Next: 2k relevant+cap+alpha0.10 closure training,
+  180-ep paired eval vs v7/heur, and a closure-specific affected stratification.
+
+[2026-11-09 续] Closure 窗口改为"隔离式短窗"(10-30s)，新增 smoke artifacts
+Rationale: 60-120s 窗口会把同站多列车都扣到同一 t1，执行排序的优先级 tie-break
+  自动重排，产生 5 个 heuristic closure_overtakes——这些不是学习来的。改为在 leader
+  计划发车前 5s 开始、持续 10-30s，t1 在 follower plan entry 之前，只扣目标前车。
+Artifacts (current short-window code):
+  output/11_09/closure_smoke2_heur_sa/ (+ .log) — heur L2 + SA L3, 5 eps:
+    closure_hold 77.8s total, closure_overtakes = 0 (clean baseline: FCFS 不让行)。
+  output/11_09/closure_smoke2_learned/ (+ .log) — random obs-37 L2 (relevant+cap),
+    3 eps: success 3/3, no_legal=0, postcheck_reject=0。
+  output/11_09/closure_train_smoke/.../20261109_120137/ — 5-ep training smoke.
+  Targeted forced-yield: G230 plan+20 -> closure_related overtake (G230 passed by
+    G1380); plan-only -> none.
+Next: 2k training (relevant, yield-cap, alpha=0.10, --closure) then 180-ep paired
+  eval vs heur-sa; any closure_overtakes then are policy-driven by construction.
+
+[2026-11-09 续2] Closure 让行是否被 resolver/heuristic 吃掉 — 加显式归因标记
+Question (user): v7(relevant) 训练时，closure 扣住的前车会不会落到 heuristic/resolver，
+导致越行不是策略驱动的？
+Diagnosis (current short-window code, 30 closure seeds, emulated yielding):
+  - Designed leader is at the closure source with the closure active in 15 eps;
+    14/15 leader grants occur while the leader is in control_relevant_ids
+    (v7 policy acts); 1/15 (E_to_D) falls back to heuristic.
+  - 13 yield attempts (leader forced plan+20): 12 requested a yield; 12 actual
+    yields; 0 flipped; leader W_out delta vs request = 0.0 in every case.
+    Leader retried 5/13, but retry changed platform/entry only, never departure
+    order. Short-window heuristic baseline: 0 closure overtakes.
+  => Departure order is policy-driven; the resolver does not force the reorder.
+  => `resolver_changed` in events was misleading (platform/entry retry, not order).
+Code:
+  src/env/five_station_env.py — _detect_resequencing(..., requests=...) adds
+    req_dep_overtaken/req_dep_overtaker and order_policy_driven (requested
+    W_out order matches the actual overtake). step passes requests.
+  scripts/eval_protocol.py — closure_policy_overtakes in per_episode/overtake.csv
+    and report prints "closure_overtakes=N (policy-driven M)".
+  tests/test_closure.py — test_closure_yield_is_policy_driven: forced G230
+    plan+20 -> closure overtake with order_policy_driven=True.
+Verification: pytest 62 passed. Emulated yields 30 seeds: closure_overtakes=9,
+  policy-order-driven=9/9.
+Status: DONE.
+
+[2026-11-09 续3] Closure 接入 affected / delay-dissipation 分层 + 2k 训练启动
+Task: 让 closure 与限速 incident 共用同一套 affected/DDT 评估管线，然后启动 v7 配置的
+  2k closure 训练。
+Files:
+  src/env/five_station_env.py — transit events 新增 closure_affected(本步被扣)、
+    closure_affected_plan(计划发车在 [t0,t1] 内, policy-independent)、closure_hold_sec；
+    并把 affected/affected_plan 与 closure 标志 OR 起来。
+  scripts/eval_protocol.py — run_episode 记录 closure windows；DDT anchor = max(incident
+    ends + closure t1)，无扰动则 t_rec_start=None；report_incident 的 disturbed 判定 =
+    incident 或 closure；--closure 时写 affected/tail/episode/recovery CSV，DDT floor
+    仍用 CRUISE 配对；报告标签改为 disturbance。
+  src/experiment/run_train_hierarchical.py — 训练内 held-out eval 也应用
+    relevant 过滤(control_mode=="relevant")，与训练分布一致。
+  tests/test_closure.py — forced yield 事件断言 closure_affected /
+    closure_affected_plan / closure_hold_sec / affected。
+Verification:
+  pytest 62 passed.
+  Smoke eval (heur-sa, --closure, 6 eps, output/11_09/closure_strat_smoke/):
+    affected n=5 mean 95.6s; disturbed 5/6; DDT median 40s recovered 5/5;
+    closure_overtakes=0 (heuristic baseline).
+Training launched (v7 config + closure):
+  cmd: run_train_hierarchical --env five_station_15t --phases A
+       --total-episodes 2000 --closure --seed 0 --control-mode relevant
+       --extern-alpha 0.10 --yield-cap --yield-tail-coef 0.0
+       --eval-every 200 --eval-n 6 --eval-seed-base 900000
+  log: output/11_09/l2_closure_2k.log
+  out: output/11_09/training_closure_l2_2k/five_station_15t_hierarchical/20261109_163753/
+       training_metrics.csv, eval_ontime.csv, checkpoints/{final,best}.pt (when done)
+  early episodes: reward ~10-11, dep_dly ~14-16s, dep_ontime ~0.74-0.79, success.
+Status: PARTIAL — training running; next: 180-ep paired eval (--sa-only
+  --relevant-l2 --yield-cap --closure) vs heur-sa with the same seeds, using
+  closure_policy_overtakes / affected / DDT.
+
+[2026-11-09 续4] 2k closure 训练改为受控后台任务重跑(用户选择 2)
+Reason: 首次启动用 nohup 脱离终端，Claude 的 /tasks 看不到，用户要求受控后台。
+Action: 杀掉 detached python PID 12692(旧 run 走到 ~ep300，未保存 final.pt，作废保留
+  output/11_09/training_closure_l2_2k/five_station_15t_hierarchical/20261109_163753/)。
+  用 Bash run_in_background 直接启动(无 nohup/&)，任务 ID bftcboifd。
+New save locations:
+  log: output/11_09/l2_closure_2k_restart.log
+  out: output/11_09/training_closure_l2_2k_restart/five_station_15t_hierarchical/20261109_164123/
+       training_metrics.csv, eval_ontime.csv, checkpoints/{final,best}.pt (when done)
+  cmd unchanged: --phases A --total-episodes 2000 --closure --seed 0
+       --control-mode relevant --extern-alpha 0.10 --yield-cap --yield-tail-coef 0.0
+       --eval-every 200 --eval-n 6 --eval-seed-base 900000
+Status: PARTIAL — running as tracked task bftcboifd; completion will notify.
+
+[2026-11-09 续5] Closure L2 2k 训练完成
+Training save locations:
+  log: output/11_09/l2_closure_2k_restart.log
+  out: output/11_09/training_closure_l2_2k_restart/five_station_15t_hierarchical/20261109_164123/
+    training_metrics.csv, eval_ontime.csv, checkpoints/{final.pt,best.pt}
+Config: --closure --control-mode relevant --extern-alpha 0.10 --yield-cap
+  --yield-tail-coef 0.0, Phase A 2000 ep, seed 0.
+Results (2000 ep):
+  mean_reward 10.10 -> 10.78 (last500 10.82, prev500 10.76, Δ=0.05σ) — plateau ~ep1000-1500
+  mean_dep_delay 15.2 -> 15.0s (last500 14.65s, flat)
+  dep ontime 0.748 -> 0.755 (flat)
+  arr ontime 0.775 -> 0.778 (flat; 500-buckets .779 .779 .775 .777)
+  held-out (relevant-filtered, 6 seeds) arr_ontime: .727 .765 .695 .688 .672 .670 .656 .718 .705 .694
+  all 2000 ep success; no deadlock.
+Evaluation launched (same seeds, 3x60=180 incident=closure eps):
+  learned: output/11_09/eval_closure_l2_2k_sa_180/ (+ .log)
+  heur   : output/11_09/eval_closure_heur_sa_180/ (+ .log)
+  task IDs: bpwy1q1hc (learned), bcotk0c3j (heur)
+Status: PARTIAL — eval running; compare paired ontime/mean/tail/p90/pw,
+  closure_policy_overtakes, affected subset, DDT.
+
+[2026-11-09 续6] Closure L2 2k: 180-ep 配对 eval 结果
+Eval save locations (3x60=180 closure episodes, same seeds 900000, SA-L3):
+  learned: output/11_09/eval_closure_l2_2k_sa_180/ (+ .log)
+  heur   : output/11_09/eval_closure_heur_sa_180/ (+ .log)
+Paired per-episode (learned - heur, n=180):
+  ontime        +1.729pt [+1.079,+2.378] SIGNIFICANT (104W/11L/65T)
+  mean          +0.248s  [-0.125,+0.620] n.s. (slightly worse)
+  tail10        +1.277s  [-0.455,+3.009] n.s.
+  p90           -0.556s  [-3.024,+1.913] flat
+  max           +4.852s  [+3.205,+6.499] SIGNIFICANT WORSE
+  pw_arr_delay  -0.204s  [-0.490,+0.082] n.s. slightly better
+Per-priority ontime: P1 72.9% vs 66.7% (+6.2pt); P2 78.8% vs 80.3% (-1.5pt).
+Affected subset: learned n=139 mean 50.3 p90 155.7; heur n=142 mean 47.0 p90 152.4.
+DDT (absolute, unpaired): learned median 50s (p25 42 p75 116); heur 86s (40/114);
+  both 103/103 recovered.
+Re-sequencing totals: learned overtakes 297 (closure 88, policy-driven 87, deliberate
+  yields 41); heur overtakes 14 (closure 17, policy-driven 16, deliberate 0).
+  Episodes with >=1 closure overtake: learned 41/180 vs heur 5/180.
+=> Closure mechanism is learned and active: 87 vs 16 policy-driven closure overtakes.
+   Net effect mirrors v7's priority-vs-tail trade-off: overall ontime +1.73pt and faster
+   DDT (86->50s median), but max tail worse (+4.85s) and P2 ontime -1.5pt.
+Caveats: 1 training seed, 2k, SA-L3; DDT unpaired; affected mean slightly worse.
+Status: DONE (single-seed). Next: 3-seed closure validation; tail/externality tuning;
+  optional incident+closure combined arm.
+
+[2026-11-09 续7] 提高策略覆盖率: relevant_plus 覆盖集 + 2k 训练
+Motivation: base relevance 只控制 ~24% 决策(v7/closure 实测 37/153=24.2%)，reward 曲线
+  平；用户要求提高覆盖率。
+Code:
+  src/env/five_station_env.py — ctor control_coverage={"base","plus","full"};
+    _control_relevant_ids: plus = base + 下一区间 closure 内的车 + 任何同站同方向
+    co-pending 车(不限优先级)。实测 closure episodes 覆盖率 base ~20-26% -> plus ~84-88%。
+  src/experiment/run_train_hierarchical.py — --control-mode 新增 relevant_plus；
+    env_factory/heldout eval 透传 coverage；heldout 也按 plus 过滤。
+  scripts/eval_protocol.py — --relevant-plus-l2；run_episode(coverage=...)；
+    过滤与 env coverage 一致。
+  tests/test_closure.py — test_relevant_plus_is_a_superset (63 tests pass)。
+Training launched (tracked background):
+  task: bivo9zxdq
+  log: output/11_09/l2_closure_plus_2k.log
+  out: output/11_09/training_closure_l2plus_2k/five_station_15t_hierarchical/20261109_171108/
+  cmd: same as closure 2k but --control-mode relevant_plus
+Early behavior: ep0 reward -1.73, dep_dly 41.0s, dep_ontime 0.41 (untrained policy now
+  controls ~85% decisions vs heuristic baseline). Expected to recover during training;
+  if not by ~1-1.5k, next step is a curriculum (ramp plus coverage) or BC warm start.
+Status: PARTIAL — running.
+
+[2026-11-09 续8] relevant_plus 2k 训练完成 + 曲线
+Save locations:
+  log: output/11_09/l2_closure_plus_2k.log
+  curve: output/11_09/closure_l2plus_2k_curve/ (fig_hier_training_curve.png,
+    training_curve_smoothed.csv, conv_check.csv)
+  out: output/11_09/training_closure_l2plus_2k/five_station_15t_hierarchical/20261109_171108/
+    training_metrics.csv, eval_ontime.csv, checkpoints/{final,best}.pt
+Results (2k, coverage ~85%):
+  reward 1.50 -> 9.58 (500-buckets 4.63 7.68 8.69 9.56; last500 vs prev500 +0.47σ,
+    still rising, NOT converged)
+  dep_delay 32.8 -> 16.3s (buckets ~34 -> 16.5)
+  dep ontime 0.441 -> 0.739; arr ontime 0.545 -> 0.734
+  held-out arr_ontime 0.565 .645 .691 .672 .713 .728 .667 .715 .768 .637
+Compare base relevance 2k (24% coverage): reward 10.82, dep_dly 14.65,
+  dep_ontime 0.755, arr_ontime 0.777. Plus is still below base at 2k.
+=> Coverage is no longer the bottleneck: the reward curve is responsive now
+   (0 -> 9.6), but 2k from scratch at 85% policy control is undertrained and
+   still below the heuristic-heavy base policy. Next: curriculum (ramp plus
+   coverage) or BC warm start, or longer training.
+Eval launched: output/11_09/eval_closure_l2plus_2k_sa_180/ (task bycngv8xo),
+  --relevant-plus-l2 vs existing eval_closure_heur_sa_180.
+Status: PARTIAL — eval running.
+
+[2026-11-09 续9] relevant_plus 180-ep 配对 eval: 覆盖率提高但 2k 策略劣于 heuristic
+Save: output/11_09/eval_closure_l2plus_2k_sa_180/ (+ .log)
+Paired vs eval_closure_heur_sa_180 (n=180, same seeds):
+  ontime        -2.284pt [-3.030,-1.538] WORSE (32W/76L/72T)
+  mean          +2.235s [+1.457,+3.013] WORSE
+  tail10        +5.412s [+2.658,+8.167] WORSE
+  p90           +7.605s [+3.858,+11.352] WORSE
+  max           +6.711s [+4.053,+9.369] WORSE
+  pw_arr_delay  +1.756s [+1.141,+2.372] WORSE
+  closure_overtakes 41 (policy 40), deliberate yields 2 (base run: 88/87/41)
+  DDT median 86s (same as heuristic; base run 50s)
+Compare base-coverage 2k (续6): ontime +1.729, mean +0.248 n.s., tail10 +1.277 n.s.,
+  max +4.852 worse, closure_ot 88, DDT 50s.
+=> Increasing coverage from 24% to 85% makes the reward curve responsive but 2k from
+   scratch is undertrained and now WORSE than the heuristic on every metric; it also
+   did not learn the closure yield (deliberate 2). This is the v2/v3 cold-start pattern.
+   Base relevance works because 76% of decisions stay heuristic while the policy learns
+   the narrow coordination subset. Coverage alone is not the fix; need curriculum
+   (ramp plus coverage) or BC warm start, or much longer training.
+Status: DONE for plus 2k. Recommended next: relevant_plus + control-prob ramp
+  (heuristic-heavy at ep0 -> full plus), keeping the closure yield cap/alpha.
+
+[2026-11-09 续10] relevant_plus + ramp 实现并启动 2k
+Code:
+  src/experiment/run_train_hierarchical.py — --control-mode 新增
+    relevant_plus_ramp：env coverage=plus；训练时先过滤到 plus 集，再按
+    p_ctrl_ep(0.1 -> 1.0 over 60%) 随机保留动作，丢弃的回退 heuristic；
+    held-out eval 用 plus coverage + 不过滤 ramp(p=1)。
+    env_factory/heldout coverage 映射已更新。
+Training launched (tracked):
+  task: bfslt6jn0
+  log: output/11_09/l2_closure_plusramp_2k.log
+  out: output/11_09/training_closure_l2plusramp_2k/five_station_15t_hierarchical/20261109_173319/
+Early result: ep0-4 p=0.10, reward 9.2-9.7, dep_dly 14-16s, dep_ontime 0.78
+  (vs plus cold start -1.7/41s/0.41). Ramp removes the cold-start collapse.
+Status: PARTIAL — running. If it fails, next is BC warm start.
+
+[2026-11-09 续11] relevant_plus + ramp 2k 训练完成
+Save:
+  log: output/11_09/l2_closure_plusramp_2k.log
+  curve: output/11_09/closure_l2plusramp_2k_curve/fig_hier_training_curve.png
+  out: output/11_09/training_closure_l2plusramp_2k/five_station_15t_hierarchical/20261109_173319/
+Results:
+  ep0-4 (p=0.10): reward 9.2-9.7, dep_dly 14-16s, dep_ontime 0.78 (no cold start)
+  full curve: reward dips to ~7.6 around ep400-500 (policy takeover), recovers to
+    ~9.5 at ep1300-1400, then declines to ~8.2 at ep2000 as p=1.0
+  last500: reward 8.78 (prev500 9.09), dep_dly 19.0s (17.2), dep_ontime 0.705 (0.719),
+    arr_ontime 0.705 (0.720) — DEGRADING at full plus coverage
+  held-out arr_ontime: .478 .507 .654 .639 .683 .741 .706 .696 .754 .711
+=> Ramp fixes the cold-start collapse, but once p reaches 1.0 the policy is worse than
+   the heuristic on routine decisions: final reward/delay regress. This is the same
+   message as naked plus, just shifted later. Coverage alone is not enough.
+Eval launched: output/11_09/eval_closure_l2plusramp_2k_sa_180/ (task bzit49iyz)
+  --relevant-plus-l2 vs heur.
+Status: PARTIAL — eval running; if worse, go to BC warm start (user's condition).
+
+[2026-11-09 续12] relevant_plus+ramp 180-ep eval: 仍全面劣于 heuristic -> 转 BC
+Save: output/11_09/eval_closure_l2plusramp_2k_sa_180/ (+ .log)
+Paired vs heur (n=180):
+  ontime -5.031pt [-6.050,-4.011]; mean +5.993s; tail10 +17.481s;
+  p90 +24.263s; max +18.289s; pw +4.579s — ALL WORSE.
+  closure_overtakes 60 (policy 59), deliberate yields 9; DDT 86s (no recovery gain).
+=> Ramp only delays the failure: once p=1.0 the policy is worse than heuristic on
+   routine plus decisions. Coverage alone/ramp is not enough; proceed to BC warm start
+   (user-approved fallback).
+Status: DONE. Next: BC pretrain actor on heuristic labels over plus coverage, then PPO
+  fine-tune (l2-ckpt=BC) at plus coverage; validate BC-only eval first.
+
+[2026-11-09 续13] BC warm start 脚本实现 + 全量预训练启动
+File: scripts/bc_pretrain_l2.py — 用 heuristic 在 plus 覆盖集上滚动采样
+  (obs, platform_idx, entry_idx)，masked cross-entropy 训练 Layer-2 actor；
+  保存 {"ac_state": ...} 可直接被 run_train_hierarchical --l2-ckpt 加载。
+Smoke (5 eps): 225 samples, val platform/entry/joint acc = 1.000 (heuristic 确定性标签)。
+Full BC launched (tracked): 400 eps, 15 epochs, sa-iters 300, --closure
+  task: bp0e3zxfm
+  log: output/11_09/bc_l2_closure.log
+  ckpt: output/11_09/bc_l2_closure.pt
+  metrics: output/11_09/bc_l2_closure_metrics.csv
+Status: PARTIAL — BC running; then BC-only eval smoke + PPO fine-tune
+  (--l2-ckpt BC, relevant_plus or plus+ramp with higher p_start).
+
+[2026-11-09 续14] BC pretrain 完成 + BC-only 验证 = 精确复现 heuristic
+BC: 18026 samples (400 eps), val platform/entry/joint = 1.000 all epochs.
+  ckpt: output/11_09/bc_l2_closure.pt; metrics: output/11_09/bc_l2_closure_metrics.csv
+BC-only eval (20 eps, block0 seeds 900000, plus coverage, SA-L3):
+  output/11_09/eval_bc_only_20/ (+ .log)
+  paired vs heur (same 20 seeds): ALL metrics delta = 0.000 (20/20 ties)
+  => BC actor sampled actions exactly match the heuristic; checkpoint is a faithful
+     heuristic clone and loadable by --l2-ckpt.
+
+[2026-11-09 续15] BC 初始化 + plus 覆盖 PPO 微调启动
+Cmd: --l2-ckpt output/11_09/bc_l2_closure.pt --control-mode relevant_plus
+     --lr 1e-4 --closure --extern-alpha 0.10 --yield-cap --yield-tail-coef 0.0
+     --phases A --total-episodes 2000 --seed 0
+Task: bmtjt906s
+Log: output/11_09/l2_closure_bc_plus_2k.log
+Out: output/11_09/training_closure_bc_plus_2k/five_station_15t_hierarchical/20261109_175916/
+Early (ep0-4, plus coverage 85%): reward 10.1-10.3, dep_dly 12.1-12.5s,
+  dep_ontime 0.81-0.82, arr_ontime 0.76 — BC removes the cold start; policy starts at
+  heuristic behavior instead of plus naked's -1.7 reward.
+Status: PARTIAL — running. Next: 180-ep paired eval vs heuristic
+  (--relevant-plus-l2) and compare with base/plus/plus-ramp.
+
+[2026-11-09 续16] BC + PPO(plus, lr1e-4) 2k 训练完成
+Save:
+  log: output/11_09/l2_closure_bc_plus_2k.log
+  out: output/11_09/training_closure_bc_plus_2k/five_station_15t_hierarchical/20261109_175916/
+Results (plus coverage 85%, BC init):
+  reward 10.13 -> 10.89 (500-buckets 10.15 10.34 10.85 10.90; last500 vs prev500 +0.12σ)
+  dep_dly 12.6 -> 12.6s (flat, last500 12.50)
+  dep_ontime 0.811 -> 0.813; arr_ontime 0.759 -> 0.760
+  held-out arr_ontime constant 0.7588 -> 0.7632 after ep400 (essentially unchanged)
+  all success.
+=> BC removes the coverage cold start: with 85% coverage the policy stays at heuristic-
+   level behavior and reward is stable/rising slightly. Whether it BEATS heuristic is
+   the 180-ep paired eval now running.
+Eval: output/11_09/eval_closure_bc_plus_2k_sa_180/ (task bjgw21hv8)
+Status: PARTIAL — eval running.
+
+[2026-11-09 续17] BC + PPO(plus, lr1e-4) 180-ep eval: 与 heuristic 完全一致
+Save: output/11_09/eval_closure_bc_plus_2k_sa_180/ (+ .log)
+Paired vs heur (n=180):
+  ontime -0.015pt [-0.046,+0.015]; mean +0.001s; tail10 +0.001s; p90 0.000;
+  max +0.006s; pw +0.001s. 179/180 episodes tie exactly.
+  closure_overtakes 17 (policy 16, same as heur); deliberate yields 0.
+Reward decomposition (5 eps, BC vs PPO final, same lambda=0.30):
+  total 2.709 vs 2.723 (+0.014), ontime identical 76.32%.
+  final at lambda 0.05 vs 0.30: total 2.502 vs 2.723 (+0.221 = 0.25*global 0.885).
+=> The training reward rise (10.15->10.90) is mostly the curriculum_lambda ramp
+   (0.05->0.30, ep600-1200), NOT policy improvement. BC policy is deterministic and
+   PPO at lr=1e-4 did not move it; high coverage yields exactly heuristic behavior.
+Coverage summary (closure, 180 eps vs heur):
+  base 24%       : ontime +1.73pt, DDT 50 vs 86s, closure_ot 88 (deliberate 41)
+  plus 85%       : ontime -2.28pt
+  plus+ramp 85%  : ontime -5.03pt
+  BC+PPO plus 85%: ontime -0.015pt (heuristic clone)
+=> Coverage alone does not beat the heuristic; the base 24% coordination subset is the
+   only config with a real gain. To improve at high coverage need BC+KL/entropy/higher lr
+   or a stronger closure-specific reward signal.
+Status: DONE for BC route.
+
+[2026-11-09 续18] base(24% relevance) closure 3-seed 验证: 启动 seed1/seed2
+User decision: keep base coverage as the main config; add seed validation.
+seed0 already exists:
+  train out: output/11_09/training_closure_l2_2k_restart/five_station_15t_hierarchical/20261109_164123/
+  eval: output/11_09/eval_closure_l2_2k_sa_180/
+  heur baseline: output/11_09/eval_closure_heur_sa_180/
+seed1/seed2 launched in parallel (same config: closure, relevant, alpha0.10,
+  yield-cap, tail-coef0, Phase A 2000, eval-every 200):
+  seed1 task balces8j6: output/11_09/l2_closure_2k_seed1.log
+    out: output/11_09/training_closure_l2_2k_seed1/five_station_15t_hierarchical/20261109_190622/
+  seed2 task b1q0boyta: output/11_09/l2_closure_2k_seed2.log
+    out: output/11_09/training_closure_l2_2k_seed2/five_station_15t_hierarchical/20261109_190624/
+Next: 180-ep paired eval per seed (--sa-only --relevant-l2 --yield-cap --closure,
+  seeds 900000, 3x60) and 3-seed mean/std/t-CI vs heur.
+Status: PARTIAL — training.
+
+[2026-11-09 续19] base 3-seed 训练完成; eval 启动
+Training (2000 ep each, identical config):
+  seed0: output/11_09/training_closure_l2_2k_restart/.../20261109_164123/
+    last500 reward 10.824 dep_dly 14.647 dep_ontime 0.755 arr_ontime 0.777
+  seed1: output/11_09/training_closure_l2_2k_seed1/.../20261109_190622/
+    last500 reward 10.943 dep_dly 14.399 dep_ontime 0.757 arr_ontime 0.780
+  seed2: output/11_09/training_closure_l2_2k_seed2/.../20261109_190624/
+    last500 reward 10.926 dep_dly 13.691 dep_ontime 0.776 arr_ontime 0.774
+  Training metrics are consistent across seeds.
+Eval launched in parallel (3x60=180 closure eps, seeds 900000,
+  --sa-only --relevant-l2 --yield-cap --closure):
+  seed1: output/11_09/eval_closure_l2_seed1_sa_180/ (task b70lqdi25)
+  seed2: output/11_09/eval_closure_l2_seed2_sa_180/ (task b8nbfqu2l)
+  seed0: output/11_09/eval_closure_l2_2k_sa_180/ (already)
+  heur: output/11_09/eval_closure_heur_sa_180/ (already, same seeds)
+Status: PARTIAL — eval running; aggregate per-seed paired deltas + mean/std/t-CI.
+
+[2026-11-09 续20] base closure 3-seed 180-ep 配对 eval 汇总(最终)
+Eval saves:
+  seed0: output/11_09/eval_closure_l2_2k_sa_180/
+  seed1: output/11_09/eval_closure_l2_seed1_sa_180/
+  seed2: output/11_09/eval_closure_l2_seed2_sa_180/
+  heur : output/11_09/eval_closure_heur_sa_180/ (same 180 seeds)
+Per-seed paired deltas (learned - heur):
+  seed    ontime    mean    tail10    p90     max     pw
+   0     +1.729   +0.248   +1.277  -0.556  +4.852  -0.204
+   1     +2.454   -0.145   -0.431  -0.970  +2.529  -0.484
+   2     +1.451   -0.151   -0.709  -0.708  +1.343  -0.368
+  3-seed mean/std + 95% t-CI(df=2):
+  ontime       +1.878 ± 0.518  [+0.591,+3.164] SIGNIFICANT
+  mean         -0.016 ± 0.228  [-0.584,+0.551] flat
+  tail10       +0.046 ± 1.075  [-2.625,+2.717] flat
+  p90          -0.745 ± 0.210  [-1.265,-0.224] SIGNIFICANT better
+  max          +2.908 ± 1.785  [-1.526,+7.342] n.s. (seed0 was the outlier)
+  pw_arr_delay -0.352 ± 0.141  [-0.701,-0.003] borderline better
+Per-priority ontime: P1 72.9/73.4/70.9% vs heur 66.7% (+4.2..+6.7pt ROBUST);
+  P2 78.8/79.7/79.8% vs 80.3% (-0.5..-1.5pt).
+Re-sequencing: closure_overtakes 88/95/70 (policy-driven 87/94/69); deliberate
+  yields 41/42/22; heur closure 17 (policy 16), deliberate 0.
+DDT medians: seed0 50s, seed1 86s, seed2 86s (heur 86s) -> DDT gain NOT robust
+  (seed0 only); report cautiously.
+=> Robust conclusion for base 24%: overall ontime +1.88pt (CI excludes 0), P1
+   punctuality +4..7pt, p90 slightly better, mean/tail10 flat, max tail n.s.
+   (no longer "significantly worse" once 3 seeds are pooled). Closure yielding is
+   consistently learned (69-94 policy-driven vs 16 heur), but the DDT speed-up is
+   seed-dependent.
+Status: DONE — base is the retained main config, now with 3-seed validation.

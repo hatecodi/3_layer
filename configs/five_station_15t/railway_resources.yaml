@@ -19,9 +19,9 @@ stations:
   - id: A
     platforms:
       - {id: A_p1, up_edge: A_p1_up, down_edge: A_p1_down, through_allowed: true}
-      - {id: A_p2, up_edge: A_p2_up, down_edge: A_p2_down, through_allowed: true}
-      - {id: A_p3, up_edge: A_p3_up, down_edge: A_p3_down, through_allowed: true}
-      - {id: A_p4, up_edge: A_p4_up, down_edge: A_p4_down, through_allowed: true}
+      - {id: A_p2, up_edge: A_p2_up, down_edge: A_p2_down, through_allowed: false}
+      - {id: A_p3, up_edge: A_p3_up, down_edge: A_p3_down, through_allowed: false}
+      - {id: A_p4, up_edge: A_p4_up, down_edge: A_p4_down, through_allowed: false}
     dwell_min_sec: {stop: 5}
     up:
       approach_edge: A_up_approach
@@ -53,9 +53,9 @@ stations:
   - id: B
     platforms:
       - {id: B_p1, up_edge: B_p1_up, down_edge: B_p1_down, through_allowed: true}
-      - {id: B_p2, up_edge: B_p2_up, down_edge: B_p2_down, through_allowed: true}
-      - {id: B_p3, up_edge: B_p3_up, down_edge: B_p3_down, through_allowed: true}
-      - {id: B_p4, up_edge: B_p4_up, down_edge: B_p4_down, through_allowed: true}
+      - {id: B_p2, up_edge: B_p2_up, down_edge: B_p2_down, through_allowed: false}
+      - {id: B_p3, up_edge: B_p3_up, down_edge: B_p3_down, through_allowed: false}
+      - {id: B_p4, up_edge: B_p4_up, down_edge: B_p4_down, through_allowed: false}
     dwell_min_sec: {stop: 5}
     up:
       approach_edge: B_up_approach
@@ -87,9 +87,9 @@ stations:
   - id: C
     platforms:
       - {id: C_p1, up_edge: C_p1_up, down_edge: C_p1_down, through_allowed: true}
-      - {id: C_p2, up_edge: C_p2_up, down_edge: C_p2_down, through_allowed: true}
-      - {id: C_p3, up_edge: C_p3_up, down_edge: C_p3_down, through_allowed: true}
-      - {id: C_p4, up_edge: C_p4_up, down_edge: C_p4_down, through_allowed: true}
+      - {id: C_p2, up_edge: C_p2_up, down_edge: C_p2_down, through_allowed: false}
+      - {id: C_p3, up_edge: C_p3_up, down_edge: C_p3_down, through_allowed: false}
+      - {id: C_p4, up_edge: C_p4_up, down_edge: C_p4_down, through_allowed: false}
     dwell_min_sec: {stop: 5}
     up:
       approach_edge: C_up_approach
@@ -145,9 +145,9 @@ stations:
   - id: E
     platforms:
       - {id: E_p1, up_edge: E_p1_up, down_edge: E_p1_down, through_allowed: true}
-      - {id: E_p2, up_edge: E_p2_up, down_edge: E_p2_down, through_allowed: true}
-      - {id: E_p3, up_edge: E_p3_up, down_edge: E_p3_down, through_allowed: true}
-      - {id: E_p4, up_edge: E_p4_up, down_edge: E_p4_down, through_allowed: true}
+      - {id: E_p2, up_edge: E_p2_up, down_edge: E_p2_down, through_allowed: false}
+      - {id: E_p3, up_edge: E_p3_up, down_edge: E_p3_down, through_allowed: false}
+      - {id: E_p4, up_edge: E_p4_up, down_edge: E_p4_down, through_allowed: false}
     dwell_min_sec: {stop: 5}
     up:
       approach_edge: E_up_approach

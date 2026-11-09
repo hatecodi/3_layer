@@ -34,6 +34,24 @@ L3_FAST_PENALTY = 0.30
 # Punctuality demand by train priority (railway rule: higher-class more on-time).
 # Priority 1 = 复兴号 (highest), 2 = 和谐号, 3 = 普速 (lowest).
 PRIORITY_WEIGHT = {1: 1.4, 2: 1.0, 3: 0.6}
+# L2 local-reward priority weights (distinct from L3 PRIORITY_WEIGHT above).
+L2_PRIORITY_WEIGHT = {1: 2.0, 2: 1.0, 3: 0.5}
+# Moving-block externality pricing: charge the front train for the priority-
+# weighted wait it imposes on followers.
+# Calibration (2026-11-06, five_station_15t, G5038@A forced plan+20, seed 2):
+#   alpha=0.05 -> yielder's own return -6.3 -> -13.1 (yield privately bad)
+#   alpha=0.15 -> -13.4 -> -13.1 (break-even, system return improves)
+#   alpha=0.20 -> -17.0 -> -13.1 (yield privately good)
+# 0.15 is the smallest value that makes the yielding train's own return
+# non-decreasing while still improving the system return; sweep {0.05,0.10,0.15,0.20}.
+EXTERN_ALPHA = 0.15
+EXTERN_CAP_PER_STEP = 20.0
+# Soft yield-amplitude control: a yield-relevant train (ahead of a higher-
+# priority follower) pays for its OWN avoidable departure delay beyond
+# YIELD_TAIL_THRESHOLD seconds.  Unlike a hard entry mask, +30/+50 remain
+# available; the policy trades the P1 benefit against its own tail cost.
+YIELD_TAIL_THRESHOLD = 20.0
+YIELD_TAIL_COEF = 0.15
 # Cap the late-penalty magnitude so a few extreme-late (physics-bound) trains don't
 # dwarf the ontime-rate incentive (railway KPI = rate primary).  The superlinear
 # penalty still applies up to ~85s; beyond that it's flat, keeping the tail
@@ -61,6 +79,14 @@ class Metrics:
     n_arrivals: int = 0            # realized corridor arrivals (transit events)
     ontime_rate: float = 0.0       # realized ontime arrivals / n_arrivals
     platform_utilization: float = 0.0  # distinct platforms used / total platforms (per station avg)
+    # Priority-weighted punctuality (L2 weights) and re-sequencing counters.
+    pw_dep_delay: float = 0.0
+    pw_arr_delay: float = 0.0
+    overtake_count: int = 0
+    yield_count: int = 0
+    pass_overtake_count: int = 0
+    priority_overtake_count: int = 0
+    deliberate_yield_count: int = 0
 
 
 @dataclass
@@ -68,6 +94,8 @@ class RewardBreakdown:
     local: float
     global_: float
     total: float
+    externality: float = 0.0
+    yield_tail: float = 0.0
 
 
 def compute_metrics(
@@ -79,6 +107,11 @@ def compute_metrics(
     hard_bound_infeasible_count: int = 0,
     station_map: Optional[Dict[str, str]] = None,
     transit_events: Optional[List[dict]] = None,
+    overtake_count: int = 0,
+    yield_count: int = 0,
+    pass_overtake_count: int = 0,
+    priority_overtake_count: int = 0,
+    deliberate_yield_count: int = 0,
 ) -> Metrics:
     """Compute scheduling + realised-execution metrics.
 
@@ -139,6 +172,27 @@ def compute_metrics(
                 util_sum += len(used) / total
                 n_stations += 1
     platform_util = util_sum / max(n_stations, 1)
+
+    # Priority-weighted punctuality (L2 weights, late-only for arrivals).
+    pw_dep_total = pw_dep_w = 0.0
+    for grant in grants:
+        train = cfg.trains[grant.train_id]
+        w = L2_PRIORITY_WEIGHT.get(train.priority, 1.0)
+        sid = station_map.get(grant.train_id) if station_map else train.origin_station
+        bounds = layer1.for_train(grant.train_id, sid)
+        pw_dep_total += w * abs(grant.W_out[0] - bounds.t_dep_plan)
+        pw_dep_w += w
+    pw_arr_total = pw_arr_w = 0.0
+    if transit_events:
+        for ev in transit_events:
+            w = L2_PRIORITY_WEIGHT.get(ev.get("priority", 2), 1.0)
+            pw_arr_total += w * max(0.0, ev["arr_delay"])
+            pw_arr_w += w
+    else:
+        for g, d in zip(grants, arr_delays):
+            w = L2_PRIORITY_WEIGHT.get(cfg.trains[g.train_id].priority, 1.0)
+            pw_arr_total += w * d
+            pw_arr_w += w
     return Metrics(
         n_granted=n_granted,
         n_held=len(held),
@@ -158,6 +212,13 @@ def compute_metrics(
         n_arrivals=n_arrivals,
         ontime_rate=n_ontime_arr / max(n_arrivals, 1),
         platform_utilization=platform_util,
+        pw_dep_delay=pw_dep_total / max(pw_dep_w, 1e-9),
+        pw_arr_delay=pw_arr_total / max(pw_arr_w, 1e-9),
+        overtake_count=overtake_count,
+        yield_count=yield_count,
+        pass_overtake_count=pass_overtake_count,
+        priority_overtake_count=priority_overtake_count,
+        deliberate_yield_count=deliberate_yield_count,
     )
 
 
@@ -174,6 +235,8 @@ def compute_layered_rewards(
     retried_train_ids: Optional[Iterable[str]] = None,
     corridor_delays: Optional[Dict[str, float]] = None,
     throat_delays: Optional[Dict[str, float]] = None,
+    externality_charges: Optional[Dict[str, float]] = None,
+    yield_tail_charges: Optional[Dict[str, float]] = None,
 ) -> Dict[str, RewardBreakdown]:
     layer1 = DispatchBounds(cfg)
     held = set(held_train_ids)
@@ -183,6 +246,8 @@ def compute_layered_rewards(
     visitor_windows = visitor_windows or {}
     corridor_delays = corridor_delays or {}
     throat_delays = throat_delays or {}
+    externality_charges = externality_charges or {}
+    yield_tail_charges = yield_tail_charges or {}
     metrics = compute_metrics(
         cfg,
         grants,
@@ -209,7 +274,7 @@ def compute_layered_rewards(
             local = -3.0
         else:
             dep_delay = abs(grant.W_out[0] - bounds.t_dep_plan)
-            prio_weight = {1: 2.0, 2: 1.0, 3: 0.5}.get(bounds.prio_i, 1.0)
+            prio_weight = L2_PRIORITY_WEIGHT.get(bounds.prio_i, 1.0)
             # Progressive penalty: every 300s of delay doubles the marginal cost
             dep_mult = 1.0 + dep_delay // 300.0
             # Continuous improvement: exponential decay so every second of
@@ -241,8 +306,25 @@ def compute_layered_rewards(
             thr_delay = throat_delays.get(train_id, 0.0)
             if thr_delay > 1e-6:
                 local += -0.02 * thr_delay * prio_weight
+        # Moving-block externality: the front train pays for the priority-
+        # weighted wait it imposes on followers (ratio of weights, capped).
+        ext_charge = 0.0
+        ext_raw = externality_charges.get(train_id, 0.0)
+        if ext_raw > 1e-6:
+            w_i = L2_PRIORITY_WEIGHT.get(bounds.prio_i, 1.0)
+            ext_charge = min(EXTERN_ALPHA * ext_raw / max(w_i, 1e-6),
+                             EXTERN_CAP_PER_STEP)
+            local -= ext_charge
+        # Soft yield-amplitude penalty: only trains that chose to delay while
+        # ahead of a higher-priority follower (env computes the avoidable
+        # excess seconds).  Large yields remain legal, but pay their tail cost.
+        yt_raw = yield_tail_charges.get(train_id, 0.0)
+        yt_charge = YIELD_TAIL_COEF * yt_raw if yt_raw > 0.0 else 0.0
+        local -= yt_charge
         total = local + lambda_team * global_reward
-        rewards[train_id] = RewardBreakdown(local, global_reward, total)
+        rewards[train_id] = RewardBreakdown(
+            local, global_reward, total, externality=ext_charge,
+            yield_tail=yt_charge)
     return rewards
 
 
@@ -253,12 +335,16 @@ def compute_rewards(
     active_train_ids: Iterable[str] | None = None,
     lambda_team: float = 0.3,
     station_map: Optional[Dict[str, str]] = None,
+    externality_charges: Optional[Dict[str, float]] = None,
+    yield_tail_charges: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     return {
         tid: reward.total
         for tid, reward in compute_layered_rewards(
             cfg, grants, held_train_ids, active_train_ids,
             lambda_team=lambda_team, station_map=station_map,
+            externality_charges=externality_charges,
+            yield_tail_charges=yield_tail_charges,
         ).items()
     }
 
@@ -268,13 +354,29 @@ def compute_rewards(
 # ---------------------------------------------------------------------------
 
 
+# ===========================================================================
+# !!! DEPRECATED — L3 v2 reward.  NO CALLERS (verified 2026-09-20).
+#
+# DO NOT USE.  This function penalises headway delay (-0.02 * headway_delay_sec)
+# and throat delay, which CONTRADICTS the v3 design invariant stated immediately
+# below: in v3 the corridor headway is a HARD moving-block boundary enforced by
+# L3Simulator.section_progress, and is NEVER a reward term.  Any paper claim of
+# the form "headway is a hard boundary, not a reward" is falsified by this
+# function merely EXISTING in the tree.
+#
+# Superseded by compute_l3_terminal_reward().  Kept for history only.
+#
+# TODO(before-submission): DELETE this function before shipping any code
+#   artifact (paper repo, supplementary material, release), so the source does
+#   not appear to contradict the stated invariant.
+# ===========================================================================
 def compute_l3_reward(
     headway_delay_sec: float,
     arrival_deviation_sec: float,
     recovery_used_sec: float,
     throat_delay_sec: float = 0.0,
 ) -> float:
-    """Compute L3 Worker reward for one corridor transit.
+    """Compute L3 Worker reward for one corridor transit.  [DEPRECATED v2]
 
     Objectives:
       - Minimise corridor headway and throat waiting time
@@ -282,6 +384,9 @@ def compute_l3_reward(
       - Reward using recovery margin only when catching up from delay
 
     All terms are in seconds, scaled to comparable magnitudes.
+
+    NOTE: penalising headway is exactly what v3 removed — see the module section
+    header below.  Unused; kept only for history.
     """
     total_delay = headway_delay_sec + throat_delay_sec
     late = max(arrival_deviation_sec, 0.0)
@@ -303,12 +408,28 @@ def compute_l3_reward(
 # ---------------------------------------------------------------------------
 
 def compute_l3_terminal_reward(arrival_deviation_sec: float, platform_free: bool,
+                               # NOTE: `platform_free` is UNUSED in the body
+                               # (early arrival is penalised regardless of platform
+                               # state since 2026-08-14 — gating it on the platform
+                               # let the policy collapse to always-FAST).  Kept in
+                               # the signature for call-site compatibility; may be
+                               # removed together with the v2 cleanup above.
                                priority: int = 2,
                                ontime_sigma: float = 10.0,
                                ontime_bonus: float = 3.0,
                                late_coef: float = 0.15,
                                late_sq_coef: float = 0.001,
                                early_coef: float = 0.05,
+                               # NOTE: `global_delay_sec` / `global_coef` are DEAD
+                               # PARAMETERS — the env never passes global_delay_sec
+                               # (grep: 0 occurrences in five_station_env.py), so the
+                               # `- global_coef * global_delay_sec` term below is
+                               # ALWAYS ZERO.  The real L3 team signal is the separate
+                               # compute_l3_team_reward() (sliding-window), fused by
+                               # L3WorkerTrainer as adv_l + adv_g.  The paper's L3
+                               # terminal-reward formula therefore omits this term.
+                               # TODO(before-submission): DELETE these two params and
+                               #   the term, so the source matches the paper.
                                global_delay_sec: float = 0.0,
                                global_coef: float = 0.002) -> float:
     """Terminal reward at corridor end — railway KPI = ontime ARRIVALS / total.

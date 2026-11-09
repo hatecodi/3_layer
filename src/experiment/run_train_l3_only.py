@@ -30,11 +30,11 @@ from src.marl.l3_worker import (
 from src.control.resource_manager import build_conflict_graph
 
 HP = {
-    "obs_dim": 29,
+    "obs_dim": 37,                       # five_station obs dim (config-derived at runtime)
     "action_dim": 45,
     "k_local": 1,
     "hidden_dim": 128,
-    "l3_hidden_dim": 64,
+    "l3_hidden_dim": 128,
     "lr": 3e-4,
     "l3_lr": 1e-3,
     "gamma": 0.99,
@@ -92,8 +92,9 @@ def train_l3_only(
     # L3 Worker — train from scratch
     l3_actor = CorridorActor(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
     l3_critic = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
+    l3_critic_g = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
     l3_trainer = L3WorkerTrainer(
-        l3_actor, l3_critic, lr=HP["l3_lr"], gamma=HP["gamma"],
+        l3_actor, l3_critic, l3_critic_g, lr=HP["l3_lr"], gamma=HP["gamma"],
         gae_lambda=HP["gae_lambda"], clip_ratio=HP["clip_ratio"],
         ppo_epochs=HP["ppo_epochs"], entropy_coef=HP["l3_entropy_coef"],
         value_coef=HP["value_coef"], max_grad_norm=HP["max_grad_norm"],
@@ -207,7 +208,8 @@ def train_l3_only(
             best_reward = mean_r
             torch.save(
                 {"l3_actor": l3_actor.state_dict(),
-                 "l3_critic": l3_critic.state_dict(),
+                 "l3_critic_local": l3_critic.state_dict(),
+                 "l3_critic_global": l3_critic_g.state_dict(),
                  "episode": ep, "hp": HP},
                 ckpt_dir / "best.pt",
             )
@@ -222,7 +224,8 @@ def train_l3_only(
     # ---- final save ----
     torch.save(
         {"l3_actor": l3_actor.state_dict(),
-         "l3_critic": l3_critic.state_dict(),
+         "l3_critic_local": l3_critic.state_dict(),
+         "l3_critic_global": l3_critic_g.state_dict(),
          "episode_metrics": episode_metrics, "hp": HP},
         ckpt_dir / "final.pt",
     )

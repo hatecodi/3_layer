@@ -4,6 +4,11 @@
 > 框架的完整架构：L1→L2→L3 的层次划分、各层动作/观测/网络、安全性机制、奖励函数、
 > MAPPO 结构，以及训练流程。写论文时可直接引用其中的术语、公式与超参数。
 > 代码位置：`src/control/`、`src/env/`、`src/marl/`、`configs/five_station*/`。
+>
+> **符号与术语以 `docs/notation.md` 为准**（第三、四章统一的符号对照表：符号 / 含义 /
+> 首见 / 代码对应）。本文档描述实现，凡与 `notation.md` 不一致处，以 `notation.md` 为准。
+> 另注：$L_2$ 的准确表述是**规则基座 + 学习残差复合而成的决策层**（非单一学习策略），
+> 详见 `docs/problem_formulation.md` §5 与 `docs/ch4_algorithm_design_paper.md` §4.2.1。
 
 ---
 
@@ -27,9 +32,7 @@ L3  走廊速度层  per-corridor Worker（学习：逐区间 CRUISE/FAST/SLOW �
 - **时间压缩**：仿真秒 = 真实秒 / 25（一个决策步≈实际分钟级）。
 - **研究问题**：三层分解（规则边界 → MAPPO 调度 → 学习速度控制）能否在保持低延误、
   零硬约束违反的同时，比 flat MAPPO 更好地扩展到更多列车。
-- **诚实定位**（实证结论）：双线单股道无越行 → 走廊纯 FIFO → **L2 协调价值≈0**
-  （learned L2 ≈ 启发式）；三层价值在 **L3 的高效执行**（即时响应、节能、到站精度）
-  + 整体鲁棒性 + **免重训迁移扩展性**（15t 训练的模型直接用于 10t/20t/25t/30t）。
+
 
 ---
 
@@ -43,7 +46,7 @@ L3  走廊速度层  per-corridor Worker（学习：逐区间 CRUISE/FAST/SLOW �
   P2 和谐号（83.33/97.22）、P3 普速（33.33/33.33，无恢复裕量）。
 - **干扰**：可注入两种扰动——始发"成串延误"(bunching) 与 **走廊暴雨限速 incident**
   （详见 §2.1）。论文扩展性/收敛实验均使用 incident 作为唯一扰动。
-- **观测维度**：L2 obs_dim=31，与规模无关（10t–30t 一致）；L3 obs_dim=10。
+- **观测维度**：L2 obs_dim=34（2026-11-06 起：+3 维"后方高优先级来车"让行特征），与规模无关（10t–30t 一致）；L3 obs_dim=10。
 
 ### 2.1 走廊限速 incident（暴雨限速）
 
@@ -58,9 +61,9 @@ L3  走廊速度层  per-corridor Worker（学习：逐区间 CRUISE/FAST/SLOW �
 | `prob` | 0.6 | 每集发生概率 |
 | `duration_range` | [100, 200] sim-s | 限速窗口时长 |
 | `factor_range` | base [0.15,0.4]；15t [0.4,0.6] | **速度因子**（1.0=无限速，越小越慢）：0.15≈大暴雨45km/h，0.4≈暴雨120km/h |
-| `safety_factor` | 1.5 | **湿轨制动**：moving_block_safety_m 乘数（放大车距） |
+| `safety_factor` | **1.0** | **湿轨制动**：moving_block_safety_m 乘数。原为 1.5（**估算值**），已放宽到 1.0——放大车距会把限速变成硬移动闭塞瓶颈，挤掉恢复空间（配置内注明） |
 | `min_trains` | 2 | 窗口至少覆盖 ≥2 次通过 |
-| `max_added_delay_sec` | 200 | 校准上限：保持延误可恢复（低于重排阈值，防雪崩） |
+| `max_added_delay_sec` | **80** | 校准上限：保持延误可恢复。原为 200，已下调至 80，使其**落在重规划触发阈值之下**，避免扰动经重规划回路雪崩（配置内注明） |
 
 **生成流程**（`disturbance.py: inject_corridor_incident`）：
 1. 按概率抽样是否发生；随机选走廊（**按 transit 流量加权**——流量大的走廊更易出现）。
@@ -102,8 +105,8 @@ t_arr_min   最早允许到达（不能早于）
 t_dep_max   最晚必须出发（不能晚于）
 dwell_min   最小停站时间
 prio_i      优先级 1/2/3
-pass_flag   是否越行（正线通过）
-candidate_platforms  允许的站台集合
+pass_flag   该站是否通过不停车（逐站；零计划停站 + dwell_min=0 + 该站预留正线）
+candidate_platforms  允许的站台集合（通过车→正线；停站车→其余站台）
 ```
 
 - L1 不发出逐步指令，只提供约束。
@@ -162,6 +165,23 @@ RESOURCE(2+2*max_plat=10)  资源可用性、走廊延误、每平台 blocked �
 
 ---
 
+### 4.1 车站越行与学习让行（2026-11-06）
+
+- **逐站通过**：若某车在中间站 `planned.arr == planned.dep`、L1 `dwell_min=0`，且该站配置
+  预留了正线（`through_allowed` 混合），则该站视为通过站。通过车只能选正线（A/B/C/E 为 P1），
+  停站车只能选其余站台；D 两站台均开放以避免容量死锁。逻辑在
+  `scenario_loader.pass_stations_for / apply_pass_platform_policy`，其它场景无混合配置时保持旧行为。
+- **让行**：不新增动作头，复用 6 档 `entry_choice`（`plan+10/20/30/50`）延迟进站/出发。
+  观测新增 3 维：是否存在更高优先级尾随车、优先级差、其到达与自身计划出发的间隔。
+- **物理假设**：车站有越行侧线；模型把站台进出与走廊占用分开建模，因此允许停站车在站台
+  等待时通过车走正线。越行只在两车同一决策步均 pending（≤120s）时成立——`_advance_trains`
+  在授权后立即推进，跨步的站内停留无法表达。
+- **注意**：L3 走廊仍是单方向 FIFO，本机制只给 L2 增加重排序自由度，不在走廊内超车。
+- **指标**：`overtake.csv` / `per_episode.csv`：overtakes、deliberate_yields、
+  priority_overtakes、pass_overtakes、pw_arr_delay；transit 事件带 `front_train`。
+
+---
+
 ## 5. L3 — 走廊速度控制层
 
 ### 5.1 动作
@@ -215,6 +235,13 @@ RESOURCE(2+2*max_plat=10)  资源可用性、走廊延误、每平台 blocked �
 
 安全指标（实证）：所有规模、所有模式 **0 硬守卫违反、0 死锁**。
 
+> **复核说明（2026-09-20）**：`scripts/validate_l3_schedule.py` 的检查曾有四处置错
+> （站名取成目的站、throat 只按站分组而忽略 conflict_group、用预串行化的 $W^{\text{out}}$
+> 当占用时刻、"站台重叠"误用进/出咽喉窗口 $W^{\text{in}}/W^{\text{out}}$ 而非 $W^{\text{plat}}$），
+> 已修正。修正后：**throat 串行化零违规**（实测最小间隔恰为 6.00 s）；clean / `--incident`
+> 工况站台窗口零重叠。`--vt` 工况存在跨步站台窗口重叠，但 VT 非论文配置（见 `coding_log`
+> 2026-09-20）。引用安全结论时须注明所用工况（论文用 `--incident`）。
+
 ---
 
 ## 7. 奖励函数
@@ -230,8 +257,14 @@ local =  -0.02·dep_delay·prio_weight·dep_mult        # 发车延误，渐进�
         - 0.01·arr_delay·prio_weight                   # 非起点站到站偏差(早期/晚期)
         - 0.02·headway_delay·prio_weight               # 走廊车距延误(给 L2 间隔发车梯度)
         - 0.02·throat_delay·prio_weight                # 出咽喉串行化延误
+        - externality                                   # 挡路前车按后车优先级加权付费
 被 hold 或未授权时: local = -3.0
 ```
+
+**外部性定价**（2026-11-06）：后车在走廊的 moving-block 等待
+`Σ headway_delay·w_follower` 记到实际前车头上，前车下一步奖励扣除
+`min(EXTERN_ALPHA·ledger/w_leader, 20)`，`EXTERN_ALPHA=0.15`。它让"让行"在自身回报上
+也划算（实测 G5038@A：α=0.05 时让行自身回报变差；0.15 时盈亏平衡且系统回报改善）。
 
 **全局(团队)奖励**（episode 级，共享）：
 
@@ -251,11 +284,13 @@ global = -0.02·mean_dep_delay - 20·deadlock_flag + 2.0·ontime_rate
 r = ontime_bonus·exp(-(dev/σ)²)                        # 主项：准点高斯包络，每列车都计
     - [late_coef·dev + late_sq_coef·dev²]  (dev>0, 封顶 L3_LATE_CAP=20)  # 次项：尾部超线性
     - early_coef·|dev|                    (dev<0)      # 早到惩罚(始终，防 always-FAST 塌缩)
-    - global_coef·system_delay                          # 全局团队项
 ```
 
-- 参数：`ontime_bonus=3.0, σ=10s, late_coef=0.15, late_sq_coef=0.001, early_coef=0.05,
-  global_coef=0.002`。
+- 参数：`ontime_bonus=3.0, σ=10s, late_coef=0.15, late_sq_coef=0.001, early_coef=0.05`。
+- ⚠️ **`global_coef` / `global_delay_sec` 是死参数**（env 从不传入 → 该项恒为 0），
+  **不属于有效奖励**。L3 的团队项由独立的 `compute_l3_team_reward`（滑动窗口，
+  `2.0·ontime_rate − 0.05·mean_dep`）× `l3_team_lambda` 结算。代码已加注释，
+  提交代码前应删除该死参数。
 - 优先级缩放：整个局部奖励乘 `PRIORITY_WEIGHT={1:1.4, 2:1.0, 3:0.6}`。
 - **FAST 能量代价**：`L3_FAST_PENALTY=0.30`/区间（`reward.py`），防止"always-FAST"塌缩；
   行为分布匹配 SA（CRUISE≈63% / FAST≈37%，限速段 FAST≈76%）。
@@ -317,13 +352,17 @@ LocalCritic 输入 62；GlobalCritic 14 → 1。L3：obs 10 → hidden 128 → 3
 
 - **扩展性 ontime%（10/15/20/25/30t，incident 3x60，15t 训练免重训迁移）**：
   learned 77.4/71.4/64.0/62.2/62.0；sa(oracle) 79.7/73.0/66.7/68.1/66.0；
-  sa-online 78.0/71.4/66.3/67.5/65.7；cruise 53.7/44.2/41.2/38.7/34.5；
-  **flat 48.3/42.9/38.0/38.3/36.5（≤ cruise floor）**。死锁全 0。
+  sa-online 78.0/71.4/66.3/67.5/65.7；先来先服务+调度员规则 53.7/44.2/41.2/38.7/34.5；
+  **flat 48.3/42.9/38.0/38.3/36.5（≤ 调度员规则）**。死锁全 0。
 - **收敛（等预算 6000 集，held-out 口径，episodes-to-50% 到站准点）**：
   flat 15t/25t **永不**（最终 0.453/0.412）；hier 15t/25t 首个 eval 点(ep 200)即可用
   （SA 预训练起步），学到的 L3（Phase B 从随机）在累计 4000/5000 集内收敛到 50%+。
-- **算力**：E1 决策延迟 SA 重排 3.48ms/趟 vs MAPPO 单区间 0.36ms（≈10x）；单次适应事件
-  learned 便宜 2.4x。
+- **算力（2026-09-20 用实测替换原估算）**：MAPPO **0.452 ms/区间**（**与规模无关**，log-log
+  斜率 −0.01）vs SA 一次重解 **7.33 ms/趟**（随规模上升，斜率 +0.14，$10\!\to\!30$ 车
+  $6.61\!\to\!7.74$ ms）。每区间比值 **3.61 → 4.28**（10→30t）。
+  数据：`output/9.20/compute_by_scale.csv`、`output/9.20/compute_time_scaling.csv`；
+  复现：`scripts/bench_l3_decision_cost.py`。
+  优势为**常数倍**，不是渐进优势。
 - **行为**：learned 行为分布匹配 SA（CRUISE/FAST 比例），无 always-FAST/never-FAST 塌缩。
 
 数据位置：`output/8_14/scalability/`（10-20t）、`output/8_16/scalability/`（25/30t +

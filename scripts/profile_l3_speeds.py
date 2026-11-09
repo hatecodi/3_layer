@@ -21,7 +21,7 @@ obs_dim = get_obs_dim(cfg)
 
 # Load checkpoint
 ckpt = torch.load(
-    'output/five_station_hierarchical/20260713_174053/checkpoints/best.pt',
+    'output/8_16/training/five_station_15t_hierarchical/20260816_140621/checkpoints/best.pt',
     map_location='cpu', weights_only=False)
 print(f'Checkpoint: ep {ckpt["episode"]}')
 
@@ -31,11 +31,14 @@ ac.load_state_dict(ckpt['ac_state'])
 ac.eval()
 l3_actor = CorridorActor(hidden_dim=128)
 l3_critic = CorridorCritic(hidden_dim=128)
+l3_critic_g = CorridorCritic(hidden_dim=128)
 l3_actor.load_state_dict(ckpt['l3_actor'])
-l3_critic.load_state_dict(ckpt['l3_critic'])
+l3_critic.load_state_dict(ckpt['l3_critic_local'])
+l3_critic_g.load_state_dict(ckpt['l3_critic_global'])
 l3_actor.eval()
 l3_critic.eval()
-l3_trainer = L3WorkerTrainer(l3_actor, l3_critic)
+l3_critic_g.eval()
+l3_trainer = L3WorkerTrainer(l3_actor, l3_critic, l3_critic_g)
 
 speed_names = {0: 'CRUISE', 1: 'FAST', 2: 'SLOW'}
 transit_records = []

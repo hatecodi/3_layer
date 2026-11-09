@@ -199,7 +199,7 @@ def eval_flat_heldout(actor, cfg, seeds, device, incident=True):
         while not done:
             masks = info.get('action_masks', {})
             action_dict = {}
-            for tid in info.get('pending', []):
+            for tid in info.get('active_train_ids', info.get('pending', [])):
                 m = masks.get(tid)
                 if not m or not any(m[0]) or not any(m[1]):
                     continue
@@ -227,8 +227,9 @@ def eval_flat_heldout(actor, cfg, seeds, device, incident=True):
 
 
 def train_flat_mappo(episodes=7000, scenario="five_station_15t", incident=False,
-                     out_root="output", use_cpu=False,
+                     out_root="output", use_cpu=False, seed=42,
                      eval_every=0, eval_n=12, eval_seed_base=900000):
+    torch.manual_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() and not use_cpu else "cpu")
     cfg = load_scenario(scenario_name=scenario)
     obs_dim = get_obs_dim(cfg)
@@ -268,10 +269,15 @@ def train_flat_mappo(episodes=7000, scenario="five_station_15t", incident=False,
                              l3_worker=None)
         obs, info = env.reset()
         done = False
+        # Whether THIS episode got a restriction (prob 0.6) — downstream analysis
+        # must stratify on it, since an episode without an incident has no
+        # "affected" subset at all.  Read once: only reset() writes it.
+        ep_has_incident = bool(getattr(env, '_corridor_incidents', {}))
 
         ep_reward = defaultdict(float)
         ep_granted = 0; ep_dep = 0.0; ep_ontime = 0
         ep_ontime_arr = 0; ep_arrivals = 0   # realised (L3) arrival punctuality
+        ep_aff_delays = []                   # arrival delays of AFFECTED transits
 
         while not done:
             masks = info.get('action_masks', {})
@@ -281,7 +287,7 @@ def train_flat_mappo(episodes=7000, scenario="five_station_15t", incident=False,
             action_dict = {}
             step_transitions = []
 
-            for tid in info.get('pending', []):
+            for tid in info.get('active_train_ids', info.get('pending', [])):
                 m = masks.get(tid)
                 if not m or not any(m[0]) or not any(m[1]):
                     continue
@@ -322,6 +328,13 @@ def train_flat_mappo(episodes=7000, scenario="five_station_15t", incident=False,
             ep_ontime += m.get('n_ontime_dep', 0)
             ep_ontime_arr += m.get('n_ontime_arr', 0)
             ep_arrivals += m.get('n_arrivals', 0)
+            # affected-subset delay (same hook/口径 as run_train_hierarchical):
+            # the all-train means dilute the disturbance, so the convergence
+            # question must be answered on the affected transits only.  The
+            # event list is per-step and exists for the CRUISE L3 flat uses too.
+            for ev in info.get('l3_transit_events', []):
+                if ev.get('affected'):
+                    ep_aff_delays.append(ev['arr_delay'])
 
             reward_breakdown = info.get('reward_breakdown', {})
             for i, tr in enumerate(step_transitions):
@@ -348,6 +361,14 @@ def train_flat_mappo(episodes=7000, scenario="five_station_15t", incident=False,
         episode_metrics.append({
             'episode': ep, 'mean_reward': mean_r, 'mean_dep_delay': mean_dep,
             'ontime_rate': ontime, 'arr_ontime': arr_ontime,
+            # affected-subset delay: nan (not 0) when nothing was affected, so
+            # downstream means don't get dragged to 0.
+            'has_incident': int(ep_has_incident),
+            'n_aff_transits': len(ep_aff_delays),
+            'aff_arr_delay_mean': (sum(ep_aff_delays) / len(ep_aff_delays)
+                                   if ep_aff_delays else float('nan')),
+            'aff_arr_delay_max': (max(ep_aff_delays) if ep_aff_delays
+                                  else float('nan')),
             'status': info.get('episode_status', '?'),
         })
         win_arr_ontime.append(arr_ontime)
@@ -407,6 +428,8 @@ if __name__ == '__main__':
     parser.add_argument('--out-root', type=str, default='output',
                         help="root dir under PROJECT_ROOT for this run, e.g. "
                              "output/8_16/training (default 'output')")
+    parser.add_argument('--seed', type=int, default=42,
+                        help='random seed for policy init/exploration (default 42)')
     parser.add_argument('--cpu', action='store_true',
                         help='force CPU (default: auto CUDA)')
     parser.add_argument('--eval-every', type=int, default=0,
@@ -419,5 +442,6 @@ if __name__ == '__main__':
     HP['lr'] = args.lr
     train_flat_mappo(episodes=args.episodes, scenario=args.scenario,
                      incident=args.incident, out_root=args.out_root,
-                     use_cpu=args.cpu, eval_every=args.eval_every,
-                     eval_n=args.eval_n, eval_seed_base=args.eval_seed_base)
+                     use_cpu=args.cpu, seed=args.seed,
+                     eval_every=args.eval_every, eval_n=args.eval_n,
+                     eval_seed_base=args.eval_seed_base)

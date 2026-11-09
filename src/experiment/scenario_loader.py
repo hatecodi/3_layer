@@ -96,6 +96,108 @@ class TrainTimetable:
     planned: Dict[str, TrainPlan]     # station_id -> TrainPlan
     bounds: Dict[str, TrainBound]     # station_id -> TrainBound
     candidate_platforms: Dict[str, List[str]]  # station_id -> [platform_ids]
+    # Intermediate stations where this train passes through without stopping
+    # (planned arr == dep and dwell_min == 0).  Populated by load_scenario.
+    pass_stations: Set[str] = field(default_factory=set)
+
+
+# ---------------------------------------------------------------------------
+# pass-through-at-station helpers (single source of truth)
+# ---------------------------------------------------------------------------
+
+def route_stations(train: TrainTimetable,
+                   corridors: Dict[str, CorridorConfig]) -> List[str]:
+    """Ordered stations from origin to destination, derived from the corridor
+    graph (no hardcoded station IDs)."""
+    nxt: Dict[str, str] = {}
+    for c in corridors.values():
+        if c.direction == train.direction:
+            nxt[c.from_station] = c.to_station
+    route = [train.origin_station]
+    while route[-1] != train.destination_station:
+        nxt_st = nxt.get(route[-1])
+        if nxt_st is None or nxt_st in route:
+            break
+        route.append(nxt_st)
+    return route
+
+
+def _station_is_mixed_through(station: StationConfig) -> bool:
+    flags = [p.through_allowed for p in station.platforms]
+    return any(flags) and not all(flags)
+
+
+def pass_stations_for(train: TrainTimetable,
+                      stations: Dict[str, StationConfig],
+                      corridors: Dict[str, CorridorConfig]) -> Set[str]:
+    """Intermediate stations where the train is a through service.
+
+    A pass station requires: on the route, not origin/destination, planned
+    dwell exactly zero, Layer-1 dwell_min zero, and the station reserves a
+    through platform (mixed ``through_allowed`` layout).  The mixed gate is
+    what activates per-station pass semantics for scenarios that opt in via
+    their resource config.
+    """
+    out: Set[str] = set()
+    route = route_stations(train, corridors)
+    for sid in route[1:-1]:
+        plan = train.planned.get(sid)
+        bound = train.bounds.get(sid)
+        station = stations.get(sid)
+        if plan is None or bound is None or station is None:
+            continue
+        if abs(plan.dep - plan.arr) > 1e-6:
+            continue
+        if bound.dwell_min > 1e-6:
+            continue
+        if not _station_is_mixed_through(station):
+            continue
+        out.add(sid)
+    return out
+
+
+def is_station_pass(train: TrainTimetable, station_id: str) -> bool:
+    """True when the train passes through *station_id* without stopping."""
+    return bool(train.pass_through or station_id in train.pass_stations)
+
+
+def apply_pass_platform_policy(train: TrainTimetable,
+                               stations: Dict[str, StationConfig]) -> None:
+    """Restrict candidate platforms by through/stop role, per station.
+
+    Pass trains may only use through-allowed platforms; stopping trains use
+    non-through platforms when a station has both (through track reserved for
+    pass services).  Stations with a uniform platform set are left unchanged
+    (e.g. D's two-platform fallback).
+    """
+    for sid, cand in list(train.candidate_platforms.items()):
+        station = stations.get(sid)
+        if station is None or not cand:
+            continue
+        through_ids = [p.id for p in station.platforms if p.through_allowed]
+        non_through_ids = [p.id for p in station.platforms
+                           if not p.through_allowed]
+        if is_station_pass(train, sid):
+            filtered = [p for p in cand if p in through_ids]
+            if not filtered:
+                filtered = list(cand)
+        elif non_through_ids:
+            filtered = [p for p in cand if p in non_through_ids]
+            if not filtered:
+                filtered = list(cand)
+        else:
+            # Uniform layout: preserve the legacy convention that the first
+            # platform is the through line, reserved away from stopping trains
+            # at multi-platform stations (2-platform stations keep both for
+            # capacity, e.g. D).
+            if len(station.platforms) > 2:
+                p1_id = station.platforms[0].id
+                filtered = [p for p in cand if p != p1_id]
+                if not filtered:
+                    filtered = list(cand)
+            else:
+                filtered = list(cand)
+        train.candidate_platforms[sid] = filtered
 
 
 @dataclass
@@ -456,6 +558,16 @@ def load_scenario(
     if errors:
         raise ValidationError(
             "Scenario validation failed:\n  - " + "\n  - ".join(errors))
+
+    # Derive per-station pass-through.  Only apply the platform policy here
+    # when at least one station reserves a through platform; otherwise each
+    # env keeps its legacy candidate handling (avoids touching two_station).
+    apply_platforms = any(
+        _station_is_mixed_through(s) for s in stations.values())
+    for train in trains.values():
+        train.pass_stations = pass_stations_for(train, stations, corridors)
+        if apply_platforms:
+            apply_pass_platform_policy(train, stations)
 
     return ScenarioConfig(
         project_root=project_root,

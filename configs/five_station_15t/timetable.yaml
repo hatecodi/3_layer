@@ -63,6 +63,13 @@ time_generation:
     max_added_delay_sec: 80             # calibration cap — lowered 200->80 to sit BELOW the
                                         # replan trigger (replan_max_headway_delay_sec) so the
                                         # incident never snowballs via the replan loop
+  corridor_closure:
+    enabled: false                  # opt-in: --closure / enable_corridor_closure=True
+    prob: 0.6
+    duration_range: [10, 30]        # hold length for the targeted leader (kept
+                                    # short so the window isolates the meet)
+    min_gap_sec: 15                 # leader/follower planned departure separation
+    follower_margin_sec: 5          # t1 must end this far before the follower's plan entry
 assumptions:
 - 'Time compression: real seconds / 25 = sim seconds. Base 15:00 = t=0.'
 - A:南昌西 B:鹰潭北 C:上饶 D:杭州东 E:南京南

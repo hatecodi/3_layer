@@ -102,13 +102,15 @@ def main():
     # ---- MAPPO worker per-section decision (select_action: actor+critic) ----
     dev = "cpu"
     actor = CorridorActor(L3_OBS_DIM, hidden_dim=128)
-    critic = CorridorCritic(L3_OBS_DIM, hidden_dim=128)
+    critic_local = CorridorCritic(L3_OBS_DIM, hidden_dim=128)
+    critic_global = CorridorCritic(L3_OBS_DIM, hidden_dim=128)
     if args.l3:
         ck = torch.load(args.l3, map_location=dev, weights_only=False)
         actor.load_state_dict(ck["l3_actor"])
-        critic.load_state_dict(ck["l3_critic"])
-    actor.eval(); critic.eval()
-    worker = L3WorkerTrainer(actor, critic, lr=1e-3, device=dev)
+        critic_local.load_state_dict(ck["l3_critic_local"])
+        critic_global.load_state_dict(ck["l3_critic_global"])
+    actor.eval(); critic_local.eval(); critic_global.eval()
+    worker = L3WorkerTrainer(actor, critic_local, critic_global, lr=1e-3, device=dev)
     obs = torch.randn(1, L3_OBS_DIM)
     for _ in range(2000):
         worker.select_action(obs)

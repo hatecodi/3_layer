@@ -1,7 +1,6 @@
 priority_map:
   '1': 复兴号(G1380,G1616,G7629)
-  '2': 和谐号(G230,G238,G2245,G1487,G1347)
-  '3': 普速(K834,K1185)
+  '2': 和谐号(G230,G238,G2245,G1487,G1347,G834,G1185)
 station_dwell_defaults:
   A: 5
   B: 5
@@ -50,7 +49,7 @@ assumptions:
 - P1:复兴号 P2:和谐号 P3:普速
 - 'dep = raw_dep/25 — no dwell_min inflation, raw timetable preserved'
 - 'dwell_min reduced to 5s (2 min real) — realistic minimum platform time'
-- K834: single-station fixed visitor at C (arr=16:59 dep=17:04)
+- G834: single-station fixed visitor at C (arr=16:59 dep=17:04)
 trains:
 # ============================================================
 # UP (A->E) trains
@@ -267,10 +266,10 @@ trains:
     D: [D_p1, D_p2]
     E: [E_p1, E_p2, E_p3, E_p4]
 
-- id: K834
+- id: G834
   direction: up
-  train_class: K
-  priority: 3
+  train_class: G
+  priority: 2
   pass_through: false
   route:
     origin_station: C
@@ -535,10 +534,10 @@ trains:
     B: [B_p1, B_p2, B_p3, B_p4]
     A: [A_p1, A_p2, A_p3, A_p4]
 
-- id: K1185
+- id: G1185
   direction: down
-  train_class: K
-  priority: 3
+  train_class: G
+  priority: 2
   pass_through: false
   route:
     origin_station: B

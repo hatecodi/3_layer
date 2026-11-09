@@ -22,7 +22,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List
 
-from ..experiment.scenario_loader import ScenarioConfig, TrainTimetable
+from ..experiment.scenario_loader import (
+    ScenarioConfig,
+    TrainTimetable,
+    is_station_pass,
+)
 
 
 @dataclass
@@ -66,7 +70,7 @@ class DispatchBounds:
             t_dep_max=bounds.dep_max if bounds else float("inf"),
             dwell_min=bounds.dwell_min if bounds else 0.0,
             prio_i=train.priority,
-            pass_flag=train.pass_through,
+            pass_flag=is_station_pass(train, station_id),
             candidate_platforms=train.candidate_platforms.get(station_id, []),
         )
 

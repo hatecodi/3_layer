@@ -76,10 +76,12 @@ def main():
         l3_ckpt = torch.load(args.l3_ckpt, map_location=device, weights_only=False)
         l3_actor = CorridorActor(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
         l3_critic = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
+        l3_critic_g = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
         l3_actor.load_state_dict(l3_ckpt["l3_actor"])
-        l3_critic.load_state_dict(l3_ckpt["l3_critic"])
+        l3_critic.load_state_dict(l3_ckpt["l3_critic_local"])
+        l3_critic_g.load_state_dict(l3_ckpt["l3_critic_global"])
         l3_trainer = L3WorkerTrainer(
-            l3_actor, l3_critic, lr=HP["l3_lr"] * 0.5, gamma=HP["gamma"],
+            l3_actor, l3_critic, l3_critic_g, lr=HP["l3_lr"] * 0.5, gamma=HP["gamma"],
             gae_lambda=HP["gae_lambda"], clip_ratio=HP["clip_ratio"],
             ppo_epochs=HP["ppo_epochs"], entropy_coef=HP["l3_entropy_coef"] * 0.3,
             value_coef=HP["value_coef"], max_grad_norm=HP["max_grad_norm"], device=device)
@@ -204,14 +206,16 @@ def main():
             save = {"ac_state": ac.state_dict(), "episode": ep, "hp": HP}
             if l3_trainer:
                 save["l3_actor"] = l3_trainer.actor.state_dict()
-                save["l3_critic"] = l3_trainer.critic.state_dict()
+                save["l3_critic_local"] = l3_trainer.critic_local.state_dict()
+                save["l3_critic_global"] = l3_trainer.critic_global.state_dict()
             torch.save(save, ckpt_dir / "best.pt")
 
     # Final
     save = {"ac_state": ac.state_dict(), "episode_metrics": episode_metrics, "hp": HP}
     if l3_trainer:
         save["l3_actor"] = l3_trainer.actor.state_dict()
-        save["l3_critic"] = l3_trainer.critic.state_dict()
+        save["l3_critic_local"] = l3_trainer.critic_local.state_dict()
+        save["l3_critic_global"] = l3_trainer.critic_global.state_dict()
     torch.save(save, ckpt_dir / "final.pt")
 
     # Summary

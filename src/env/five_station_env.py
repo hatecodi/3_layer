@@ -49,14 +49,28 @@ from ..control.resource_manager import (
     resolve_all,
 )
 from ..experiment.heuristic_planner import make_rebuild_fn
-from ..experiment.scenario_loader import ScenarioConfig, TrainBound, TrainPlan, TrainTimetable
+from ..experiment.scenario_loader import (
+    ScenarioConfig,
+    TrainBound,
+    TrainPlan,
+    TrainTimetable,
+    apply_pass_platform_policy,
+    is_station_pass,
+    pass_stations_for,
+)
 from .disturbance import (
     DEADLOCK_THRESHOLD,
     inject_bunched_delay,
+    inject_corridor_closure,
     inject_corridor_incident,
 )
 from .observation_builder import build_observations
-from .reward import compute_layered_rewards, compute_metrics
+from .reward import (
+    L2_PRIORITY_WEIGHT,
+    YIELD_TAIL_THRESHOLD,
+    compute_layered_rewards,
+    compute_metrics,
+)
 
 # ---------------------------------------------------------------------------
 # Multi-station train tracking
@@ -130,8 +144,13 @@ class FiveStationEnv(BaseRailwayEnv):
         enable_vt: bool = True,
         enable_initial_delay: bool = True,
         enable_corridor_incident: Optional[bool] = None,  # None -> follow config
+        enable_corridor_closure: Optional[bool] = None,   # None -> follow config
         l3_worker: Optional[object] = None,  # L3WorkerTrainer or None for rule-based
         l3_sa: bool = False,                 # SA per-transit baseline (eval only)
+        l3_sa_iters: int = 300,              # SA annealing budget per transit
+                                             # (lower => weaker SA baseline)
+        yield_entry_cap: bool = False,       # cap entry delay for yield cases
+                                             # to plan/+10/+20 (exclude +30/+50)
         l3_sa_online: bool = False,          # partial-observation SA baseline (eval only)
         l3_sa_nofc: bool = False,            # SA WITHOUT incident forecast: plans as if
                                              # clear (factor=1) but executes the real
@@ -146,6 +165,11 @@ class FiveStationEnv(BaseRailwayEnv):
         l3_team_lambda: float = 1.0,         # L3 episode-level team-reward weight
                                              # (>=1 so coordination pays; greedy SA
                                              # does NOT see this term -> asymmetric)
+        control_coverage: str = "base",      # which decisions are exposed as
+                                             # coordination-relevant in info:
+                                             # base = pass / higher-prio follower
+                                             # plus = + closure + any co-pending
+                                             # full = every active train
     ):
         self.cfg = cfg
         self.layer1 = DispatchBounds(cfg)
@@ -157,14 +181,21 @@ class FiveStationEnv(BaseRailwayEnv):
         self._incident_enabled = (
             enable_corridor_incident if enable_corridor_incident is not None
             else inc_cfg.get("enabled", False))
+        clo_cfg = cfg.time_generation.get("corridor_closure", {})
+        self._closure_enabled = (
+            enable_corridor_closure if enable_corridor_closure is not None
+            else clo_cfg.get("enabled", False))
         self._l3_worker = l3_worker  # None = rule-based cruise
         self._l3_sa = l3_sa
+        self._l3_sa_iters = l3_sa_iters
+        self._yield_entry_cap = yield_entry_cap
         self._l3_sa_online = l3_sa_online
         self._l3_sa_nofc = l3_sa_nofc
         self._enable_extra_train = enable_extra_train
         self._extra_train_prob = extra_train_prob
         self._incident_scale = incident_scale
         self._l3_team_lambda = l3_team_lambda
+        self._control_coverage = control_coverage
         # (L3 team reward now uses a sliding window of recent arrivals — see
         # _l3_win_delays — for a low-variance system punctuality signal.)
         # Visitor trains: config-driven, can be disabled per experiment.
@@ -179,17 +210,15 @@ class FiveStationEnv(BaseRailwayEnv):
             stops = self._get_train_route(train)
             self._routes[tid] = stops
 
-        # Reserve p1 for pass-through trains only (except at D which only
-        # has 2 platforms).  Stopping trains compete for p2/p3/p4.
+        # Resolve per-station pass-through and platform roles.  At stations
+        # with a reserved through platform, pass trains use it and stopping
+        # trains use the remaining platforms; uniform-platform stations (D)
+        # leave candidates unchanged.  Config-driven, idempotent.
         for tid, train in cfg.trains.items():
-            if not train.pass_through:
-                for st in list(train.candidate_platforms.keys()):
-                    if st == 'D':
-                        continue
-                    plats = train.candidate_platforms[st]
-                    if plats and st in cfg.stations:
-                        p1_id = cfg.stations[st].platforms[0].id
-                        train.candidate_platforms[st] = [p for p in plats if p != p1_id]
+            if not train.pass_stations and not train.pass_through:
+                train.pass_stations = pass_stations_for(
+                    train, cfg.stations, cfg.corridors)
+            apply_pass_platform_policy(train, cfg.stations)
 
         # L3 physical simulator — per-corridor headway derived from timetable.
         # If config defines block sections, use calibrated block-section physics
@@ -209,8 +238,24 @@ class FiveStationEnv(BaseRailwayEnv):
                                    sections=sections)
         self._corridor_delays: Dict[str, float] = {}  # train_id -> headway delay
         self._throat_delays: Dict[str, float] = {}    # train_id -> throat delay
+        # Moving-block externality ledger: front train -> sum(wait * w_follower),
+        # charged at that train's next reward step (see scenario_loader/rewward).
+        self._leader_externality: Dict[str, float] = {}
+        # Yield-amplitude soft penalty: train_id -> avoidable excess seconds.
+        self._yield_tail_charges: Dict[str, float] = {}
+        # Station-level re-sequencing instrumentation.
+        self._overtake_events: List[dict] = []
+        self._overtake_total: int = 0
+        self._yield_total: int = 0
         self._corridor_incidents: Dict[str, Tuple[float, float, float, float]] = {}
+        # Corridor closure windows: corridor_id -> (t0, t1), no NEW entries in
+        # [t0, t1].  Trains already inside continue.
+        self._corridor_closures: Dict[str, Tuple[float, float]] = {}
+        self._closure_held: Dict[str, float] = {}  # train_id -> hold seconds
         self._hard_guard_violations = 0
+        # Mask diagnostics: how often the Layer-1 action mask rejects candidate
+        # actions (and by which bound).  See _policy_action / _build_requests.
+        self._mask_stats: Dict[str, int] = defaultdict(int)
         self._l3_action_counts: Dict[int, int] = {}   # per-section speed choices (episode)
         # behavior instrumentation: (mode, section_speed_factor, priority) per
         # section — for comparing SA vs learned-L3 mode distributions
@@ -262,8 +307,16 @@ class FiveStationEnv(BaseRailwayEnv):
         self._held_steps = {}
         self._corridor_delays = {}
         self._throat_delays = {}
+        self._leader_externality = {}
+        self._yield_tail_charges = {}
+        self._overtake_events = []
+        self._overtake_total = 0
+        self._yield_total = 0
         self._corridor_incidents = {}
+        self._corridor_closures = {}
+        self._closure_held = {}
         self._hard_guard_violations = 0
+        self._mask_stats = defaultdict(int)
         self._l3_action_counts = {}
         self._l3_behavior = []
         self._l3_transit_events = []
@@ -309,6 +362,9 @@ class FiveStationEnv(BaseRailwayEnv):
         if self._incident_enabled:
             self._corridor_incidents = inject_corridor_incident(
                 self.cfg, self.rng, severity_scale=self._incident_scale)
+        if self._closure_enabled:
+            self._corridor_closures = inject_corridor_closure(
+                self.cfg, self.rng)
 
         self._last_requests = []
         self._last_grants = []
@@ -322,17 +378,26 @@ class FiveStationEnv(BaseRailwayEnv):
                                  context=ctx)
 
         pending = self._pending_trains()
+        # Policy action set: every train the batch scheduler will consider this
+        # step (lookahead = batch_window_sec), not just trains that have already
+        # arrived.  Without this the policy only controls ~14% of grants; the
+        # rest are heuristic-scheduled 120s ahead.
+        policy_ids = self._pending_trains(lookahead=self.batch_window_sec)
+        relevant_ids = self._control_relevant_ids(
+            policy_ids, ctx.get("station_pending_detail", {}))
         info = {
-            "action_masks": self._action_masks(pending),
+            "action_masks": self._action_masks(policy_ids),
             "pending": pending,
+            "policy_train_ids": policy_ids,
+            "control_relevant_ids": relevant_ids,
             "completed": self._completed_ids,
-            "active_train_ids": pending,
-            "active_l2": pending,
+            "active_train_ids": policy_ids,
+            "active_l2": policy_ids,
             "requests": self._last_requests,
             "episode_status": self._episode_status.value,
             "t_now": self._t_now,
             "metrics": {
-                "n_active": len(pending),
+                "n_active": len(policy_ids),
                 "n_granted": 0, "n_held": 0,
                 "mean_dep_delay": 0.0, "mean_arr_delay": 0.0,
                 "total_dep_delay": 0.0,
@@ -347,6 +412,25 @@ class FiveStationEnv(BaseRailwayEnv):
 
         action_dict = action_dict or {}
 
+        # Policy action set for this step (batch window).  Rewards/metrics must
+        # cover the same agents the policy acted for.
+        policy_ids_step = self._pending_trains(lookahead=self.batch_window_sec)
+        policy_station = {
+            tid: self._journeys[tid].current_station
+            for tid in policy_ids_step if not self._journeys[tid].is_done
+        }
+        # Trains currently held by a corridor closure (departure into [t0,t1]).
+        self._closure_held = {}
+        for tid in policy_ids_step:
+            st = self._journeys[tid].current_station
+            t1 = self._closure_hold_until(tid, st)
+            if t1 is not None:
+                plan = self.cfg.trains[tid].planned.get(st)
+                planned_dep = plan.dep if plan is not None else self._t_now
+                hold = max(0.0, t1 - planned_dep)
+                if hold > 1e-6:  # only trains whose departure plan is held
+                    self._closure_held[tid] = hold
+
         # 1. Build requests for all pending trains (within batch window)
         requests, held, infeasible, retried = self._build_requests(
             action_dict, lookahead=self.batch_window_sec)
@@ -358,15 +442,25 @@ class FiveStationEnv(BaseRailwayEnv):
         held.extend(r.train_id for r in requests if r.train_id not in granted_ids)
         held = sorted(set(held))
 
-        # 3. Capture grant-time station before advancing (for reward metrics)
-        grant_station = {
-            g.train_id: self._journeys[g.train_id].current_station
-            for g in grants if not self._journeys[g.train_id].is_done
-        }
+        # (station map for rewards/metrics was captured before requests;
+        #  it covers every policy-active train, granted or held)
 
         # 4. Advance trains
+        pre_grant = self._capture_pre_grant(grants)
         newly_advanced, hard_guard_held = self._advance_trains(grants)
         effective_grants = [g for g in grants if g.train_id not in hard_guard_held]
+        self._yield_tail_charges = self._compute_yield_tail_charges(
+            effective_grants, pre_grant)
+        # Station-level re-sequencing: overtakes (arrived earlier, departed
+        # later) and deliberate yields (lower priority delayed while a
+        # higher-priority train departs no later).  Same-step detection only.
+        self._overtake_events = self._detect_resequencing(
+            effective_grants, pre_grant, retried=set(retried),
+            requests=requests)
+        self._overtake_total += sum(
+            1 for e in self._overtake_events if e["is_overtake"])
+        self._yield_total += sum(
+            1 for e in self._overtake_events if e["is_yield"])
         # feed this step's realised arrivals into the team-reward sliding window
         for ev in self._l3_transit_events:
             self._l3_win_delays.append(ev["arr_delay"])
@@ -387,23 +481,44 @@ class FiveStationEnv(BaseRailwayEnv):
         unresolved = sum(len(v) for v in conflict_graph.values()) // 2
         rewards = compute_layered_rewards(
             self.cfg, effective_grants, held,
-            active_train_ids=pending,
+            active_train_ids=policy_ids_step,
             unresolved_conflicts=unresolved,
             hard_bound_infeasible_count=infeasible + self._hard_guard_violations,
-            station_map=grant_station,
+            station_map=policy_station,
             visitor_windows=self._visitor_windows if self._visitor_enabled else {},
             retried_train_ids=retried,
             lambda_team=lambda_team,
             corridor_delays=dict(self._corridor_delays),
             throat_delays=dict(self._throat_delays),
+            externality_charges=dict(self._leader_externality),
+            yield_tail_charges=dict(self._yield_tail_charges),
         )
+        # Charges were applied to every active train; drop them so the same
+        # wait is never billed twice.  A non-active leader keeps its ledger
+        # entry until its next reward step.
+        for tid in rewards:
+            self._leader_externality.pop(tid, None)
         metrics = compute_metrics(
             self.cfg, effective_grants, held,
-            active_train_ids=pending,
+            active_train_ids=policy_ids_step,
             unresolved_conflicts=unresolved,
             hard_bound_infeasible_count=infeasible + self._hard_guard_violations,
-            station_map=grant_station,
+            station_map=policy_station,
             transit_events=list(self._l3_transit_events),
+            overtake_count=sum(
+                1 for e in self._overtake_events if e["is_overtake"]),
+            yield_count=sum(
+                1 for e in self._overtake_events if e["is_yield"]),
+            pass_overtake_count=sum(
+                1 for e in self._overtake_events
+                if e["is_overtake"]
+                and (e["pass_overtaken"] or e["pass_overtaker"])),
+            priority_overtake_count=sum(
+                1 for e in self._overtake_events
+                if e.get("is_priority_overtake")),
+            deliberate_yield_count=sum(
+                1 for e in self._overtake_events
+                if e.get("is_deliberate_yield")),
         )
 
         # 8. Advance time (single unified block)
@@ -455,13 +570,19 @@ class FiveStationEnv(BaseRailwayEnv):
         terminated = self._episode_status in (EpisodeStatus.SUCCESS, EpisodeStatus.DEADLOCK)
         truncated = self._episode_status == EpisodeStatus.TRUNCATED
 
+        pending_next = self._pending_trains()
+        policy_next = self._pending_trains(lookahead=self.batch_window_sec)
+        relevant_next = self._control_relevant_ids(
+            policy_next, ctx.get("station_pending_detail", {}))
         info = {
-            "action_masks": self._action_masks(self._pending_trains()),
+            "action_masks": self._action_masks(policy_next),
             "requests": requests,
-            "active_train_ids": self._pending_trains(),
-            "pending": self._pending_trains(),
+            "active_train_ids": policy_next,
+            "policy_train_ids": policy_next,
+            "control_relevant_ids": relevant_next,
+            "pending": pending_next,
             "completed": self._completed_ids,
-            "active_l2": pending,
+            "active_l2": policy_next,
             "granted_windows": grants,
             "held_train_ids": held,
             "reward_breakdown": {tid: asdict(r) for tid, r in rewards.items()},
@@ -472,8 +593,26 @@ class FiveStationEnv(BaseRailwayEnv):
             "l3_action_counts": dict(getattr(self, "_l3_action_counts", {})),
             "l3_transit_events": list(getattr(self, "_l3_transit_events", [])),
             "retried_train_ids": retried,  # trains whose platform was changed by resolver
+            "corridor_closures": dict(self._corridor_closures),
+            "closure_held": dict(self._closure_held),
+            "closure_count": sum(
+                1 for e in self._overtake_events
+                if e.get("closure_related")),
             "hard_guard_violations": self._hard_guard_violations,
             "hard_guard_held": hard_guard_held,
+            "mask_stats": dict(self._mask_stats),
+            "overtake_events": list(self._overtake_events),
+            "overtake_count": sum(
+                1 for e in self._overtake_events if e["is_overtake"]),
+            "yield_count": sum(
+                1 for e in self._overtake_events if e["is_yield"]),
+            "deliberate_yield_count": sum(
+                1 for e in self._overtake_events
+                if e.get("is_deliberate_yield")),
+            "overtake_total": self._overtake_total,
+            "yield_total": self._yield_total,
+            "leader_externality": dict(self._leader_externality),
+            "yield_tail_charges": dict(self._yield_tail_charges),
             "t_now": self._t_now,
         }
         return (
@@ -516,17 +655,19 @@ class FiveStationEnv(BaseRailwayEnv):
                                     dwell_min=d_dwell if st == "D" else 0.0)
             if k < len(route) - 1:
                 t += self._corridor_runtime(st, route[k + 1], direction)
-        cand = {}
-        for st in route:
-            plats = [p.id for p in self.cfg.stations[st].platforms]
-            if st != "D":  # non-pass-through: strip the through-line P1
-                plats = [p for p in plats if not p.endswith("_p1")]
-            cand[st] = plats
-        return TrainTimetable(
+        cand = {
+            st: [p.id for p in self.cfg.stations[st].platforms]
+            for st in route
+        }
+        train = TrainTimetable(
             id=tid, direction=direction, train_class="G", priority=2,
             pass_through=False, origin_station=s, destination_station="D",
             corridor=f"{s}_to_{route[1]}" if len(route) > 1 else f"{s}_to_D",
             planned=planned, bounds=bounds, candidate_platforms=cand)
+        train.pass_stations = pass_stations_for(
+            train, self.cfg.stations, self.cfg.corridors)
+        apply_pass_platform_policy(train, self.cfg.stations)
+        return train
 
     # ------------------------------------------------------------------
     # request building
@@ -606,6 +747,22 @@ class FiveStationEnv(BaseRailwayEnv):
         for tid in pending:
             st = self._journeys[tid].current_station
             pending_at_station[tid] = station_counts.get(st, 0) - 1
+        # Detailed pending list for follower-aware observations (priority,
+        # expected arrival, per-station pass role).
+        station_pending_detail: Dict[str, List[dict]] = {}
+        for tid in pending:
+            j = self._journeys[tid]
+            st = j.current_station
+            train = self.cfg.trains[tid]
+            plan = train.planned.get(st)
+            station_pending_detail.setdefault(st, []).append({
+                "tid": tid,
+                "priority": train.priority,
+                "direction": train.direction,
+                "arrival": j.arrival_at_current,
+                "planned_dep": plan.dep if plan else 0.0,
+                "is_pass": is_station_pass(train, st),
+            })
 
         # Cumulative delays from initial delay + propagated scheduling delays
         cumulative_delays = {}
@@ -620,6 +777,17 @@ class FiveStationEnv(BaseRailwayEnv):
                 ref = planned.dep if j.current_idx == 0 else planned.arr
                 cumulative_delays[tid] = max(0.0, j.arrival_at_current - ref)
 
+        # Corridor closure reopen time per train (only its NEXT corridor).
+        closure_until: Dict[str, float] = {}
+        if self._corridor_closures:
+            for tid, j in self._journeys.items():
+                if j.is_done or j.next_station is None:
+                    continue
+                win = self._corridor_closures.get(
+                    f"{j.current_station}_to_{j.next_station}")
+                if win is not None and win[1] > self._t_now + 1e-6:
+                    closure_until[tid] = win[1]
+
         return {
             "visitor_windows": self._visitor_windows if self._visitor_enabled else {},
             "visitors": self._visitor_list if self._visitor_enabled else {},
@@ -629,6 +797,8 @@ class FiveStationEnv(BaseRailwayEnv):
                         for tid, j in self._journeys.items() if not j.is_done},
             "pending_at_station": pending_at_station,
             "station_pending": station_pending,  # {st: [(tid, planned_dep), ...]}
+            "station_pending_detail": station_pending_detail,
+            "closure_until": closure_until,
         }
 
     def _pending_trains(self, lookahead: float = 0.0) -> List[str]:
@@ -703,10 +873,12 @@ class FiveStationEnv(BaseRailwayEnv):
                 bounds = self._get_effective_bounds(train_id, station_id, self._t_now)
 
                 try:
-                    action = self._policy_action(train_id, station_id, bounds, action_dict)
+                    action = self._policy_action(train_id, station_id, bounds,
+                                                 action_dict, mask_stats=self._mask_stats)
                 except ValueError:
                     held.append(train_id)
                     infeasible += 1
+                    self._mask_stats["no_legal_action"] += 1
                     continue
 
                 request = action_to_request(
@@ -719,6 +891,9 @@ class FiveStationEnv(BaseRailwayEnv):
                 if request.W_in[0] < bounds.arr_min - 1e-6 or request.W_out[0] > bounds.dep_max + 1e-6:
                     held.append(train_id)
                     infeasible += 1
+                    # Redundant post-construction re-check: any hit here means the
+                    # mask let an out-of-envelope action through (expected 0).
+                    self._mask_stats["postcheck_reject"] += 1
                     continue
 
                 # Check against already-committed higher-priority trains
@@ -807,11 +982,20 @@ class FiveStationEnv(BaseRailwayEnv):
         return None
 
     def _policy_action(self, train_id: str, station_id: str, bounds,
-                       action_dict) -> Tuple:
+                       action_dict, mask_stats=None) -> Tuple:
         train = self.cfg.trains[train_id]
         mask_set = compute_joint_action_mask(
             train, station_id, self._t_now, TRAVEL_TIME_TO_THROAT, self.cfg,
-            bounds_override=bounds)
+            bounds_override=bounds,
+            reason_counter=mask_stats if mask_stats is not None else None)
+        if mask_stats is not None:
+            # Mask diagnostics (paper evidence: the mask is operative, not vacuous)
+            n_masked = sum(1 for m in mask_set.mask if not m)
+            mask_stats["decisions"] += 1
+            mask_stats["candidates"] += len(mask_set.mask)
+            mask_stats["masked_out"] += n_masked
+            if n_masked:
+                mask_stats["decisions_with_mask"] += 1
         if mask_set.status == "NO_LEGAL_ACTION":
             raise ValueError(f"No legal action for {train_id}")
 
@@ -931,7 +1115,11 @@ class FiveStationEnv(BaseRailwayEnv):
         hard_guard_held: List[str] = []
         self._l3_speed_choices: Dict[str, int] = {}
         self._l3_transit_events = []
-        grants = sorted(grants, key=lambda g: g.W_out[0])
+        # Execution/re-sequencing order is departure time; priority and id make
+        # exact ties deterministic (yield schedules often land on the same
+        # second as the train being yielded to).
+        grants = sorted(grants, key=lambda g: (
+            g.W_out[0], self.cfg.trains[g.train_id].priority, g.train_id))
         for g in grants:
             journey = self._journeys[g.train_id]
             if journey.next_station is None:
@@ -959,6 +1147,9 @@ class FiveStationEnv(BaseRailwayEnv):
                         else self._l3_sim.corridor_length(corridor_key))
 
             train_prio = self.cfg.trains[g.train_id].priority
+            # Front occupant BEFORE this train is recorded on the corridor.
+            # It is the train that any headway wait is attributable to.
+            front_id = self._l3_sim.front_train_id(corridor_key)
             speeds = p.get_speeds(train_prio)
             # Per-train SCHEDULE (cruise) speed from the INITIAL timetable:
             # running at schedule = on-time arrival for every class (fixes P1/P3
@@ -1147,6 +1338,7 @@ class FiveStationEnv(BaseRailwayEnv):
                 modes, _ = profile_fn(
                     self._l3_sim, corridor_key, throat_exit, train_prio,
                     sections, bounds, planned_arrival, reward_fn,
+                    n_iter=self._l3_sa_iters,
                     incident_window=plan_window,
                     schedule_cruise_mps=schedule_cruise)
                 t = throat_exit
@@ -1240,18 +1432,60 @@ class FiveStationEnv(BaseRailwayEnv):
 
             if headway_delay > 1e-6:
                 self._corridor_delays[g.train_id] = headway_delay
+                # Internalise the moving-block externality: charge the front
+                # train for the priority-weighted wait this follower incurred.
+                if front_id and front_id != g.train_id:
+                    w_f = L2_PRIORITY_WEIGHT.get(train_prio, 1.0)
+                    self._leader_externality[front_id] = (
+                        self._leader_externality.get(front_id, 0.0)
+                        + headway_delay * w_f)
             if throat_delay > 1e-6:
                 self._throat_delays[g.train_id] = throat_delay
 
             # Realized corridor transit (eval instrumentation: actual vs planned
             # arrival, and whether the incident restriction applied)
             if t_corridor_exit is not None:
+                # `affected` above is decided by the REALIZED trajectory
+                # (sf_k != 1.0), so the affected SUBSET depends on the policy —
+                # a policy that shifts its transits out of the window shrinks it.
+                # Comparing "affected delay" across policies would then compare
+                # different trains.  `affected_plan` is the same overlap test on
+                # the PLANNED timetable window only, so it is policy-independent
+                # and can be used as the exogenous subset.  Eval instrumentation
+                # only: nothing in the env reads it back.
+                affected_plan = False
+                if inc:
+                    p_entry = train_plan[cur].dep
+                    p_exit = p_entry + float(
+                        self.cfg.time_generation.get("corridor_runtime_sec", {})
+                        .get(corridor_key, 90.0))
+                    affected_plan = (p_entry < inc[1]) and (p_exit > inc[0])
+                # Closure disturbance: realized hold at this departure (
+                # policy-dependent) and the plan-based subset (policy-independent:
+                # planned departure inside [t0, t1], i.e. a new entry blocked).
+                closure_hold_sec = float(self._closure_held.get(
+                    g.train_id, 0.0))
+                closure_affected = closure_hold_sec > 1e-6
+                cw = self._corridor_closures.get(corridor_key)
+                closure_plan = bool(
+                    cw is not None
+                    and cw[0] - 1e-6 <= train_plan[cur].dep <= cw[1] + 1e-6)
+                affected = affected or closure_affected
+                affected_plan = affected_plan or closure_plan
                 self._l3_transit_events.append({
                     "train_id": g.train_id, "corridor": corridor_key,
                     "entry": throat_exit, "actual_arrival": t_corridor_exit,
                     "planned_arrival": train_plan[nxt].arr,
                     "arr_delay": t_corridor_exit - train_plan[nxt].arr,
                     "headway_delay": headway_delay, "affected": affected,
+                    "affected_plan": affected_plan,
+                    "closure_affected": closure_affected,
+                    "closure_affected_plan": closure_plan,
+                    "closure_hold_sec": closure_hold_sec,
+                    "priority": train_prio, "front_train": front_id,
+                    "dep_station": cur, "arr_station": nxt,
+                    "is_pass_dep": is_station_pass(
+                        self.cfg.trains[g.train_id], cur),
                 })
 
             # L3 hard guard: hold for replan only when headway delay is excessive
@@ -1270,16 +1504,248 @@ class FiveStationEnv(BaseRailwayEnv):
             advanced += 1
         return advanced, hard_guard_held
 
+    def _has_higher_prio_follower(self, tid: str, station_id: str) -> bool:
+        """True if a higher-priority, later-arriving same-direction train is
+        pending at this station (the yield case)."""
+        me = self._journeys.get(tid)
+        if me is None:
+            return False
+        train = self.cfg.trains[tid]
+        for other, j in self._journeys.items():
+            if other == tid or j.is_done or j.current_station != station_id:
+                continue
+            other_train = self.cfg.trains[other]
+            if other_train.direction != train.direction:
+                continue
+            if (other_train.priority < train.priority
+                    and j.arrival_at_current > me.arrival_at_current + 1e-6):
+                return True
+        return False
+
+    def _compute_yield_tail_charges(self, grants: List[GrantResult],
+                                    pre: Dict[str, dict]) -> Dict[str, float]:
+        """Avoidable departure delay for yield-relevant trains.
+
+        Only trains that were ahead of a higher-priority, later-arriving
+        same-direction train at the pre-grant station are charged.  The charge
+        is the part of W_out beyond max(planned_dep, arrival) and beyond
+        YIELD_TAIL_THRESHOLD; reward.py prices it softly (YIELD_TAIL_COEF).
+        """
+        charges: Dict[str, float] = {}
+        items = list(pre.values())
+        for g in grants:
+            p = pre.get(g.train_id)
+            if p is None or p["next"] is None:
+                continue
+            has_higher = any(
+                q is not p
+                and q["station"] == p["station"]
+                and q["direction"] == p["direction"]
+                and q["priority"] < p["priority"]
+                and q["arrival"] > p["arrival"] + 1e-6
+                for q in items)
+            if not has_higher:
+                continue
+            base = max(p["planned_dep"], p["arrival"])
+            extra = max(0.0, g.W_out[0] - base)
+            if extra > YIELD_TAIL_THRESHOLD:
+                charges[g.train_id] = extra - YIELD_TAIL_THRESHOLD
+        return charges
+
+    def _control_relevant_ids(self, ids: List[str],
+                              detail: Dict[str, List[dict]]) -> List[str]:
+        """Trains whose decision is coordination-relevant (for gated control).
+
+        ``base``: a pass-through-at-this-station opportunity, or a train ahead
+        of a higher-priority follower at the same station/direction (the
+        potential yield case).
+
+        ``plus``: base + any train whose next corridor is closed + any train
+        that shares its station/direction with another pending train (any
+        priority).  This raises policy coverage from ~24% to ~85% without
+        handing every routine decision to the policy.
+
+        ``full``: every active train (100%).
+        """
+        mode = getattr(self, "_control_coverage", "base")
+        if mode == "full":
+            return sorted(ids)
+        relevant = set()
+        for tid in ids:
+            j = self._journeys.get(tid)
+            if j is None or j.is_done:
+                continue
+            st = j.current_station
+            train = self.cfg.trains[tid]
+            if mode == "plus":
+                # Closure at this departure: the train may need to yield/plan
+                # around the reopening even if no follower is visible yet.
+                nxt = j.next_station
+                if nxt is not None:
+                    win = self._corridor_closures.get(f"{st}_to_{nxt}")
+                    if win is not None and win[1] > self._t_now + 1e-6:
+                        relevant.add(tid)
+                # Any co-pending same-direction train = potential reordering.
+                if any(x["tid"] != tid and x["direction"] == train.direction
+                       for x in detail.get(st, [])):
+                    relevant.add(tid)
+            if is_station_pass(train, st):
+                relevant.add(tid)
+                continue
+            me = next((x for x in detail.get(st, []) if x["tid"] == tid), None)
+            if me is None:
+                continue
+            for x in detail.get(st, []):
+                if x["tid"] == tid or x["direction"] != train.direction:
+                    continue
+                if (x["priority"] < train.priority
+                        and x["arrival"] > me["arrival"] + 1e-6):
+                    relevant.add(tid)
+                    break
+        return sorted(relevant)
+
+    def _capture_pre_grant(self, grants: List[GrantResult]) -> Dict[str, dict]:
+        """Snapshot each granted train's station state BEFORE advancing."""
+        info: Dict[str, dict] = {}
+        for g in grants:
+            j = self._journeys[g.train_id]
+            if j.is_done:
+                continue
+            train = self.cfg.trains[g.train_id]
+            st = j.current_station
+            plan = train.planned.get(st)
+            info[g.train_id] = {
+                "station": st,
+                "next": j.next_station,
+                "direction": train.direction,
+                "arrival": j.arrival_at_current,
+                "priority": train.priority,
+                "is_pass": is_station_pass(train, st),
+                "planned_dep": plan.dep if plan else 0.0,
+            }
+        return info
+
+    def _detect_resequencing(self, grants: List[GrantResult],
+                             pre: Dict[str, dict],
+                             retried: set | None = None,
+                             requests: List[WindowRequest] | None = None
+                             ) -> List[dict]:
+        """Detect station-level overtakes and yields for this step.
+
+        Overtake: i arrived earlier but departs later than j (i is passed).
+        Yield: lower-priority i (ahead/equal arrival) delayed beyond its plan
+        by >5 s while higher-priority j departs no later than i.  Both are
+        policy-independent and usable for learned/FCFS/heuristic.
+        """
+        groups: Dict[tuple, List[tuple]] = {}
+        for g in grants:
+            p = pre.get(g.train_id)
+            if p is None:
+                continue
+            key = (p["station"], p["next"], p["direction"])
+            groups.setdefault(key, []).append((g, p))
+
+        events: List[dict] = []
+        yielded: set = set()
+        retried = retried or set()
+        # Requested (pre-resolver) departure times: lets eval separate
+        # "policy chose this order" from "resolver changed the order".
+        req_w = ({r.train_id: r.W_out[0] for r in requests}
+                 if requests is not None else {})
+        for (st, nxt, direction), items in groups.items():
+            # Terminal arrivals are not corridor re-sequencing events.
+            if nxt is None:
+                continue
+            for g_i, p_i in items:
+                for g_j, p_j in items:
+                    if g_i.train_id == g_j.train_id:
+                        continue
+                    base = {
+                        "station": st, "next": nxt, "direction": direction,
+                        "overtaken": g_i.train_id, "overtaker": g_j.train_id,
+                        "arr_overtaken": p_i["arrival"],
+                        "arr_overtaker": p_j["arrival"],
+                        "dep_overtaken": g_i.W_out[0],
+                        "dep_overtaker": g_j.W_out[0],
+                        "prio_overtaken": p_i["priority"],
+                        "prio_overtaker": p_j["priority"],
+                        "pass_overtaken": p_i["is_pass"],
+                        "pass_overtaker": p_j["is_pass"],
+                        "yield_delay": g_i.W_out[0] - p_i["planned_dep"],
+                        "late_before_dep":
+                            p_i["arrival"] > p_i["planned_dep"] + 1e-6,
+                        "resolver_changed": bool(g_i.fallback_from)
+                            or g_i.train_id in retried,
+                        "req_dep_overtaken": req_w.get(g_i.train_id),
+                        "req_dep_overtaker": req_w.get(g_j.train_id),
+                        "order_policy_driven": (
+                            None if g_i.train_id not in req_w
+                            or g_j.train_id not in req_w
+                            else req_w[g_i.train_id] > req_w[g_j.train_id]),
+                        "closure_related": (
+                            f"{st}_to_{nxt}" in self._corridor_closures
+                            and self._t_now <= self._corridor_closures[
+                                f"{st}_to_{nxt}"][1]),
+                    }
+                    if (p_i["arrival"] + 1e-6 < p_j["arrival"]
+                            and g_i.W_out[0] > g_j.W_out[0] + 1e-6):
+                        events.append({
+                            **base, "is_overtake": True, "is_yield": False,
+                            "is_priority_overtake":
+                                p_j["priority"] < p_i["priority"]})
+                    if (p_i["priority"] > p_j["priority"]
+                            and p_i["arrival"] <= p_j["arrival"] + 1e-6
+                            and g_i.W_out[0] > p_i["planned_dep"] + 5.0
+                            and g_j.W_out[0] <= g_i.W_out[0] + 1e-6
+                            and g_i.train_id not in yielded):
+                        events.append({
+                            **base, "is_overtake": False, "is_yield": True,
+                            "is_priority_overtake": False,
+                            "is_deliberate_yield":
+                                (not base["late_before_dep"]
+                                 and not base["resolver_changed"])})
+                        yielded.add(g_i.train_id)
+        return events
+
+    def _closure_hold_until(self, train_id: str, station_id: str) -> Optional[float]:
+        """Reopening time t1 if this train's next corridor is closed, else None.
+
+        A closure blocks NEW ENTRIES into a corridor during [t0, t1].  A train
+        is held only when its departure could fall in the window: either the
+        closure has already started, or its planned departure is at/after t0.
+        Trains planned before t0 may still depart early and clear the section.
+        """
+        if not self._corridor_closures:
+            return None
+        journey = self._journeys.get(train_id)
+        if journey is None or journey.next_station is None:
+            return None
+        cid = f"{station_id}_to_{journey.next_station}"
+        win = self._corridor_closures.get(cid)
+        if win is None:
+            return None
+        t0, t1 = win
+        if self._t_now >= t1 - 1e-6:
+            return None
+        plan = self.cfg.trains[train_id].planned.get(station_id)
+        planned_dep = plan.dep if plan is not None else self._t_now
+        if self._t_now >= t0 - 1e-6 or planned_dep >= t0 - 1e-6:
+            return t1
+        return None
+
     def _get_effective_bounds(self, train_id: str, station_id: str, t_now: float):
         """Get scheduling bounds.
 
         Origin stations: use precomputed timetable bounds.
         Intermediate stations: shift to actual arrival time, with dep_max
         allowing scheduling from the later of actual arrival and current time.
+        A corridor closure adds a hard departure floor (t1 - dwell) so no train
+        enters the closed section; the mask enforces it like any Layer-1 bound.
         """
         train = self.cfg.trains[train_id]
         journey = self._journeys[train_id]
         orig_bounds = train.bounds.get(station_id)
+        hold_until = self._closure_hold_until(train_id, station_id)
 
         if journey.current_idx == 0 or orig_bounds is None:
             # At origin, arr_min should only shift when the train is actually
@@ -1289,9 +1755,20 @@ class FiveStationEnv(BaseRailwayEnv):
             if orig_bounds is not None:
                 actual_arrival = journey.arrival_at_current
                 planned_dep = train.planned[station_id].dep
+                dwell = orig_bounds.dwell_min
+                slack = self.cfg.time_generation.get("dep_max_slack_sec", 120)
+                if hold_until is not None:
+                    arr_min = max(orig_bounds.arr_min, hold_until - dwell)
+                    dep_max = max(orig_bounds.dep_max,
+                                  hold_until + dwell + slack)
+                    # `arrival_at_current` is a planned_dep placeholder at reset;
+                    # only a genuine (later) delay shifts the envelope.
+                    if actual_arrival > planned_dep + 1e-6:
+                        arr_min = max(arr_min, actual_arrival)
+                        dep_max = max(dep_max, actual_arrival + dwell + slack)
+                    return TrainBound(
+                        arr_min=arr_min, dep_max=dep_max, dwell_min=dwell)
                 if actual_arrival > planned_dep + 1e-6:
-                    slack = self.cfg.time_generation.get("dep_max_slack_sec", 120)
-                    dwell = orig_bounds.dwell_min
                     return TrainBound(
                         arr_min=actual_arrival,
                         dep_max=max(actual_arrival + dwell + slack, orig_bounds.dep_max),
@@ -1305,11 +1782,17 @@ class FiveStationEnv(BaseRailwayEnv):
         slack = self.cfg.time_generation.get("dep_max_slack_sec", 120)
         # Floor at planned arrival — trains must not depart before schedule
         ref_time = max(actual_arrival, t_now, t_arr_plan)
+        if hold_until is not None:
+            ref_time = max(ref_time, hold_until - dwell)
         physical_overhead = TRAVEL_TIME_TO_THROAT + 2 * THROAT_CLEARANCE_TIME
         physical_min_dep = ref_time + physical_overhead + dwell
+        dep_max = max(ref_time + dwell + slack, physical_min_dep)
+        if hold_until is not None:
+            # The exogenous closure must not make the envelope infeasible.
+            dep_max = max(dep_max, hold_until + dwell + slack)
         return TrainBound(
             arr_min=ref_time,
-            dep_max=max(ref_time + dwell + slack, physical_min_dep),
+            dep_max=dep_max,
             dwell_min=dwell,
         )
 
@@ -1365,6 +1848,16 @@ class FiveStationEnv(BaseRailwayEnv):
                             p_mask[plat_idx] = True
                         if entry_idx >= 0:
                             e_mask[entry_idx] = True
+
+            # Yield-amplitude cap: when this train is ahead of a higher-priority
+            # follower, do not let the policy push it out by +30/+50.  The cap
+            # is only applied if a cheaper entry remains legal.
+            if self._yield_entry_cap and self._has_higher_prio_follower(tid, st):
+                cheap = [i for i, c in enumerate(ENTRY_CHOICES)
+                         if c in ("earliest", "plan", "plan+10", "plan+20")]
+                if any(e_mask[i] for i in cheap):
+                    e_mask = [e_mask[i] if i in cheap else False
+                              for i in range(n_entry)]
 
             masks[tid] = (p_mask, e_mask)
         return masks

@@ -41,15 +41,18 @@ l3_physics = load_l3_physics(Path('configs/five_station'))
 obs_dim = get_obs_dim(cfg)
 
 ckpt = torch.load(
-    'output/five_station_hierarchical/20260713_174053/checkpoints/best.pt',
+    'output/8_16/training/five_station_15t_hierarchical/20260816_140621/checkpoints/best.pt',
     map_location='cpu', weights_only=False)
 
 ac = Layer2ActorCritic(obs_dim=obs_dim, k_local=1, hidden_dim=128)
 ac.load_state_dict(ckpt['ac_state']); ac.eval()
 l3_actor = CorridorActor(hidden_dim=128); l3_critic = CorridorCritic(hidden_dim=128)
-l3_actor.load_state_dict(ckpt['l3_actor']); l3_critic.load_state_dict(ckpt['l3_critic'])
-l3_actor.eval(); l3_critic.eval()
-l3_trainer = L3WorkerTrainer(l3_actor, l3_critic)
+l3_critic_g = CorridorCritic(hidden_dim=128)
+l3_actor.load_state_dict(ckpt['l3_actor'])
+l3_critic.load_state_dict(ckpt['l3_critic_local'])
+l3_critic_g.load_state_dict(ckpt['l3_critic_global'])
+l3_actor.eval(); l3_critic.eval(); l3_critic_g.eval()
+l3_trainer = L3WorkerTrainer(l3_actor, l3_critic, l3_critic_g)
 
 # ---------------------------------------------------------------------------
 # Collect movement data

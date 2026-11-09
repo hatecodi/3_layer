@@ -72,6 +72,16 @@ class L3CorridorState:
     def earliest_entry(self, corridor_id: str, headway: float) -> float:
         return self._last_entry.get(corridor_id, -float("inf")) + headway
 
+    def front_train_id(self, corridor_id: str) -> Optional[str]:
+        """The train currently enforcing the moving-block boundary, if any.
+
+        ``front_time_at`` uses ``occs[-1]`` exclusively, so a positive follower
+        wait is attributable to this occupant.  Returns None for an empty
+        corridor.
+        """
+        occs = self._occupants.get(corridor_id, [])
+        return occs[-1].train_id if occs else None
+
     def front_time_at(self, corridor_id: str, x: float,
                       sec_bounds: List[float]) -> float:
         """Absolute time the front occupant reaches position x (linear interp).
@@ -201,6 +211,10 @@ class L3Simulator:
             for s in secs:
                 bounds.append(bounds[-1] + s.length_m)
             self._sec_bounds[cid] = bounds
+
+    def front_train_id(self, corridor_id: str) -> Optional[str]:
+        """Train currently enforcing the moving-block boundary on this corridor."""
+        return self._corridors.front_train_id(corridor_id)
 
     def throat_gap(self, throat_id: str, departure: float) -> float:
         """Seconds until throat is free after *departure*."""

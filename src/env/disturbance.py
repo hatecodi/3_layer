@@ -14,7 +14,18 @@ from __future__ import annotations
 import random
 from typing import Dict, List, Optional, Tuple
 
+from ..experiment.scenario_loader import route_stations
+
 DEADLOCK_THRESHOLD = 15  # global NO_LEGAL_ACTION consecutive steps
+
+# Corridor CLOSURE defaults (区间中断): no new entries during [t0, t1].
+CLOSURE_PROB = 0.6
+# Hold length for the targeted leader.  Kept short so the window isolates the
+# designed meet instead of holding every train planned in a long span (a long
+# window makes the priority tie-break do the reordering, which teaches nothing).
+CLOSURE_DURATION_RANGE = (10.0, 30.0)
+CLOSURE_MIN_GAP_SEC = 15.0      # leader/follower planned departure separation
+CLOSURE_FOLLOWER_MARGIN_SEC = 5.0  # keep t1 before follower's planned entry
 
 # Corridor speed-restriction incident defaults (evidence-based, see plan).
 INCIDENT_PROB = 0.6
@@ -234,4 +245,98 @@ def inject_corridor_incident(cfg, rng: random.Random,
     factor = max(factor, need_full, need_part)
     factor = min(max(factor, f_lo), 1.0)
     return {cid: (t0, end, factor, safety)}
+
+
+# ---------------------------------------------------------------------------
+# corridor closure incident (区间中断: no new entries during a window)
+# ---------------------------------------------------------------------------
+
+
+def inject_corridor_closure(
+    cfg, rng: random.Random, severity_scale: float = 1.0,
+) -> Dict[str, Tuple[float, float]]:
+    """Generate a corridor closure that creates a catch-up/overtake opportunity.
+
+    A closure blocks NEW ENTRIES into a corridor during ``[t0, t1]``.  Unlike a
+    random window, the window is built around a *designed meet*:
+
+        1. a lower-priority leader is planned to depart the source station at
+           ``d_L``;
+        2. a higher-priority follower is planned to depart at ``d_F > d_L``;
+        3. ``t1`` is placed after ``d_L`` but BEFORE the follower's plan entry
+           (``d_F - dwell``), so the leader is held to the reopening while the
+           follower can still depart at its planned time.
+
+    After t1 both trains are co-pending at the source station and the leader has
+    an earlier feasible slot: FCFS sends the leader first, so only a deliberate
+    yield lets the follower pass there.  This is the learnable re-sequencing
+    case; a window ending after both planned departures would let the existing
+    (W_out, priority, id) tie-break reorder by rule and teach nothing.
+
+    Returns ``{corridor_id: (t0, t1)}`` or ``{}`` when no qualifying meet exists.
+    Semantics: trains already inside the corridor continue (no mid-section stop).
+    """
+    block = cfg.time_generation.get("corridor_closure", {})
+    # `enabled` is gated by the caller (env's enable_corridor_closure), same as
+    # the speed-restriction incident, so config defaults never change baselines.
+    if rng.random() >= block.get("prob", CLOSURE_PROB):
+        return {}
+
+    dur_lo, dur_hi = block.get("duration_range", list(CLOSURE_DURATION_RANGE))
+    min_gap = block.get("min_gap_sec", CLOSURE_MIN_GAP_SEC)
+    margin = block.get("follower_margin_sec", CLOSURE_FOLLOWER_MARGIN_SEC)
+    if severity_scale > 1.0:
+        dur_lo, dur_hi = dur_lo * severity_scale, dur_hi * severity_scale
+
+    # corridor -> [(planned_dep, priority, train_id, dwell_min), ...]
+    events: Dict[str, List[Tuple[float, int, str, float]]] = {}
+    for tid, t in cfg.trains.items():
+        route = route_stations(t, cfg.corridors)
+        for a, b in zip(route, route[1:]):
+            pa = t.planned.get(a)
+            pb = t.planned.get(b)
+            if pa is None or pb is None or pa.dep is None or pa.dep <= 0:
+                continue
+            # Same key convention as FiveStationEnv's L3 corridor_key and
+            # time_generation.corridor_runtime_sec ("A_to_B"), not the
+            # configs' corridor graph IDs ("A_B_up").
+            cid = f"{a}_to_{b}"
+            bounds = t.bounds.get(a)
+            dwell = bounds.dwell_min if bounds else 0.0
+            events.setdefault(cid, []).append(
+                (float(pa.dep), int(t.priority), tid, float(dwell)))
+
+    candidates = []
+    for cid, evs in events.items():
+        evs = sorted(evs, key=lambda e: (e[0], e[1], e[2]))
+        for i in range(len(evs)):
+            d_l, p_l, tid_l, _ = evs[i]
+            for j in range(i + 1, len(evs)):
+                d_f, p_f, tid_f, dwell_f = evs[j]
+                if p_l <= p_f:            # leader must be lower priority
+                    continue
+                if d_f - d_l < min_gap:   # enough catch-up separation
+                    continue
+                plan_entry_f = d_f - dwell_f
+                t1_lo = d_l + 1.0
+                t1_hi = plan_entry_f - margin
+                if t1_hi - t1_lo < 10.0:  # no room to hold the leader
+                    continue
+                candidates.append(
+                    (cid, t1_lo, t1_hi, d_l, d_f, tid_l, tid_f))
+
+    if not candidates:
+        return {}
+
+    cid, t1_lo, t1_hi, d_l, d_f, tid_l, tid_f = rng.choice(candidates)
+    # Start just before the leader's planned departure and hold for a short
+    # window ending before the follower's plan entry.  This isolates the
+    # designed meet: few other trains fall inside [t0, t1], so the leader must
+    # YIELD to let the follower pass (rather than a priority tie-break doing it).
+    hold = rng.uniform(dur_lo, dur_hi)
+    t0 = max(0.0, d_l - 5.0)
+    t1 = min(t1_hi, d_l + hold)
+    if t1 <= d_l + 1.0:
+        return {}
+    return {cid: (t0, t1)}
 

@@ -36,7 +36,7 @@ from src.marl.rollout_buffer import RolloutBuffer, AgentTransition
 # ---------------------------------------------------------------------------
 
 HP = {
-    "obs_dim": 29,                       # overridden per env
+    "obs_dim": 37,                       # overridden per env
     "action_dim": 45,                    # overridden per env
     "k_local": 1,                       # LocalCritic: agent + 1 neighbour
     "hidden_dim": 128,

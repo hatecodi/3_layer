@@ -1,7 +1,9 @@
 """Compact actor observation builder (config-driven dimension).
 
 Actor sees only what it needs for decision-making:
-  Self (14 dims): time, delay, plan, bounds, priority, class one-hot
+  Self (22 dims): time, delay, plan, bounds, priority, per-station pass bit,
+                  class one-hot, higher-priority-follower features (3),
+                  next-corridor closure features (3)
   Next station (5 dims): platforms, congestion, est arrival, dwell
   Resource (2 + max_platforms dims): avail, corridor, per-platform blocked flags
 
@@ -19,7 +21,7 @@ from ..experiment.scenario_loader import ScenarioConfig
 K_MAX = 5
 MAX_EPISODE_TIME = 1500.0
 
-ACTOR_SELF_DIM = 16  # +2: mean_delay_at_station, remaining_slack
+ACTOR_SELF_DIM = 22  # +3 follower awareness (yield cue) +3 corridor closure
 ACTOR_NEXT_DIM = 5
 ACTOR_COMPETITOR_DIM = 0  # platform_contention uses max_plat dims dynamically
 _ACTOR_FIXED_RES_DIM = 2  # avail_now, corridor_delay (per-platform bits added dynamically)
@@ -41,7 +43,7 @@ def _max_platforms(cfg: Optional[ScenarioConfig]) -> int:
 def compute_obs_dim(cfg: Optional[ScenarioConfig] = None) -> int:
     """Compute observation dimension from config.
 
-    OBS_DIM = SELF(14) + NEXT(5) + avail(1) + corridor(1) + per_platform_blocked(max_platforms) + per_platform_contention(max_platforms)
+    OBS_DIM = SELF(22) + NEXT(5) + avail(1) + corridor(1) + per_platform_blocked(max_platforms) + per_platform_contention(max_platforms)
     """
     max_plat = _max_platforms(cfg)
     return ACTOR_SELF_DIM + ACTOR_NEXT_DIM + _ACTOR_FIXED_RES_DIM + max_plat * 2
@@ -110,6 +112,7 @@ def build_observations(
             - cumulative_delays: {train_id: delay_sec} from TrainRuntimeState
             - corridor_delays: {train_id: extra_sec} from last step
             - journeys: {train_id: {current, next, etc.}} from env
+            - closure_until: {train_id: t1} next-corridor closure reopen time
     """
     context = context or {}
     layer1 = DispatchBounds(cfg)
@@ -148,6 +151,47 @@ def build_observations(
         remaining_slack = max(0.0, bounds.t_dep_max - max(t_now, bounds.t_arr_min) - bounds.dwell_min)
         remaining_slack = min(remaining_slack, 300.0)
 
+        # Higher-priority follower awareness (yield cue).  A train that is
+        # ahead of a higher-priority train may need to delay its departure so
+        # the follower can pass at a station.
+        pending_detail = context.get("station_pending_detail", {}).get(
+            station_id, [])
+        self_entry = next(
+            (x for x in pending_detail if x["tid"] == train_id), None)
+        followers = []
+        if self_entry is not None:
+            followers = [
+                x for x in pending_detail
+                if x["tid"] != train_id
+                and x["direction"] == train.direction
+                and x["arrival"] > self_entry["arrival"] + 1e-6
+            ]
+        higher = [x for x in followers if x["priority"] < train.priority]
+        if higher:
+            f = min(higher, key=lambda x: (x["priority"], x["arrival"]))
+            has_higher = 1.0
+            prio_gap = max(0.0, float(train.priority - f["priority"])) / 2.0
+            arrival_gap = min(
+                max(f["arrival"] - bounds.t_dep_plan, 0.0), 120.0) / 120.0
+        else:
+            has_higher = 0.0
+            prio_gap = 0.0
+            arrival_gap = 1.0
+
+        # Next-corridor closure (区间中断): until when is this train's next
+        # corridor closed to new entries?  Clamping in the effective bounds keeps
+        # every action legal, so the closure state must be observed explicitly.
+        closure_until = context.get("closure_until", {}).get(train_id)
+        if closure_until is not None and closure_until > t_now + 1e-6:
+            closed = 1.0
+            closure_remaining = min(max(closure_until - t_now, 0.0), 300.0) / 300.0
+            closure_vs_plan = max(-120.0, min(
+                closure_until - bounds.t_dep_plan, 120.0)) / 120.0
+        else:
+            closed = 0.0
+            closure_remaining = 0.0
+            closure_vs_plan = 0.0
+
         self_state = [
             min(t_now / MAX_EPISODE_TIME, 1.0),
             min(cum_delay / 600.0, 1.0),
@@ -161,7 +205,10 @@ def build_observations(
             slack / 300.0,
             min(mean_other_delay / 600.0, 1.0),
             remaining_slack / 300.0,
-        ] + _one_hot(train.train_class)
+        ] + _one_hot(train.train_class) + [
+            has_higher, prio_gap, arrival_gap,
+            closed, closure_remaining, closure_vs_plan,
+        ]
 
         # ?? Platform contention at current station (max_plat dims) ??
         # Per-platform contention weighted by conflict-group sharing.

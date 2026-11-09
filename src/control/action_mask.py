@@ -13,12 +13,13 @@ an illegal action.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..experiment.scenario_loader import (
     ScenarioConfig,
     StationConfig,
     TrainTimetable,
+    is_station_pass,
 )
 from .resource_manager import WindowRequest
 
@@ -118,7 +119,7 @@ def derive_schedule(
         bounds_override=bounds_override)
     t_in_end = t_in_start + THROAT_CLEARANCE_TIME
 
-    if train.pass_through:
+    if is_station_pass(train, station_id):
         dwell = 0.0
         t_plat_start = t_in_end
         t_plat_end = t_plat_start + THROUGH_PLATFORM_CLEARANCE_TIME
@@ -143,6 +144,71 @@ def derive_schedule(
 # legality checks
 # ---------------------------------------------------------------------------
 
+def illegal_reason(
+    train: TrainTimetable,
+    station_id: str,
+    action: Tuple[str, str, int],
+    t_now: float,
+    travel_time_to_throat: float,
+    cfg: ScenarioConfig,
+    bounds_override=None,  # optional: use these bounds instead of train.bounds
+) -> Optional[str]:
+    """Which Layer 1 hard bound (if any) rejects this action.
+
+    Returns None when the action is legal, otherwise a short reason code —
+    the single source of truth for legality, so mask statistics and
+    `is_legal_action` can never disagree:
+
+      no_station / platform_not_candidate / unknown_platform /
+      platform_not_through / passthrough_dwell / arr_min / dep_max / dwell_min
+    """
+    platform, entry_choice, dwell_extend = action
+    bounds = bounds_override if bounds_override else train.bounds.get(station_id)
+    if bounds is None:
+        return None  # no bounds = no constraints (degenerate)
+
+    station = cfg.stations.get(station_id)
+    if station is None:
+        return "no_station"
+
+    # platform must be in candidate set
+    candidate = train.candidate_platforms.get(station_id, [])
+    if platform not in candidate:
+        return "platform_not_candidate"
+
+    # pass-through must use through-allowed platform
+    plat_cfg = next((p for p in station.platforms if p.id == platform), None)
+    if plat_cfg is None:
+        return "unknown_platform"
+    is_pass = is_station_pass(train, station_id)
+    if is_pass and not plat_cfg.through_allowed:
+        return "platform_not_through"
+    if is_pass and dwell_extend != 0:
+        return "passthrough_dwell"
+
+    # derive windows
+    times = derive_schedule(
+        train, station_id, action, t_now, travel_time_to_throat,
+        bounds_override=bounds_override)
+    t_in_start, t_in_end, _, _, t_out_start, t_out_end = times
+
+    # hard floor: cannot enter before arr_min
+    if t_in_start < bounds.arr_min - 1e-6:
+        return "arr_min"
+
+    # hard ceiling: must start exit before dep_max
+    if t_out_start > bounds.dep_max + 1e-6:
+        return "dep_max"
+
+    # dwell floor (enforced by dwell_extend >= 0 and dwell_min base)
+    actual_dwell = t_out_start - t_in_end - THROUGH_PLATFORM_CLEARANCE_TIME \
+        if is_pass else t_out_start - t_in_end
+    if actual_dwell < bounds.dwell_min - 1e-6:
+        return "dwell_min"
+
+    return None
+
+
 def is_legal_action(
     train: TrainTimetable,
     station_id: str,
@@ -153,50 +219,9 @@ def is_legal_action(
     bounds_override=None,  # optional: use these bounds instead of train.bounds
 ) -> bool:
     """Check an action against all Layer 1 hard bounds."""
-    platform, entry_choice, dwell_extend = action
-    bounds = bounds_override if bounds_override else train.bounds.get(station_id)
-    if bounds is None:
-        return True  # no bounds = no constraints (degenerate)
-
-    station = cfg.stations.get(station_id)
-    if station is None:
-        return False
-
-    # platform must be in candidate set
-    candidate = train.candidate_platforms.get(station_id, [])
-    if platform not in candidate:
-        return False
-
-    # pass-through must use through-allowed platform
-    plat_cfg = next((p for p in station.platforms if p.id == platform), None)
-    if plat_cfg is None:
-        return False
-    if train.pass_through and not plat_cfg.through_allowed:
-        return False
-    if train.pass_through and dwell_extend != 0:
-        return False
-
-    # derive windows
-    times = derive_schedule(
-        train, station_id, action, t_now, travel_time_to_throat,
-        bounds_override=bounds_override)
-    t_in_start, t_in_end, _, _, t_out_start, t_out_end = times
-
-    # hard floor: cannot enter before arr_min
-    if t_in_start < bounds.arr_min - 1e-6:
-        return False
-
-    # hard ceiling: must start exit before dep_max
-    if t_out_start > bounds.dep_max + 1e-6:
-        return False
-
-    # dwell floor (enforced by dwell_extend >= 0 and dwell_min base)
-    actual_dwell = t_out_start - t_in_end - THROUGH_PLATFORM_CLEARANCE_TIME \
-        if train.pass_through else t_out_start - t_in_end
-    if actual_dwell < bounds.dwell_min - 1e-6:
-        return False
-
-    return True
+    return illegal_reason(
+        train, station_id, action, t_now, travel_time_to_throat, cfg,
+        bounds_override=bounds_override) is None
 
 
 # ---------------------------------------------------------------------------
@@ -243,18 +268,25 @@ def compute_joint_action_mask(
     travel_time_to_throat: float,
     cfg: ScenarioConfig,
     bounds_override=None,  # optional: dynamic bounds for intermediate stations
+    reason_counter: Optional[Dict[str, int]] = None,  # diagnostics only
 ) -> MaskedActionSet:
-    """Build the valid-action mask for one train at one station."""
+    """Build the valid-action mask for one train at one station.
+
+    `reason_counter` (optional) accumulates how many candidate actions were
+    rejected by each Layer 1 bound — diagnostics only, no behavioural effect.
+    """
     actions = candidate_actions(train, station_id, cfg)
-    mask = [
-        is_legal_action(
+    mask = []
+    for a in actions:
+        reason = illegal_reason(
             train, station_id,
             (a.platform, a.entry_choice, a.dwell_extend),
             t_now, travel_time_to_throat, cfg,
             bounds_override=bounds_override,
         )
-        for a in actions
-    ]
+        if reason is not None and reason_counter is not None:
+            reason_counter[reason] += 1
+        mask.append(reason is None)
 
     if not any(mask):
         return MaskedActionSet(actions, mask, "NO_LEGAL_ACTION", train.id)
