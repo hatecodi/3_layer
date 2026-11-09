@@ -180,6 +180,21 @@ class L3WorkerTrainer:
         self.max_grad_norm = max_grad_norm
         self._buffer = L3RolloutBuffer(gamma, gae_lambda)
         self._last_stats: Dict[str, float] = {}
+        # Optional BC guidance: freeze the actor for critic warmup, then keep a
+        # KL(pi_theta || pi_BC) penalty so PPO cannot drift away from the BC
+        # policy (which has the good on-time/tail behaviour).
+        self.guidance_actor: Optional[CorridorActor] = None
+        self.kl_coef: float = 0.0
+        self.actor_frozen: bool = False
+
+    def set_guidance_actor(self, actor: CorridorActor, kl_coef: float) -> None:
+        self.guidance_actor = actor
+        self.kl_coef = float(kl_coef)
+
+    def set_actor_frozen(self, flag: bool) -> None:
+        self.actor_frozen = bool(flag)
+        for p in self.actor.parameters():
+            p.requires_grad_(not flag)
 
     @property
     def buffer(self) -> L3RolloutBuffer:
@@ -223,36 +238,57 @@ class L3WorkerTrainer:
         stats = {}
 
         for _ in range(self.ppo_epochs):
-            dist = self.actor.dist(obs)
-            new_logprobs = dist.log_prob(old_actions)
-            entropy = dist.entropy().mean()
             vals_l = self.critic_local(obs)
             vals_g = self.critic_global(obs)
-
-            # Policy loss
-            ratio = torch.exp(new_logprobs - old_logprobs)
-            surr1 = ratio * advantages
-            surr2 = torch.clamp(ratio, 1.0 - self.clip_ratio,
-                                1.0 + self.clip_ratio) * advantages
-            loss_policy = -torch.min(surr1, surr2).mean()
 
             # Value loss: two critics, each on its own return
             loss_value = F.mse_loss(vals_l, ret_l) + F.mse_loss(vals_g, ret_g)
 
-            loss = loss_policy + self.value_coef * loss_value - self.entropy_coef * entropy
+            if self.actor_frozen:
+                # Critic warmup: the BC actor acts unchanged; only the critics
+                # learn values for its state distribution.
+                loss = self.value_coef * loss_value
+                loss_policy = torch.zeros((), device=self.device)
+                entropy = torch.zeros((), device=self.device)
+                kl = torch.zeros((), device=self.device)
+            else:
+                dist = self.actor.dist(obs)
+                new_logprobs = dist.log_prob(old_actions)
+                entropy = dist.entropy().mean()
+
+                # Policy loss
+                ratio = torch.exp(new_logprobs - old_logprobs)
+                surr1 = ratio * advantages
+                surr2 = torch.clamp(ratio, 1.0 - self.clip_ratio,
+                                    1.0 + self.clip_ratio) * advantages
+                loss_policy = -torch.min(surr1, surr2).mean()
+
+                kl = torch.zeros((), device=self.device)
+                if self.guidance_actor is not None and self.kl_coef > 0.0:
+                    with torch.no_grad():
+                        ref_dist = self.guidance_actor.dist(obs)
+                    kl = torch.distributions.kl_divergence(
+                        dist, ref_dist).mean()
+
+                loss = (loss_policy + self.value_coef * loss_value
+                        - self.entropy_coef * entropy
+                        + self.kl_coef * kl)
 
             self.optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(
-                list(self.actor.parameters()) + list(self.critic_local.parameters())
-                + list(self.critic_global.parameters()),
-                self.max_grad_norm)
+            params = (list(self.actor.parameters())
+                      + list(self.critic_local.parameters())
+                      + list(self.critic_global.parameters()))
+            params = [p for p in params if p.grad is not None]
+            nn.utils.clip_grad_norm_(params, self.max_grad_norm)
             self.optimizer.step()
 
             stats = {
-                "l3_loss_policy": loss_policy.item(),
+                "l3_loss_policy": float(loss_policy.item()),
                 "l3_loss_value": loss_value.item(),
-                "l3_entropy": entropy.item(),
+                "l3_entropy": float(entropy.item()),
+                "l3_kl_bc": float(kl.item()),
+                "l3_actor_frozen": float(self.actor_frozen),
             }
 
         buffer.clear()

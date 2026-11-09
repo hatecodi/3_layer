@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import random
@@ -162,6 +163,10 @@ def train_hierarchical(
     policy_ramp_start: float = 0.1,
     policy_ramp_frac: float = 0.6,
     control_mode: str = "full",
+    l3_lr: float = HP["l3_lr"],
+    l3_entropy: float = HP["l3_entropy_coef"],
+    l3_critic_warmup: int = 0,
+    l3_kl_coef: float = 0.0,
 ) -> Dict:
     phases = phases or PHASES
     ctrl_rng = random.Random(getattr(args, "seed", 0) * 7919 + 17)
@@ -199,9 +204,9 @@ def train_hierarchical(
     l3_critic = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
     l3_critic_g = CorridorCritic(obs_dim=L3_OBS_DIM, hidden_dim=HP["l3_hidden_dim"])
     l3_trainer = L3WorkerTrainer(
-        l3_actor, l3_critic, l3_critic_g, lr=HP["l3_lr"], gamma=HP["gamma"],
+        l3_actor, l3_critic, l3_critic_g, lr=l3_lr, gamma=HP["gamma"],
         gae_lambda=HP["gae_lambda"], clip_ratio=HP["clip_ratio"],
-        ppo_epochs=HP["ppo_epochs"], entropy_coef=HP["l3_entropy_coef"],
+        ppo_epochs=HP["ppo_epochs"], entropy_coef=l3_entropy,
         value_coef=HP["value_coef"], max_grad_norm=HP["max_grad_norm"],
         device=device)
     if l3_ckpt:
@@ -216,6 +221,13 @@ def train_hierarchical(
             ) from exc
         print(f"Loaded L3 from {l3_ckpt} "
               f"(episode {state.get('episode', '?')}); continuing L3 training")
+        if l3_kl_coef > 0.0:
+            guidance = copy.deepcopy(l3_actor)
+            guidance.eval()
+            for p in guidance.parameters():
+                p.requires_grad_(False)
+            l3_trainer.set_guidance_actor(guidance, l3_kl_coef)
+            print(f"L3 guidance anchor enabled (KL coef={l3_kl_coef})")
 
     # Checkpoint dir (out_root lets runs be grouped under output/<date>/, e.g. --out-root output/8_16/training)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -249,9 +261,16 @@ def train_hierarchical(
             for pg in l2_trainer.optimizer.param_groups:
                 pg["lr"] = HP["lr"] * 0.3          # L2 lr: 3e-4 → 1e-4
             for pg in l3_trainer.optimizer.param_groups:
-                pg["lr"] = HP["l3_lr"] * 0.5        # L3 lr: 1e-3 → 5e-4
+                pg["lr"] = l3_lr * 0.5              # Phase C: halve L3 lr
 
         for ep in range(phase_cfg["episodes"]):
+            # Critic warmup: keep the BC actor frozen for the first N Phase-B
+            # episodes so the two critics learn values for the BC state
+            # distribution before PPO is allowed to move the actor.
+            if l3_ckpt and phase_name == "B" and l3_critic_warmup > 0:
+                l3_trainer.set_actor_frozen(ep < l3_critic_warmup)
+            else:
+                l3_trainer.set_actor_frozen(False)
             l2_trainer.advance_episode()
             # Curriculum: fraction of decisions the learned policy controls.
             # Non-L2 phases always use the (frozen) policy fully.
@@ -590,6 +609,14 @@ def main():
     parser.add_argument("--policy-ramp-frac", type=float, default=0.6,
                         help="curriculum: fraction of the phase over which policy "
                              "control ramps from start to 1.0")
+    parser.add_argument("--l3-lr", type=float, default=HP["l3_lr"],
+                        help="L3 worker learning rate (lower it for BC fine-tune)")
+    parser.add_argument("--l3-entropy", type=float, default=HP["l3_entropy_coef"],
+                        help="L3 entropy coefficient (lower it for BC fine-tune)")
+    parser.add_argument("--l3-critic-warmup", type=int, default=0,
+                        help="Phase-B episodes with the actor frozen (critic warmup)")
+    parser.add_argument("--l3-kl-coef", type=float, default=0.0,
+                        help="KL(pi_theta || pi_BC) coefficient for BC-guided PPO")
     parser.add_argument("--control-mode",
                         choices=["full", "ramp", "relevant", "relevant_plus",
                                  "relevant_plus_ramp"],
@@ -666,7 +693,10 @@ def main():
                        eval_seed_base=args.eval_seed_base,
                        policy_ramp_start=args.policy_ramp_start,
                        policy_ramp_frac=args.policy_ramp_frac,
-                       control_mode=args.control_mode)
+                       control_mode=args.control_mode,
+                       l3_lr=args.l3_lr, l3_entropy=args.l3_entropy,
+                       l3_critic_warmup=args.l3_critic_warmup,
+                       l3_kl_coef=args.l3_kl_coef)
 
 
 if __name__ == "__main__":

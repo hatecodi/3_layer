@@ -5181,3 +5181,305 @@ Compute: learned ~11.75s vs SA ~48.5s (4.1x lower, E1 accounting).
    SA-BC warm start (like L2) or an on-time-shaped L3 reward; tail-focused claims are
    already supportable.
 Status: DONE for this comparison.
+
+[2026-11-09 续24] l3-sa-bc 分支: SA-online BC 数据记录 + L3 BC 脚本 + 全量预训练启动
+Branch: l3-sa-bc (from 4d556bb)
+Code:
+  src/env/five_station_env.py — 新 ctor `record_l3_bc`；SA 执行分支在每 section
+    记录与 worker 相同的 10-dim obs (build_l3_section_observation) 和 SA 选择的
+    SpeedMode；存于 self._l3_bc_samples（reset 清空）。修复函数内局部 import 导致
+    SA 分支 UnboundLocalError（改为 module-level import）。
+  scripts/bc_pretrain_l3.py — 用冻结 seed1 L2 (base relevance, closure, yield-cap)
+    跑 SA-online 收集 (obs_10d, mode)，cross-entropy 训练 CorridorActor；
+    保存 l3_actor + 两个随机 CorridorCritic，可被 eval/Phase B 的 --l3-ckpt 加载。
+  tests/test_closure.py — test_l3_bc_recorder（10-dim obs, action∈{0,1,2}); 64 passed.
+Smoke BC (5 eps): 720 samples, action counts cruise399/fast288/slow33, val acc 0.62.
+Full BC launched (tracked):
+  task b4mu97a1e
+  log: output/11_09/bc_l3_saonline.log
+  ckpt: output/11_09/bc_l3_saonline.pt
+  metrics: output/11_09/bc_l3_saonline_metrics.csv
+  teacher = SA-online (partial observation, no global forecast); 300 eps, 25 epochs.
+Next: BC-only 180-ep eval vs SA-online/current learned L3/full SA; quantify the
+  on-time vs tail Pareto (expect ontime up, tail down).
+Status: PARTIAL — BC training.
+
+[2026-11-09 续25] L3 SA-BC 预训练完成
+Save: log output/11_09/bc_l3_saonline.log; ckpt output/11_09/bc_l3_saonline.pt;
+  metrics output/11_09/bc_l3_saonline_metrics.csv
+Results: 300 eps SA-online labels, best val mode accuracy 0.968 (action distribution
+  in smoke: cruise 399 / fast 288 / slow 33).
+Eval launched: output/11_09/eval_l3bc_seed1L2_180/ (task bpd2mqzkv)
+  --learned-only --l2 seed1 --l3 bc_l3_saonline.pt --relevant-l2 --yield-cap --closure
+Next: compare BC-only vs SA-online / current learned L3 / full SA; quantify the
+  on-time gain and tail loss (Pareto baseline).
+Status: PARTIAL — eval running.
+
+[2026-11-09 续26] L3 SA-BC baseline 180-ep eval: on-time 恢复且尾部基本保住
+Save: output/11_09/eval_l3bc_seed1L2_180/ (+ .log)
+Overall (seed1 L2, 180 closure eps):
+  BC L3     ontime 76.528% mean 16.535s p90 57.81 max 156.09 closure_ot 94
+  learned   ontime 73.395% mean 16.075s p90 58.34 max 152.32 closure_ot 70
+  SA-online ontime 76.759% mean 16.821s p90 62.57 max 157.22 closure_ot 89
+  SA-nofc   ontime 77.130% mean 16.202s p90 58.60 max 155.47 closure_ot 74
+  full SA   ontime 77.068% mean 16.284s p90 59.78 max 156.42 closure_ot 95
+Paired BC - SA-online:
+  ontime -0.232 n.s.; mean -0.286 n.s.; tail10 -2.857 (better); p90 -4.759 (better);
+  max -1.129 n.s.
+Paired BC - current learned:
+  ontime +3.133 SIGNIFICANT; mean +0.460 (slightly worse); tail10 +0.662 n.s.;
+  p90 -0.529 n.s.; max +3.774 WORSE.
+Paired BC - full SA: all n.s. (ontime -0.540, tail10 -1.263, p90 -1.973, max -0.330).
+P1 ontime BC 75.1% (learned 68.5, SA-online 73.5); P2 77.6% (SA-online 79.1).
+Re-sequencing: closure_overtakes 94 (policy-driven 94) vs learned 70 / SA-online 89.
+Compute: learned/BC actor ~11.75s vs SA ~48.5s (4.1x).
+=> BC does NOT lose the tail advantage broadly: p90 is better than both SA-online and
+   the current learned L3, tail10 better than SA-online, and on-time is ~SA-online.
+   Only max tail is worse than the pure learned L3 (+3.77s). BC-only is statistically
+   indistinguishable from full SA on all reported metrics.
+Status: DONE for the BC baseline. Next options: PPO fine-tune from BC (try to recover
+   max tail while keeping on-time), 3-seed validation, or adopt BC as the L3 result.
+
+[2026-11-09 续27] L3 BC + PPO fine-tune 启动 (目标: 恢复 max tail, 保持 ontime)
+Code: run_train_hierarchical.py 新增 --l3-lr / --l3-entropy（BC 微调用低 lr/熵）；
+  train_hierarchical 透传到 L3WorkerTrainer；Phase C 也按 l3_lr 缩放。64 tests pass.
+Cmd: --phases B --total-episodes 2000 --closure --seed 0 --control-mode relevant
+     --l2-ckpt seed1/final.pt --l3-ckpt output/11_09/bc_l3_saonline.pt
+     --l3-lr 2e-4 --l3-entropy 0.005 --extern-alpha 0.10 --yield-cap --yield-tail-coef 0
+Task: bhhd3jwaz
+Log: output/11_09/l3_bc_ppo_2k.log
+Out: output/11_09/training_l3_bc_ppo_2k/five_station_15t_hierarchical/20261109_200641/
+Early (ep0-4): arr_ontime 0.82 0.79 0.78 0.78 0.75 (starts from BC, not scratch 0.45);
+  dep_dly ~14-17s; l3_upd 2; all success.
+Next: 180-ep eval vs BC-only / SA-online / current learned; check ontime retention and
+  max-tail recovery.
+Status: PARTIAL — training.
+
+[2026-11-09 续28] L3 BC + PPO fine-tune 2k 完成 (训练稳定)
+Save:
+  log: output/11_09/l3_bc_ppo_2k.log
+  out: output/11_09/training_l3_bc_ppo_2k/five_station_15t_hierarchical/20261109_200641/
+Results:
+  reward 7.51 -> 10.29-10.61 (last500 10.405, prev500 9.827, +0.43σ; still rising)
+  arr_ontime 0.770 -> 0.755 (500-buckets 0.760 0.753 0.753 0.754; flat)
+  dep_dly 14.45 -> 15.23s; dep_ontime 0.748 -> 0.728
+  l3_upd ~2/ep; 2000/2000 success.
+  held-out arr_ontime 0.65-0.73 (6 seeds).
+Eval launched: output/11_09/eval_l3bcppo_seed1L2_180/ (task bx4xz3l3k)
+  compare with BC-only / SA-online / learned / full SA.
+Status: PARTIAL — eval running.
+
+[2026-11-09 续29] L3 BC + PPO fine-tune 180-ep eval: fine-tune 反而变差, BC-only 更优
+Save: output/11_09/eval_l3bcppo_seed1L2_180/ (+ .log)
+Overall:
+  BC+PPO  ontime 74.769% mean 16.969s p90 60.71 max 159.22 closure_ot 65
+  BC-only ontime 76.528% mean 16.535s p90 57.81 max 156.09 closure_ot 94
+  learned ontime 73.395% mean 16.075s p90 58.34 max 152.32 closure_ot 70
+  SA-online ontime 76.759% mean 16.821s p90 62.57 max 157.22 closure_ot 89
+  full SA ontime 77.068% mean 16.284s p90 59.78 max 156.42 closure_ot 95
+Paired BC+PPO - BC-only:
+  ontime -1.759pt (worse); mean +0.435 n.s.; tail10 +2.596 n.s.;
+  p90 +2.901 n.s.; max +3.127 WORSE; pw +0.573 worse.
+Paired BC+PPO - SA-online: ontime -1.991 (worse); mean/tail10/p90/max n.s.
+Paired BC+PPO - learned: ontime +1.374; mean +0.895, tail10 +3.258, max +6.901 worse.
+=> PPO fine-tune from BC (lr 2e-4, entropy 0.005) did NOT recover max tail; it degraded
+   ontime (-1.76pt) and max tail (+3.13s). BC-only remains the best Pareto point:
+   ontime ~SA-online, p90 better than SA-online and learned, max tail between them.
+   Recommendation: keep BC-only as the L3 result; if maximizing max-tail, either
+   tail-aware fine-tune with KL anchor or retain the pure learned L3 for that metric.
+Status: DONE for the fine-tune attempt.
+
+[2026-11-09 续30] L3 critic warmup + KL-to-BC 4k 训练完成 (稳定, 无下降趋势)
+Implementation:
+  src/marl/l3_worker.py — L3WorkerTrainer: set_guidance_actor/set_actor_frozen;
+    update() during warmup computes only value losses; after unfreeze adds
+    kl_coef * KL(pi_theta || pi_BC). Stats now include l3_kl_bc/l3_actor_frozen.
+  src/experiment/run_train_hierarchical.py — --l3-lr/--l3-entropy (续27),
+    + --l3-critic-warmup/--l3-kl-coef; deepcopy BC actor as guidance; freezes actor
+    for the first N Phase-B episodes.
+  64 tests pass; 20-ep smoke with warmup5/KL0.5 OK.
+Run: 4000 eps, BC init, warmup 200, KL 0.5, lr 2e-4, entropy 0.005
+  task bvfbt60v9
+  log: output/11_09/l3_bc_kl_4k.log
+  out: output/11_09/training_l3_bc_kl_4k/five_station_15t_hierarchical/20261109_204054/
+Results:
+  arr_ontime stable ~0.777 (500-buckets .772 .773 .765 .772 .774 .775 .773 .777);
+  last500 0.777 vs prev500 0.773; NO downward drift (BC+PPO 2k had 0.770->0.755).
+  reward ~8.37 (last500), dep_dly 14.56s, dep_ontime 0.757; 4000/4000 success.
+  held-out final 0.7565 (vs BC+PPO final 0.6966).
+Eval launched: output/11_09/eval_l3bckl_seed1L2_180/ (task blvw2qaa3)
+Status: PARTIAL — eval running; compare ontime and tail vs BC-only/SA-online.
+
+[2026-11-09 续31] L3 BC + critic warmup + KL-to-BC 4k: eval 结果
+Save: output/11_09/eval_l3bckl_seed1L2_180/ (+ .log)
+Overall (seed1 L2, 180 closure eps):
+  BC+KL 4k   ontime 76.296% mean 16.615s p90 58.42 max 155.65 closure_ot 86
+  BC-only    ontime 76.528% mean 16.535s p90 57.81 max 156.09 closure_ot 94
+  BC+PPO 2k  ontime 74.769% mean 16.969s p90 60.71 max 159.22 closure_ot 65
+  learned    ontime 73.395% mean 16.075s p90 58.34 max 152.32 closure_ot 70
+  SA-online  ontime 76.759% mean 16.821s p90 62.57 max 157.22 closure_ot 89
+  full SA    ontime 77.068% mean 16.284s p90 59.78 max 156.42 closure_ot 95
+Paired BC+KL - BC-only: all n.s. (ontime -0.232, max -0.446, p90 +0.609)
+Paired BC+KL - BC+PPO 2k: ontime +1.528, max -3.573 better, pw -0.602 better.
+Paired BC+KL - SA-online: ontime -0.463 n.s.; tail10 -2.692 better; p90 -4.150 better;
+  max -1.575 n.s.
+Paired BC+KL - full SA: ontime -0.772 (small but sig); mean/tail10/p90/max n.s.
+=> Critic warmup + KL-to-BC (0.5) eliminates the PPO drift: the 4k fine-tune matches
+   BC-only on every metric and matches SA-online on-time while beating its tail.
+   It does not recover the pure learned L3's max tail (152.3), but is a legitimate
+   MAPPO (PPO updates with BC guidance) result and the best Pareto compromise so far.
+Status: DONE — the L3 MAPPO fine-tune is now stable and competitive.
+
+[2026-11-09 续32] 补齐 L3 4k 对比训练: 无约束 PPO(scratch) + BC+PPO(no warmup/KL)
+User: 先把无约束 PPO 和 BC+PPO 的 4k 轮补齐，更新训练曲线图。
+Run A (unconstrained PPO, scratch, no BC/KL):
+  task bf73qzsuu; log output/11_09/l3_scratch_ppo_4k.log
+  out output/11_09/training_l3_scratch_ppo_4k/five_station_15t_hierarchical/20261109_212300/
+  cmd: --phases B --total-episodes 4000 --closure --l2-ckpt seed1 (no l3-ckpt)
+Run B (BC+PPO, no warmup/KL):
+  task b9vvd1nt2; log output/11_09/l3_bc_ppo_4k.log
+  out output/11_09/training_l3_bc_ppo_4k/five_station_15t_hierarchical/20261109_212301/
+  cmd: same + --l3-ckpt bc_l3_saonline.pt --l3-lr 2e-4 --l3-entropy 0.005
+Existing BC+KL 4k: output/11_09/training_l3_bc_kl_4k/.../20261109_204054/
+Next: update output/11_09/l3_training_curves/ with 4k curves for all three
+  (reward + arr_ontime, held-out dots, warmup boundary for BC+KL).
+Status: PARTIAL — both 4k runs running.
+
+[2026-11-09 续33] 更新 L3 4k 训练曲线图 (unconstrained PPO / BC+PPO / BC+KL)
+Figure: output/11_09/l3_training_curves/l3_training_reward_arr_ontime_4k.png
+  (+ l3_training_smoothed_4k.csv)
+Observations:
+  reward: unconstrained PPO and BC+PPO rise to ~10.6; BC+KL stays ~8.3 (KL anchor).
+  arr_ontime: BC+KL flat ~0.777; BC+PPO 4k ~0.76 (2k drift mitigated by longer training,
+    still below BC+KL); scratch 0.40 -> ~0.75.
+  500-bucket arr_ontime:
+    BC+KL    .772 .773 .765 .772 .774 .775 .773 .777
+    BC+PPO4k .760 .753 .753 .754 .760 .766 .769 .763
+    scratch4k .599 .733 .739 .739 .745 .753 .745 .752
+Evals launched for BC+PPO 4k (bm82948zx) and scratch 4k (bmrhugb1r).
+Status: PARTIAL — eval running.
+
+[2026-11-09 续34] 4k L3 eval: unconstrained PPO 反而最强, 推翻 2k 结论
+Eval saves:
+  scratch 4k: output/11_09/eval_l3scratch4k_seed1L2_180/ (+ .log)
+  BC+PPO 4k : output/11_09/eval_l3bcppo4k_seed1L2_180/ (+ .log)
+  BC+KL 4k  : output/11_09/eval_l3bckl_seed1L2_180/ (existing)
+Overall (seed1 L2, 180 closure eps):
+  scratch PPO 4k  ontime 79.892% mean 15.313s p90 56.33 max 156.36 closure_ot 86
+  BC+PPO 4k       ontime 76.404% mean 16.472s p90 56.98 max 154.82 closure_ot 107
+  BC+KL 4k        ontime 76.296% mean 16.615s p90 58.42 max 155.65 closure_ot 86
+  BC-only         ontime 76.528% mean 16.535s p90 57.81 max 156.09 closure_ot 94
+  learned 2k      ontime 73.395% mean 16.075s p90 58.34 max 152.32 closure_ot 70
+  SA-online       ontime 76.759% mean 16.821s p90 62.57 max 157.22 closure_ot 89
+  full SA         ontime 77.068% mean 16.284s p90 59.78 max 156.42 closure_ot 95
+Paired scratch - SA-online: ontime +3.133 [+2.117,+4.148]; mean -1.509; p90 -6.235;
+  max -0.863 n.s.; pw -0.456 borderline.
+Paired scratch - full SA: ontime +2.824 [+1.925,+3.723]; mean -0.971; p90 -3.450 n.s.;
+  max -0.064 n.s.
+Paired scratch - BC-only: ontime +3.364; mean -1.222; p90 -1.476 n.s.
+=> CRITICAL: at 4k episodes, unconstrained MAPPO L3 beats SA-online and full SA on
+   on-time (+3.1/+2.8pt) and mean/p90, with max tail flat. The earlier 2k conclusion
+   ("scratch below SA") was undertraining, not a structural limit. BC/BC+KL remain
+   useful stabilization ablations but are NOT the best L3 result. The MAPPO label is
+   restored for the L3 layer.
+DDT medians: scratch 62s; BC+PPO 88s; BC+KL 75s; SA-online 86s.
+Status: DONE for 4k comparison. Next: 3-seed validation of the scratch 4k L3.
+
+[2026-11-09 续35] Unconstrained PPO L3 4k 3-seed 验证: 启动 seed1/seed2
+seed0 exists: training_l3_scratch_ppo_4k/.../20261109_212300/; eval
+  output/11_09/eval_l3scratch4k_seed1L2_180/ (ontime 79.892%, mean 15.313,
+  p90 56.33, max 156.36, DDT 62s).
+seed1 task brhxnx8it: output/11_09/l3_scratch_ppo_4k_seed1.log
+  out output/11_09/training_l3_scratch_ppo_4k_seed1/five_station_15t_hierarchical/20261109_220509/
+seed2 task bnc8kakf9: output/11_09/l3_scratch_ppo_4k_seed2.log
+  out output/11_09/training_l3_scratch_ppo_4k_seed2/five_station_15t_hierarchical/20261109_220511/
+Same config: Phase B 4000, frozen seed1 L2, closure, relevant, alpha0.10,
+  yield-cap, tail-coef0, no BC/KL, l3-lr default 1e-3.
+Early cold start arr_ontime 0.24-0.43 (expected for scratch).
+Next: 180-ep eval per seed (--learned-only --l2 seed1 --l3 seedfinal
+  --relevant-l2 --yield-cap --closure, seeds 900000, 3x60) and 3-seed
+  mean/std/t-CI vs SA-online (same seeds). t_{0.975,2}=4.303.
+Status: PARTIAL — training.
+
+[2026-11-09 续36] Unconstrained PPO L3 4k 3-seed training 完成; eval 启动
+Training:
+  seed0: training_l3_scratch_ppo_4k/.../20261109_212300/ (last500 arr_ontime 0.752)
+  seed1: training_l3_scratch_ppo_4k_seed1/.../20261109_220509/ (0.761)
+  seed2: training_l3_scratch_ppo_4k_seed2/.../20261109_220511/ (0.755)
+Eval launched (180 eps, seeds 900000, same seed1 L2, --learned-only --relevant-l2
+  --yield-cap --closure):
+  seed1 (training): output/11_09/eval_l3scratch4k_trains1_180/ (task be8ol47wh)
+  seed2 (training): output/11_09/eval_l3scratch4k_trains2_180/ (task b64zajsj8)
+  seed0: output/11_09/eval_l3scratch4k_seed1L2_180/ (existing)
+Next: per-seed overall + paired vs SA-online; mean/std/t-CI (df=2) across 3
+  training seeds.
+Status: PARTIAL — eval running.
+
+[2026-11-09 续37] Unconstrained PPO L3 4k 3-seed 验证结果: seed0 是离群, ontime 不显著
+Eval saves:
+  seed0: output/11_09/eval_l3scratch4k_seed1L2_180/
+  seed1: output/11_09/eval_l3scratch4k_trains1_180/
+  seed2: output/11_09/eval_l3scratch4k_trains2_180/
+Per training seed (180 closure eps, seed1 L2):
+  seed0: ontime 79.892% mean 15.313 p90 56.33 max 156.36 DDT 62s closure_ot 86
+  seed1: ontime 75.926% mean 16.220 p90 57.97 max 151.09 DDT 86s closure_ot 70
+  seed2: ontime 75.355% mean 16.218 p90 59.47 max 152.23 DDT 88s closure_ot 85
+  vs SA-online paired: seed0 +3.133 / seed1 -0.833 / seed2 -1.404 ontime
+3-seed summary (t=4.303, df=2):
+  absolute ontime mean 77.058%, std 2.471, CI95 [70.918,83.197]
+  delta ontime vs SA: +0.298 ± 2.471, CI95 [-5.841,+6.437] -> NOT significant
+  delta mean vs SA: -0.904, CI [-2.204,+0.395] n.s.
+  delta tail10 vs SA: -3.093, CI [-6.316,+0.129] borderline
+  delta p90 vs SA: -4.645, CI [-8.539,-0.751] SIGNIFICANT better
+  delta max vs SA: -3.995, CI [-10.881,+2.891] n.s.
+  DDT: 62/86/88 -> not robust (seed0 only)
+=> CORRECTION: the 79.9% ontime headline is seed0-specific. Across 3 L3 training
+   seeds, ontime is 75.4-79.9% (mean 77.06%), statistically indistinguishable from
+   SA-online (76.76%); no significant ontime win. The robust advantage is p90
+   (-4.65s, significant) and tail10 (borderline). L3 MAPPO 4k is competitive with
+   SA-online on ontime and better on p90, but high seed variance remains.
+Status: DONE for 3-seed validation. Next: extend seeds1/2 to 6k to see whether the
+  ontime gap closes, or report the 3-seed p90 advantage.
+
+[2026-11-09 收尾] 当日总结: closure → L2 → L3 MAPPO/BC/KL → delay-propagation report
+1) L2 (closure, base relevance 24%, 3 seeds): ontime +1.88pt [CI +0.59,+3.16],
+   P1 +4~7pt; mean/tail10 flat; max n.s.; closure yielding learned robustly.
+   Save: output/11_09/training_closure_l2_2k_restart/... and seed1/seed2;
+   eval_closure_l2_*_sa_180 / eval_closure_heur_sa_180.
+2) Coverage experiments: plus (85%) and plus+ramp failed vs heuristic;
+   BC L2 cloned heuristic exactly. Conclusion: base 24% stays the L2 result.
+3) L3 (frozen seed1 L2, closure, 180 eps):
+   - Phase B scratch 2k: ontime 73.4 (undertrained).
+   - scratch 4k 3 seeds: ontime 79.9/75.9/75.4 (mean 77.06, CI [70.9,83.2]);
+     vs SA-online (76.76) not significant; p90 directionally better; DDT 62/86/88
+     (not robust). Seed0 was an outlier.
+   - BC-only: 76.53, p90 57.81, max 156.1.
+   - BC+PPO 2k: drifted to 74.77; BC+PPO 4k: 76.40, p90 56.98, max 154.8.
+   - BC+KL 4k (critic warmup 200 + KL 0.5): stable training, 76.30, p90 58.42,
+     max 155.7; prevents drift but does not beat BC-only.
+   Final framing: MAPPO L3 4k is competitive with SA-online on ontime and improves
+   the moderate tail; no robust ontime win across 3 training seeds.
+4) Delay-propagation report (deliverables, user requested table separate in 11_09):
+   output/11_09/propagation_table.md  (Markdown table)
+   output/11_09/propagation_table.csv
+   output/11_09/propagation_qq.png    (Q-Q of arrival delay)
+   output/11_09/propagation_forest.png (paired effects + 95% CI)
+   Key numbers (MAPPO 4k 3 seeds vs SA-online, same 180 eval seeds):
+     headway delay/episode 406 ± 46s vs 694s, paired -288s [-403,-172] SIGNIFICANT;
+     headway/transit 11.3 vs 19.3s;
+     route growth Δlast-first +0.54s [-3.84,+4.92] flat (median 3.8 vs 0.2);
+     late persistence 65.1% vs 74.2%, -9.1pt [-31.2,+13.0] n.s.;
+     p50 +0.12s flat; p90 -3.49s [-7.59,+0.60] directional; p95 -2.51s flat;
+     DDT median 62/86/88 vs 86s (not robust).
+   Interpretation: MAPPO reduces moving-block propagation (~40% less headway wait)
+   but not end-to-end route accumulation or the extreme p95 tail, dominated by
+   G238@C_to_D and G1487@B_to_A.
+5) Repo state: branch l3-sa-bc holds uncommitted code (env L3 BC recorder,
+   L3WorkerTrainer warmup/KL, run_train_hierarchical --l3-lr/--l3-entropy/
+   --l3-critic-warmup/--l3-kl-coef, bc_pretrain_l3.py,
+   make_propagation_report.py, plan_l3_sa_bc.md, tests, coding_log). NOT pushed.
+   Earlier commits: bf139dd (closure+coverage/BC L2) and 4d556bb (L3 integration
+   plan + Phase B/SA-online results) are on origin/overtaking-yield; l3-sa-bc and
+   l3-reward-shaping branches exist on origin at 4d556bb.
+Next session: decide whether to commit/push l3-sa-bc; possibly 6k extension for
+  L3 seeds1/2; or accept the MAPPO headway-propagation advantage and write up.

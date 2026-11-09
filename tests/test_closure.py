@@ -161,6 +161,22 @@ def test_relevant_plus_is_a_superset(cfg):
     assert len(rp) >= 0.5 * len(ip["active_train_ids"])
 
 
+def test_l3_bc_recorder(cfg):
+    env = FiveStationEnv(cfg=cfg, seed=7, enable_vt=False,
+                         enable_initial_delay=False,
+                         enable_corridor_incident=False,
+                         l3_sa_online=True, record_l3_bc=True)
+    obs, info = env.reset()
+    for _ in range(80):
+        obs, _, term, trunc, info = env.step({}, lambda_team=0.3)
+        if env._l3_bc_samples or term or trunc:
+            break
+    assert env._l3_bc_samples, "SA-online recorder produced no samples"
+    o, a = env._l3_bc_samples[0]
+    assert len(o) == 10
+    assert a in (0, 1, 2)
+
+
 def test_closure_episode_is_safe(cfg, monkeypatch):
     monkeypatch.setattr(
         "src.env.five_station_env.inject_corridor_closure",

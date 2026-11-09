@@ -64,7 +64,10 @@ from .disturbance import (
     inject_corridor_closure,
     inject_corridor_incident,
 )
-from .observation_builder import build_observations
+from .observation_builder import (
+    build_l3_section_observation,
+    build_observations,
+)
 from .reward import (
     L2_PRIORITY_WEIGHT,
     YIELD_TAIL_THRESHOLD,
@@ -155,6 +158,8 @@ class FiveStationEnv(BaseRailwayEnv):
         l3_sa_nofc: bool = False,            # SA WITHOUT incident forecast: plans as if
                                              # clear (factor=1) but executes the real
                                              # restriction -> the cost of needing a forecast
+        record_l3_bc: bool = False,          # record (10-dim section obs, SA mode)
+                                             # pairs for behavior cloning of L3
         enable_extra_train: bool = False,    # random mid-operation extra P2 train: spawns at
                                              # a random station (empty platform), transits
                                              # to D, stops at D (tests new-instance adaptation)
@@ -191,6 +196,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._yield_entry_cap = yield_entry_cap
         self._l3_sa_online = l3_sa_online
         self._l3_sa_nofc = l3_sa_nofc
+        self._record_l3_bc = record_l3_bc
         self._enable_extra_train = enable_extra_train
         self._extra_train_prob = extra_train_prob
         self._incident_scale = incident_scale
@@ -319,6 +325,7 @@ class FiveStationEnv(BaseRailwayEnv):
         self._mask_stats = defaultdict(int)
         self._l3_action_counts = {}
         self._l3_behavior = []
+        self._l3_bc_samples: List[Tuple[List[float], int]] = []
         self._l3_transit_events = []
         self._l3_ep_reward = 0.0
         self._l3_win_delays.clear()
@@ -1202,7 +1209,6 @@ class FiveStationEnv(BaseRailwayEnv):
                 # headway is a HARD moving-block boundary (enforced below, never a
                 # reward term); the worker optimises terminal punctuality + a
                 # global team term (no energy objective).
-                from ..env.observation_builder import build_l3_section_observation
                 from ..env.reward import (
                     L3_FAST_PENALTY,
                     compute_l3_terminal_reward,
@@ -1345,6 +1351,11 @@ class FiveStationEnv(BaseRailwayEnv):
                 accumulated_wait = 0.0
                 entry_times: List[float] = []
                 exit_times: List[float] = []
+                n_sections_sa = len(sections)
+                nxt_station_sa = self.cfg.stations.get(nxt)
+                nxt_total_sa = (len(nxt_station_sa.platforms)
+                                if nxt_station_sa else 4)
+                speed_ratio_sa = schedule_cruise / max(speeds.max_mps, 1.0)
                 for k, sec in enumerate(sections):
                     pos_k = bounds[k] if k < len(bounds) else 0.0
                     sf_k, saf_k = 1.0, 1.0
@@ -1356,6 +1367,33 @@ class FiveStationEnv(BaseRailwayEnv):
                             i_start, i_end, f_inc, sf_inc, t, run_est)
                         if sf_k != 1.0:
                             affected = True
+                    if self._record_l3_bc:
+                        wait_probe, _ = self._l3_sim.section_progress(
+                            corridor_key, t, pos_k, sec, SpeedMode.CRUISE,
+                            train_prio, speed_factor=sf_k, safety_factor=saf_k,
+                            schedule_cruise_mps=schedule_cruise)
+                        cum_delay_sa = (max(0.0, g.W_out[0]
+                                            - train_plan[cur].dep)
+                                        + accumulated_wait)
+                        nxt_free_sa = self._free_platforms_at(
+                            nxt, t + planned_transit)
+                        obs_k = build_l3_section_observation(
+                            headway_gap_sec=wait_probe,
+                            accumulated_wait_sec=accumulated_wait,
+                            cumulative_delay=cum_delay_sa,
+                            section_idx=k, n_sections=n_sections_sa,
+                            section_len_m=sec.length_m,
+                            total_len_m=distance,
+                            remaining_m=max(0.0, distance - pos_k),
+                            max_distance_m=self._l3_sim.max_corridor_length(),
+                            speed_ratio=speed_ratio_sa,
+                            next_platforms_free=nxt_free_sa,
+                            next_platforms_total=nxt_total_sa,
+                            throat_gap=(self._l3_sim.throat_gap(
+                                throat_id, g.W_out[0]) if throat_id else 0.0),
+                            speed_factor=sf_k)
+                        self._l3_bc_samples.append(
+                            (obs_k, int(modes[k])))
                     wait_k, run_k = self._l3_sim.section_progress(
                         corridor_key, t, pos_k, sec, SpeedMode(modes[k]), train_prio,
                         speed_factor=sf_k, safety_factor=saf_k,
